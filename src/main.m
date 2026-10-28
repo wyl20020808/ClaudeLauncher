@@ -119,13 +119,20 @@ static SecKeyRef PublicKeyFromXML(NSString *xml) CF_RETURNS_RETAINED {
     NSMutableData *sequence = [DERInteger(modulus) mutableCopy]; [sequence appendData:DERInteger(exponent)];
     return SecKeyCreateWithData((__bridge CFDataRef)DERWrap(0x30,sequence), (__bridge CFDictionaryRef)@{(id)kSecAttrKeyType:(id)kSecAttrKeyTypeRSA,(id)kSecAttrKeyClass:(id)kSecAttrKeyClassPublic}, NULL);
 }
-static SecKeyRef ReleaseKey(void) {
-    static SecKeyRef key; static dispatch_once_t once;
+// latest-macos.json may be signed by the shared release key (Windows publisher) or the macOS publisher key; either is accepted.
+static NSArray *ReleaseKeys(void) {
+    static NSArray *keys; static dispatch_once_t once;
     dispatch_once(&once, ^{
-        NSString *xml = [NSString stringWithContentsOfFile:[NSBundle.mainBundle pathForResource:@"update-public-key" ofType:@"xml"] encoding:NSUTF8StringEncoding error:nil];
-        key = xml ? PublicKeyFromXML(xml) : NULL;
+        NSMutableArray *loaded = [NSMutableArray array];
+        // Bundle name must not end in "-macos": NSBundle treats that as a platform variant and returns it for "update-public-key" too.
+        for (NSString *name in @[@"update-public-key",@"macos-publisher-key"]) {
+            NSString *xml = [NSString stringWithContentsOfFile:[NSBundle.mainBundle pathForResource:name ofType:@"xml"] encoding:NSUTF8StringEncoding error:nil];
+            SecKeyRef key = xml ? PublicKeyFromXML(xml) : NULL;
+            if (key) [loaded addObject:CFBridgingRelease(key)];
+        }
+        keys = loaded;
     });
-    return key;
+    return keys;
 }
 static NSComparisonResult CompareVersions(NSString *a, NSString *b) {
     NSArray *x = [a componentsSeparatedByString:@"."], *y = [b componentsSeparatedByString:@"."];
@@ -145,7 +152,7 @@ static NSString *SHA256Hex(NSData *data) {
     return hex;
 }
 // Validates shape and RSA-SHA256 (PKCS#1 v1.5) signature of latest-macos.json. Returns the manifest or nil with *failure set.
-static NSDictionary *VerifyManifest(NSData *data, SecKeyRef key, NSString **failure) {
+static NSDictionary *VerifyManifest(NSData *data, NSArray *keys, NSString **failure) {
     *failure = @"更新清单格式无效。";
     if (!data.length || data.length > 16384) { *failure = @"更新清单过大或为空。"; return nil; }
     NSDictionary *m = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
@@ -157,7 +164,9 @@ static NSDictionary *VerifyManifest(NSData *data, SecKeyRef key, NSString **fail
     if (!Matches(m[@"sha256"],@"^[a-f0-9]{64}$") || !Matches(m[@"minimumOS"],@"^[0-9]{1,3}(\\.[0-9]{1,3}){0,2}$") || ![m[@"signature"] isKindOfClass:NSString.class]) return nil;
     NSData *signature = [[NSData alloc] initWithBase64EncodedString:m[@"signature"] options:0];
     NSString *payload = [NSString stringWithFormat:@"macos\n%@\n%@\n%lld\n%@\n",version,m[@"file"],size.longLongValue,m[@"sha256"]];
-    if (!key || !signature || !SecKeyVerifySignature(key, kSecKeyAlgorithmRSASignatureMessagePKCS1v15SHA256, (__bridge CFDataRef)[payload dataUsingEncoding:NSUTF8StringEncoding], (__bridge CFDataRef)signature, NULL)) {
+    BOOL verified = NO;
+    for (id key in keys) verified = verified || (signature && SecKeyVerifySignature((__bridge SecKeyRef)key, kSecKeyAlgorithmRSASignatureMessagePKCS1v15SHA256, (__bridge CFDataRef)[payload dataUsingEncoding:NSUTF8StringEncoding], (__bridge CFDataRef)signature, NULL));
+    if (!verified) {
         *failure = @"更新清单签名无效，已拒绝。"; return nil;
     }
     *failure = nil; return m;
@@ -1108,7 +1117,7 @@ static const unsigned CardFill = 0xFFFCF7;
     NSArray *(^failed)(NSString *) = ^NSArray *(NSString *why) { return [failures arrayByAddingObject:[NSString stringWithFormat:@"%@：%@",source[@"name"],why]]; };
     Fetch([NSURL URLWithString:[source[@"base"] stringByAppendingString:@"latest-macos.json"]], github, 16384, 30, ^(NSData *data, NSString *failure) {
         NSString *invalid = failure;
-        NSDictionary *manifest = data ? VerifyManifest(data, ReleaseKey(), &invalid) : nil;
+        NSDictionary *manifest = data ? VerifyManifest(data, ReleaseKeys(), &invalid) : nil;
         if (!manifest) { [self trySource:index+1 failures:failed(invalid) manual:manual]; return; }
         NSString *current = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"0";
         if (CompareVersions(manifest[@"version"],current) != NSOrderedDescending) {
@@ -1816,21 +1825,41 @@ static int SelfTest(void) {
         NSMutableDictionary *good = [@{@"platform":@"macos",@"version":@"1.8.0",@"file":@"ClaudeLauncher-1.8.0.dmg",@"size":@2048,@"sha256":SHA256Hex([NSData data]),@"minimumOS":@"12.0"} mutableCopy];
         good[@"signature"] = sign(good);
         NSString *why = nil;
-        NSCAssert(VerifyManifest(json(good),rebuilt,&why) && !why,@"signed manifest accepted");
+        NSCAssert(VerifyManifest(json(good),@[(__bridge id)rebuilt],&why) && !why,@"signed manifest accepted");
         NSMutableDictionary *tampered = [good mutableCopy]; tampered[@"sha256"] = SHA256Hex([@"x" dataUsingEncoding:NSUTF8StringEncoding]);
-        NSCAssert(!VerifyManifest(json(tampered),rebuilt,&why) && [why containsString:@"签名"],@"tampered hash rejected by signature");
+        NSCAssert(!VerifyManifest(json(tampered),@[(__bridge id)rebuilt],&why) && [why containsString:@"签名"],@"tampered hash rejected by signature");
         for (NSArray *change in @[@[@"platform",@"windows"],@[@"file",@"evil.dmg"],@[@"size",@(UpdateSizeLimit+1)],@[@"version",@"1.8"],@[@"sha256",@"ABC"]]) {
             NSMutableDictionary *bad = [good mutableCopy]; bad[change[0]] = change[1]; bad[@"signature"] = sign(bad);
-            NSCAssert(!VerifyManifest(json(bad),rebuilt,&why),@"signed but malformed manifest rejected: %@",change[0]);
+            NSCAssert(!VerifyManifest(json(bad),@[(__bridge id)rebuilt],&why),@"signed but malformed manifest rejected: %@",change[0]);
         }
-        NSCAssert(!VerifyManifest([NSMutableData dataWithLength:20000],rebuilt,&why),@"oversized manifest rejected");
+        NSCAssert(!VerifyManifest([NSMutableData dataWithLength:20000],@[(__bridge id)rebuilt],&why),@"oversized manifest rejected");
+        // Two accepted keys (shared + macOS publisher): a manifest signed by either passes; a third key does not.
+        SecKeyRef macPrivate = SecKeyCreateRandomKey((__bridge CFDictionaryRef)@{(id)kSecAttrKeyType:(id)kSecAttrKeyTypeRSA,(id)kSecAttrKeySizeInBits:@2048}, NULL);
+        SecKeyRef otherPrivate = SecKeyCreateRandomKey((__bridge CFDictionaryRef)@{(id)kSecAttrKeyType:(id)kSecAttrKeyTypeRSA,(id)kSecAttrKeySizeInBits:@2048}, NULL);
+        NSCAssert(macPrivate && otherPrivate,@"extra test keys");
+        id macPublic = CFBridgingRelease(SecKeyCopyPublicKey(macPrivate));
+        NSString *(^signWith)(SecKeyRef, NSDictionary *) = ^NSString *(SecKeyRef k, NSDictionary *m) {
+            NSString *payload = [NSString stringWithFormat:@"%@\n%@\n%@\n%lld\n%@\n",m[@"platform"],m[@"version"],m[@"file"],[m[@"size"] longLongValue],m[@"sha256"]];
+            return [CFBridgingRelease(SecKeyCreateSignature(k,kSecKeyAlgorithmRSASignatureMessagePKCS1v15SHA256,(__bridge CFDataRef)[payload dataUsingEncoding:NSUTF8StringEncoding],NULL)) base64EncodedStringWithOptions:0];
+        };
+        NSArray *both = @[(__bridge id)rebuilt,macPublic];
+        NSMutableDictionary *byMac = [good mutableCopy]; byMac[@"signature"] = signWith(macPrivate,byMac);
+        NSMutableDictionary *byOther = [good mutableCopy]; byOther[@"signature"] = signWith(otherPrivate,byOther);
+        NSCAssert(VerifyManifest(json(good),both,&why),@"shared-key manifest accepted with two keys");
+        NSCAssert(VerifyManifest(json(byMac),both,&why),@"macOS-key manifest accepted with two keys");
+        NSCAssert(!VerifyManifest(json(byMac),@[(__bridge id)rebuilt],&why),@"macOS-key manifest rejected without macOS key");
+        NSCAssert(!VerifyManifest(json(byOther),both,&why) && [why containsString:@"签名"],@"unknown key rejected");
+        NSCAssert(!VerifyManifest(json(good),@[],&why),@"no keys, no update");
+        CFRelease(macPrivate); CFRelease(otherPrivate);
         CFRelease(rebuilt); CFRelease(publicKey); CFRelease(privateKey);
         NSCAssert(CompareVersions(@"1.7.0",@"1.6") == NSOrderedDescending && CompareVersions(@"1.6.0",@"1.6") == NSOrderedSame && CompareVersions(@"1.10.0",@"1.9.9") == NSOrderedDescending,@"numeric version order");
         NSCAssert(RedirectAllowed([NSURL URLWithString:@"https://objects.githubusercontent.com/x"],YES) && !RedirectAllowed([NSURL URLWithString:@"https://evil.example/x"],YES) && !RedirectAllowed([NSURL URLWithString:@"https://github.com/x"],NO) && !RedirectAllowed([NSURL URLWithString:@"http://github.com/x"],YES),@"redirect allowlist");
         NSCAssert(InstallBlocker(@"/private/var/folders/x/AppTranslocation/y/Claude 启动器.app") && InstallBlocker(@"/Volumes/Claude/Claude 启动器.app") && InstallBlocker(@"/tmp/not-an-app"),@"unsafe install locations rejected");
-        SecKeyRef bundled = ReleaseKey();
-        NSCAssert(bundled && SecKeyGetBlockSize(bundled) == 384,@"bundled release key is RSA-3072");
-        puts("PASS: update manifest signature and tampering, XML key import, version order, redirect allowlist, install location, bundled RSA-3072 key");
+        NSArray *bundled = ReleaseKeys();
+        NSCAssert(bundled.count == 2,@"both bundled release keys load (shared + macOS)");
+        for (id key in bundled) NSCAssert(SecKeyGetBlockSize((__bridge SecKeyRef)key) == 384,@"bundled release key is RSA-3072");
+        NSCAssert(![CFBridgingRelease(SecKeyCopyExternalRepresentation((__bridge SecKeyRef)bundled[0],NULL)) isEqual:CFBridgingRelease(SecKeyCopyExternalRepresentation((__bridge SecKeyRef)bundled[1],NULL))],@"the two bundled keys differ: %@ vs %@",[CFBridgingRelease(SecKeyCopyExternalRepresentation((__bridge SecKeyRef)bundled[0],NULL)) subdataWithRange:NSMakeRange(0,24)],[CFBridgingRelease(SecKeyCopyExternalRepresentation((__bridge SecKeyRef)bundled[1],NULL)) subdataWithRange:NSMakeRange(0,24)]);
+        puts("PASS: update manifest signature and tampering, two accepted keys (shared/macOS) and unknown-key rejection, XML key import, version order, redirect allowlist, install location, bundled RSA-3072 keys");
     } return 0;
 }
 int main(int argc, const char *argv[]) {
