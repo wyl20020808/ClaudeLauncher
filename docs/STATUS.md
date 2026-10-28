@@ -10,8 +10,9 @@
 - 存储校验递归到存储项内部（链接、硬链接、所有者），在后台执行；卡片显示“检查中”，完成后重新扫描并核对 PID 与保护状态，原 PID 退出/替换时不自动重启。
 - 只显示本机已有账号、空状态、新建取最小未用编号；新建提醒三选项；“···”菜单（资源管理器显示、复制路径、登录保护、删除/重试删除）；回收站删除按 SPEC 收紧；保守 Code 标签；登录保护（持久化、准入、结束确认）。
 - 界面按 `docs/assets/界面.png` 与 macOS 四页改为水墨浅色：实例管理、账号管理、日志记录（导出/清空可用）、系统设置（日志目录、数据目录、检查更新可用，其余静态占位）。插画构建时由 WebP 转 JPEG 内嵌。
-- 版本 1.6（1.6.0.0）。新增 Inno Setup 安装包脚本，按用户安装到 `%LOCALAPPDATA%\Programs`，卸载不删账号数据；未做代码签名（无证书，SmartScreen 会提示）。安装版继续使用自建更新（单个 exe 原地替换）。
-- 已执行：`build.ps1 -Preview`（241 项断言、`--self-test` 98 项、四页离屏渲染）、`test-install.ps1`（成功/回退/篡改 3 个场景）、`setup.ps1` 及临时目录静默安装/卸载。
+- 版本 1.6.0（1.6.0.0）。新增 Inno Setup 安装包 `ClaudeLauncherSetup-1.6.0.exe`，按用户安装到 `%LOCALAPPDATA%\Programs`，已安装时先正常关闭启动器并静默卸载旧版再安装（SPEC 更新与安装），卸载不删账号数据；未做代码签名（无证书，SmartScreen 会提示）。
+- Windows 待同步（SPEC 更新与安装）：应用内更新仍是 1.2.0 协议（自建 `latest.json`、单 exe 原地替换）。`latest-windows.json`、RSA-3072 公钥、GitHub Releases 回退、下载并静默运行 Setup 尚未实现，需与发布机密钥和发布脚本一起做。
+- 已执行：`build.ps1 -Preview`（241 项断言、`--self-test` 98 项、四页离屏渲染）、`test-install.ps1`（成功/回退/篡改 3 个场景）、`setup.ps1` 及临时目录静默安装、覆盖安装（先卸载旧版）、卸载。
 - 未验证：实际 GUI 点击与菜单、登录保护全流程、删除、托盘恢复、真实实例递归检查耗时、“Code 已指定”在真实 MSIX 启动时的表现、Code 实际写入、双账号登录、安装包快捷方式与交互向导、SmartScreen 实际提示。
 - 待用户决定：代码签名证书；公开仓库中的自建更新服务器地址（`windows/src/Updates.cs`）；`windows/assets/claude.ico` 为官方图标，已在公开仓库并用作安装包图标。
 

@@ -25,7 +25,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-install.ps1
 # 生成四个页面的离屏预览（artifacts/previews），不操作用户桌面
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/preview-ui.ps1
 
-# 生成安装包 artifacts/setup/ClaudeLauncher-Setup-<版本>.exe（需 Inno Setup 6）
+# 生成安装包 artifacts/setup/ClaudeLauncherSetup-<主.次.修订>.exe（需 Inno Setup 6）
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup.ps1
 
 # 更新服务，只在发布电脑上使用；占用冲突会拒绝启动，不杀其他程序

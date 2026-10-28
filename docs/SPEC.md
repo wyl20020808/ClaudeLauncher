@@ -65,6 +65,8 @@ Windows 对应：重解析点（符号链接、junction）等同链接；硬链�
 
 ## 更新与安装
 
+> **[Windows 待同步]** 2026-10-28：Windows Setup 已按本节实现文件名 `ClaudeLauncherSetup-<版本>.exe`、固定 AppId 检测与“先正常关闭启动器、静默卸载旧版、确认完成再安装、失败中止”。Windows 应用内更新仍是 1.2.0 协议（自建 `latest.json`、单 exe 原地替换），清单 `latest-windows.json`、RSA-3072 公钥、GitHub 回退、下载并静默运行 Setup 尚未实现。
+
 两端共用一套发布与校验流程。来源有两个，内容相同、校验相同：放在哪里不影响安全，安全只靠签名。
 
 ### 版本
