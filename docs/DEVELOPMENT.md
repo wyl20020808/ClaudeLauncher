@@ -115,3 +115,9 @@ arch -x86_64 "build/Claude 启动器.app/Contents/MacOS/ClaudeLauncher" --self-t
 ## macOS 1.7.3 发布交接
 
 应用构建与 DMG 签名在 Mac 执行，自动更新清单仍使用 Windows 发布机的原 RSA 私钥；Windows 软件不更新、不构建。具体产物、验签原文、只切换 macOS 清单及失败回滚要求见 [RELEASE-macos-1.7.3.md](RELEASE-macos-1.7.3.md)。签名清单和两端附件齐全且验签通过后才将草稿设为 Latest。
+
+## macOS 独立发布
+
+- 密钥：`scripts/release-key.m`（编译为 `build/release-key`，用固定证书签名，标识 `local.claude.profile-launcher.release-key`）。`create` 在登录钥匙串生成 RSA-3072 私钥，**不可导出**（创建后立即尝试导出，若成功则删除并报错）；`public` 输出公钥 XML；`sign` / `verify` 用于清单。私钥不打印、不进仓库或 DMG。注意：“不可导出”必须写在 `SecKeyCreateRandomKey` 的顶层参数，只写在 `kSecPrivateKeyAttrs` 中会被忽略（实测）。
+- 发布：`scripts/publish-macos.sh [--dry-run]`。要求工作区干净、当前提交已推送、`gh` 已登录、钥匙串公钥与 `resources/update-public-key-macos.xml` 一致；版本必须高于 GitHub 上当前的 `latest-macos.json`。流程见脚本头注释与 SPEC。自建服务由 Windows 端定时同步，脚本不操作。
+- 包内 Mac 公钥文件名为 `macos-publisher-key.xml`（不能以 `-macos` 结尾，见 SPEC【macOS 差异】）。

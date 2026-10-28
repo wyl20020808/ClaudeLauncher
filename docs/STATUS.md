@@ -2,6 +2,14 @@
 
 整理日期：2026-10-28。源码与本机日常 build/：1.6 / build 7（未发布）；历史交付：1.5 / build 6。
 
+## macOS 独立签名（2026-10-28，feature/mac-signing-key，1.7.4 / build 11）
+
+- 本机生成 Mac 发布私钥（RSA-3072，登录钥匙串，不可导出；用户选择不备份）。首次生成时“不可导出”参数位置错误，检查发现私钥实际可导出（仅在检查程序内存中，未输出或保存），该密钥从未用于签名，已删除并按正确参数重建，工具增加导出自检。公钥提交为 `resources/update-public-key-macos.xml`。
+- 客户端接受共用公钥或 Mac 公钥任一验签；自检覆盖两把各自签名通过、未知密钥与空密钥拒绝、两把内置公钥均为 RSA-3072 且不同。自检发现 NSBundle 把 `*-macos.xml` 当作平台变体顶替共用公钥，包内改名为 `macos-publisher-key.xml`。arm64、x86_64 自检均通过。
+- 新增 `scripts/release-key.m`、`scripts/publish-macos.sh`。
+- 1.7.4 为过渡版，按 SPEC 由 Windows 发布机用共用密钥签名发布；1.7.5 起用 publish-macos.sh 自行发布。停留在 1.7.3 及以下的客户端不认 Mac 密钥，1.7.4 需先发布并保留一段时间。
+- 未验证：GUI 点击更新到 1.7.4；publish-macos.sh 的正式发布路径（本轮只做 dry-run）。
+
 ## 两端独立发布：自建服务自动同步（2026-10-28，feature/self-hosted-sync）
 
 - 用户同意按推荐方案解除 Mac 发布对 Windows 发布机的依赖：自建服务自动从 GitHub 同步；Mac 换独立签名密钥（过渡版由共用密钥签名）；Mac 发布脚本自行带入 Windows 文件。本分支只做 Windows 侧的同步；Mac 侧改动见交接，尚未实现。
