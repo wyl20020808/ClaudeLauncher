@@ -82,6 +82,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup.ps1
 
 两种方式：只发布 Windows 时直接运行 `scripts/publish-release.ps1`（标签 `windows-v<版本>`，从当前最新 Release 带入已签名的 macOS 清单与 DMG，验签核对后一并放进新 Release，自建服务的 macOS 清单不动）；两端同时发布时运行 `scripts/publish-release.ps1 -MacSize <字节> -MacSha256 <哈希>`（标签 `v<版本>`）：构建 Setup → 从草稿 Release `v<版本>` 下载 macOS DMG 并核对 macOS 给出的 size/sha256 → 内存中解密 DPAPI 私钥，签名 `latest-windows.json`、`latest-macos.json`（首行 `macos`、`ClaudeLauncher-<版本>.dmg`、`minimumOS=12.0`）和 1.2.0 兼容 `latest.json`，并本地验签 → 安装包复制到 `updates/public/` → Setup 与两份清单上传到草稿 → 原子切换自建服务清单 → 草稿转正式 → 从自建服务与 GitHub 各下载一次清单和安装包验签核对。正式发布后的任何失败都会恢复自建清单并把 Release 改回草稿。`-DryRun` 只构建、签名和本地校验，不上传（可用测试密钥）。私钥不落盘、不输出。服务端白名单与维护步骤见 `updates/维护说明.md`。
 
+## 常驻图标（通知区域）
+
+- 启动器运行期间托盘常驻；关闭主窗口只隐藏（首次弹一次提示），程序和图标继续运行。左键单击或双击显示主窗口，右键弹出菜单。
+- 菜单：显示启动器窗口 / 本机账号（“账号 NN · 运行中/未运行”，进行中时显示检查中、启动中、删除未完成；点击与卡片主按钮走同一流程：PID 核对、登录保护、存储检查）/ 检查更新… / 退出启动器（只退出启动器，不退出任何 Claude；删除进行中时不允许）。
+- 每次打开菜单同步重新扫描进程；扫描失败时账号项禁用并显示原因。菜单不显示任何账号内容。
+- 安装程序请求退出时发送专用消息 `ClaudeMultiLauncher.Exit`（WM_CLOSE 只会隐藏）；再次打开启动器时用命名事件让已运行实例显示窗口。
+- 图标 `assets/app.ico` 由 `scripts/make-icon.ps1` 从 `resources/icon/icon_full_1024.png` 生成（16、20、24、32、40、48、64、256）；16～24 为简化图形。官方 `claude.ico` 与提取脚本已移除。
+
 ## 与 SPEC 的对应
 
 - 01 不传覆盖参数，并从子进程环境中移除 `CLAUDE_CONFIG_DIR`；02 为 `%APPDATA%\Claude-Second`；03～10 为 `%APPDATA%\Claude-Profile-NN`。02～10 传 `--user-data-dir`，并设置 `CLAUDE_CONFIG_DIR=<数据目录>\ClaudeCodeConfig`（不存在时创建）。
