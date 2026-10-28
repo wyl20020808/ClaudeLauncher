@@ -138,13 +138,14 @@ Windows 对应：重解析点（符号链接、junction）等同链接；硬链�
 
 签名原文（UTF-8，每行以 `\n` 结尾，顺序固定）：`platform`、`version`、`file`、`size`（十进制）、`sha256`。
 
-- 两端内置同一把公钥；私钥只在发布机（Windows，DPAPI 保护），不进仓库、不出现在日志。
+- 共用密钥：两端内置同一把公钥 `windows/assets/update-public-key.xml`；私钥只在 Windows 发布机（DPAPI 保护），不进仓库、不出现在日志。
+- macOS 独立密钥（计划，2026-10-28 用户同意）：Mac 发布机生成自己的 RSA-3072 私钥，只存在该 Mac 的钥匙串，公钥以同样的 RSAKeyValue XML 提交为 `resources/update-public-key-macos.xml`。Mac 客户端对 `latest-macos.json` 接受共用公钥或 Mac 公钥任一验签通过。过渡版（第一个内置 Mac 公钥的版本）仍由 Windows 发布机用共用密钥签名；之后 Mac 版本由 Mac 发布机自行签名发布。Windows 清单只认共用密钥。
 - 清单大于 16 KB、字段格式不符、文件名与版本不对应、签名无效，一律拒绝。下载后大小或 SHA-256 不符同样拒绝并删除临时文件。
 - 兼容：在所有 1.2.0 客户端更新到新协议前，服务器继续提供旧的 `latest.json` 与 `ClaudeLauncher-x.x.x.x.exe`。
 
 ### 来源与回退
 
-1. **自建服务**：`<自建地址>/latest-<平台>.json` 与同目录安装包。macOS 在构建时通过 `UPDATE_BASE_URL` 配置，未配置则直接使用 GitHub。
+1. **自建服务**：`<自建地址>/latest-<平台>.json` 与同目录安装包。macOS 在构建时通过 `UPDATE_BASE_URL` 配置，未配置则直接使用 GitHub。自建服务每 10 分钟从 GitHub `releases/latest/download/` 同步两端清单（`windows/updates/sync.py`）：只有验签通过、版本高于当前、安装包大小与 SHA-256 一致时才切换，因此任一端只需发布到 GitHub，自建服务自动跟上（主机开机且服务运行时）。
 2. **GitHub Releases**（自建失败时自动回退）：`https://github.com/wyl20020808/ClaudeLauncher/releases/latest/download/latest-<平台>.json` 与同一 Release 中的安装包。
 3. 两处都失败：提示原因，并提供“前往 GitHub 下载”按钮打开 Releases 页面，由用户手动下载安装。
 
@@ -157,7 +158,7 @@ Windows 对应：重解析点（符号链接、junction）等同链接；硬链�
 **每个正式 Release 都必须同时包含两端当前的清单与安装包。** GitHub 回退地址 `releases/latest/download/` 只指向最新的一个 Release；若只放一个平台的文件，另一平台回退时会 404。
 
 - 两端同时发布：标签 `v<版本>`。
-- 只发布一个平台：标签 `windows-v<版本>` 或 `macos-v<版本>`，另一平台的清单与安装包从上一个最新 Release 原样带入（验签并核对哈希后再上传，不重新签名），自建服务中另一平台的清单不改。Windows 发布脚本已支持只发布 Windows；只发布 macOS 同样需要在 Windows 发布机签名，脚本暂未支持。
+- 只发布一个平台：标签 `windows-v<版本>` 或 `macos-v<版本>`，另一平台的清单与安装包从上一个最新 Release 原样带入（验签并核对哈希后再上传，不重新签名），自建服务中另一平台的清单不改。Windows 发布脚本已支持只发布 Windows；Mac 发布脚本同样从上一个最新 Release 带入 Windows 文件（已签名，无需私钥）。两端版本不要求一致，哪端有新功能哪端就发，另一端之后再跟上。只发布 macOS 时，自建服务由同步自动更新，不需要 Windows 发布机操作（Mac 独立密钥生效之后）。
 
 ### 安装：先卸载旧版，再装新版
 

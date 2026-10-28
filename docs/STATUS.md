@@ -2,6 +2,13 @@
 
 整理日期：2026-10-28。源码与本机日常 build/：1.6 / build 7（未发布）；历史交付：1.5 / build 6。
 
+## 两端独立发布：自建服务自动同步（2026-10-28，feature/self-hosted-sync）
+
+- 用户同意按推荐方案解除 Mac 发布对 Windows 发布机的依赖：自建服务自动从 GitHub 同步；Mac 换独立签名密钥（过渡版由共用密钥签名）；Mac 发布脚本自行带入 Windows 文件。本分支只做 Windows 侧的同步；Mac 侧改动见交接，尚未实现。
+- `windows/updates/sync.py`（仅标准库，纯 Python RSA PKCS#1 v1.5 验签），由 `server.py` 后台线程每 10 分钟运行。规则见 SPEC“来源与回退”和 `windows/updates/维护说明.md`。
+- 检查：`python -I tests/sync_test.py` 18 项通过（测试密钥、file:// 来源：切换、重复、降级、错签、错误密钥、错平台、包不符、包过长、同名不同内容、`.previous`；正式公钥验证本机两份正式清单）。用 GitHub 实际数据在临时目录演练：旧 Mac 1.7.2 清单自动切到 1.7.3（DMG 下载核对），再次运行不重复下载，Windows 保持 1.7.2。
+- Windows 客户端代码未改，未重新构建。
+
 ## macOS 1.7.3 发布（2026-10-28，macos-v1.7.3，Windows 发布机）
 
 - 按 [RELEASE-macos-1.7.3.md](RELEASE-macos-1.7.3.md) 执行；Windows 保持 1.7.2，未改代码、未重新构建，只加载已有 1.7.2 构建中的验签代码。

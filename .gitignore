@@ -11,6 +11,7 @@ windows/.vs/
 windows/updates/public/
 windows/updates/server-state.json
 windows/updates/server-error.txt
+windows/updates/sync-state.json
 *.dpapi
 *.log
 *.user
