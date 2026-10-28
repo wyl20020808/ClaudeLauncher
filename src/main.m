@@ -160,6 +160,8 @@ static NSDictionary *VerifyManifest(NSData *data, SecKeyRef key, NSString **fail
     }
     *failure = nil; return m;
 }
+// Set only by the --update-test development mode: print each request and redirect decision.
+static BOOL TraceNetwork;
 // Only GitHub may redirect, and only to its own download hosts; the self-hosted source may not redirect at all.
 static BOOL RedirectAllowed(NSURL *url, BOOL github) {
     if (!github || ![url.scheme isEqual:@"https"]) return NO;
@@ -186,7 +188,9 @@ static NSString *SameSigner(NSString *candidate) {
 @end
 @implementation RedirectGuard
 - (void)URLSession:(NSURLSession *)session task:(NSURLSessionTask *)task willPerformHTTPRedirection:(NSHTTPURLResponse *)response newRequest:(NSURLRequest *)request completionHandler:(void (^)(NSURLRequest *))completionHandler {
-    completionHandler(RedirectAllowed(request.URL,self.github) ? request : nil);
+    BOOL allowed = RedirectAllowed(request.URL,self.github);
+    if (TraceNetwork) printf("[network] redirect -> %s %s\n",request.URL.host.UTF8String,allowed ? "allowed" : "blocked");
+    completionHandler(allowed ? request : nil);
 }
 @end
 static void Fetch(NSURL *url, BOOL github, long long limit, NSTimeInterval timeout, void (^done)(NSData *data, NSString *failure)) {
@@ -198,6 +202,7 @@ static void Fetch(NSURL *url, BOOL github, long long limit, NSTimeInterval timeo
     NSURLSession *session = [NSURLSession sessionWithConfiguration:config delegate:guard delegateQueue:nil];
     [[session dataTaskWithURL:url completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
         NSInteger status = [response isKindOfClass:NSHTTPURLResponse.class] ? ((NSHTTPURLResponse *)response).statusCode : 0;
+        if (TraceNetwork) printf("[network] %s -> HTTP %ld, %lu bytes\n",url.absoluteString.UTF8String,(long)status,(unsigned long)data.length);
         NSString *failure = error ? error.localizedDescription : status != 200 ? [NSString stringWithFormat:@"服务器返回 %ld。",(long)status] : (long long)data.length > limit ? @"下载内容超出上限。" : nil;
         [session finishTasksAndInvalidate];
         dispatch_async(dispatch_get_main_queue(), ^{ done(failure ? nil : data, failure); });
@@ -519,6 +524,8 @@ static const unsigned CardFill = 0xFFFCF7;
 @property NSArray<NSTextField *> *stats;
 @property NSTextField *tableFooter;
 @property BOOL updating;
+@property BOOL headless;         // --update-test: no dialogs, accept the offered update, print results.
+@property BOOL skipSelfHosted;
 @property NSString *lastLogged;
 @property NSTextField *accessibilityStatus;
 @property NSTextField *message;
@@ -571,6 +578,7 @@ static const unsigned CardFill = 0xFFFCF7;
     self.timer = [NSTimer scheduledTimerWithTimeInterval:1.0 target:self selector:@selector(refresh) userInfo:nil repeats:YES];
 }
 - (void)alert:(NSString *)title detail:(NSString *)detail {
+    if (self.headless) { printf("[result] %s：%s\n",title.UTF8String,detail.UTF8String); exit(3); }
     NSAlert *alert = [NSAlert new]; alert.messageText = title; alert.informativeText = detail;
     [alert addButtonWithTitle:@"知道了"]; [alert runModal];
 }
@@ -783,6 +791,7 @@ static const unsigned CardFill = 0xFFFCF7;
     return page;
 }
 - (void)addLog:(NSString *)text {
+    if (self.headless) printf("[log] %s\n",text.UTF8String);
     if (!self.logEntries) self.logEntries = [NSMutableArray array];
     NSDateFormatter *clock = [NSDateFormatter new]; clock.dateFormat = @"yyyy-MM-dd HH:mm:ss";
     NSString *level = @"信息";
@@ -807,7 +816,7 @@ static const unsigned CardFill = 0xFFFCF7;
 - (NSArray<NSDictionary *> *)updateSources {
     NSMutableArray *sources = [NSMutableArray array];
     NSString *base = [NSBundle.mainBundle objectForInfoDictionaryKey:@"ClaudeLauncherUpdateBaseURL"];
-    if ([base isKindOfClass:NSString.class] && [base hasPrefix:@"https://"]) [sources addObject:@{@"name":@"自建更新服务",@"base":[base hasSuffix:@"/"] ? base : [base stringByAppendingString:@"/"],@"github":@NO}];
+    if ([base isKindOfClass:NSString.class] && [base hasPrefix:@"https://"] && !self.skipSelfHosted) [sources addObject:@{@"name":@"自建更新服务",@"base":[base hasSuffix:@"/"] ? base : [base stringByAppendingString:@"/"],@"github":@NO}];
     [sources addObject:@{@"name":@"GitHub",@"base":GitHubDownloads,@"github":@YES}];
     return sources;
 }
@@ -822,6 +831,7 @@ static const unsigned CardFill = 0xFFFCF7;
     self.updating = NO;
     NSString *detail = [failures componentsJoinedByString:@"\n"];
     [self addLog:[@"检查更新失败：" stringByAppendingString:[failures componentsJoinedByString:@"；"]]];
+    if (self.headless) exit(1);
     if (!manual) return;
     NSAlert *alert = [NSAlert new]; alert.messageText = @"自动更新失败";
     alert.informativeText = [detail stringByAppendingString:@"\n\n可以前往 GitHub 手动下载最新版本。"];
@@ -855,7 +865,8 @@ static const unsigned CardFill = 0xFFFCF7;
         offer.messageText = [NSString stringWithFormat:@"发现新版本 %@",manifest[@"version"]];
         offer.informativeText = blocker ?: [NSString stringWithFormat:@"当前版本 %@。更新会先校验安装包，再退出启动器、替换旧版并重新打开；Claude 实例和账号数据不受影响。",current];
         [offer addButtonWithTitle:blocker ? @"前往 GitHub 下载" : @"立即更新"]; [offer addButtonWithTitle:@"稍后"];
-        if ([offer runModal] != NSAlertFirstButtonReturn) { self.updating = NO; return; }
+        if (self.headless) { if (blocker) { printf("[result] %s\n",blocker.UTF8String); exit(4); } printf("[offer] %s from %s, accepted\n",[manifest[@"version"] UTF8String],[source[@"name"] UTF8String]); }
+        else if ([offer runModal] != NSAlertFirstButtonReturn) { self.updating = NO; return; }
         if (blocker) { self.updating = NO; [NSWorkspace.sharedWorkspace openURL:[NSURL URLWithString:ReleasesPage]]; return; }
         [self addLog:[NSString stringWithFormat:@"正在从%@下载 %@",source[@"name"],manifest[@"file"]]];
         Fetch([NSURL URLWithString:[source[@"base"] stringByAppendingString:[manifest[@"file"] stringByAddingPercentEncodingWithAllowedCharacters:NSCharacterSet.URLPathAllowedCharacterSet]]], github, UpdateSizeLimit, 300, ^(NSData *package, NSString *downloadFailure) {
@@ -1525,6 +1536,16 @@ int main(int argc, const char *argv[]) {
             if (failure) { puts(failure.UTF8String); return 1; }
             for (NSNumber *n in [[pids allKeys] sortedArrayUsingSelector:@selector(compare:)]) printf("account=%02d pids=%s\n",n.intValue,[pids[n] description].UTF8String);
             printf("accessibility=%s\n",AXIsProcessTrusted()?"yes":"no"); return 0;
+        }
+        if (argc > 1 && strcmp(argv[1],"--update-test") == 0) {
+            // Development aid: run the real update path without dialogs (accepts the offer). Use on a test copy, not the daily app.
+            setvbuf(stdout,NULL,_IOLBF,0); TraceNetwork = YES;
+            NSApplication *app = NSApplication.sharedApplication; app.activationPolicy = NSApplicationActivationPolicyProhibited;
+            Launcher *launcher = [Launcher new]; launcher.headless = YES;
+            launcher.skipSelfHosted = argc > 2 && strcmp(argv[2],"--github-only") == 0;
+            printf("[test] %s %s\n",NSBundle.mainBundle.bundlePath.UTF8String,[[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] UTF8String]);
+            dispatch_async(dispatch_get_main_queue(), ^{ [launcher runUpdateCheck:YES]; });
+            [app run]; return 0;
         }
         if (argc > 2 && strcmp(argv[1],"--check-signer") == 0) {
             // Development aid: would this app accept the given bundle as an update (same designated requirement)?
