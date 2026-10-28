@@ -52,3 +52,7 @@
 `security find-identity -v` 会把自签名证书列为不受信任，这不影响 codesign 签名，无需改信任设置。构建输出会打印 designated requirement，应看到 `certificate leaf` 而不是 `cdhash`。证书丢失或更换后需重新授权。`SIGN_KEYCHAIN` 可指定证书所在的钥匙串文件，通常不需要。
 
 不要通过修改 TCC 数据库、放宽签名要求或绕过权限解决授权问题。
+
+## 界面截图
+
+`ClaudeLauncher --snapshot <输出.png> [页码]` 在后台渲染窗口到 PNG，不占单实例锁、不启动 Claude。页码：0 实例管理、1 账号管理、2 日志记录、3 系统设置。从终端运行时辅助功能状态按终端判断，可能显示未授权。插画位于 `resources/ui/`，构建时复制进应用。
