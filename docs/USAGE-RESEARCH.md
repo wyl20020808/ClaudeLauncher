@@ -4,6 +4,18 @@
 
 检查对象 `app.asar` 的 SHA-256：`fea39d0330a1f6dcb143d9a3fe7b45ed21343c5fc2895c1dff2cb942a28eeb7a`，用于识别研究版本。
 
+## 当前组织匹配修复（2026-10-28）
+
+- 用户明确要求匹配当前对应组织，不接受“全历史中取最新一条”作为替代。该试验改动已撤回，未提交、推送或发布；试验构建移到 `build/rejected-unmatched-usage/`，不得用于交付。下述修复使用真实本地组织选择标识，不沿用该试验。
+- 官方 4.29.0 的 `getLastActiveOrg`（包内 `Jj`）先检查内存与部署覆盖值，否则读取当前 Electron 会话中、官方域名下名为 `lastActiveOrg` 的 Cookie；用量请求的组织参数来自此值。它是组织选择标识，不是用于登录的 `sessionKey` 或 OAuth Token。
+- 本轮对两个本地目录的 Cookies 数据库仅作只读、不可变快照的定向存储诊断，查询条件固定为 `name = lastActiveOrg` 且域名为 `claude.ai`／`.claude.ai`，只读取该行的值长度及持久化标记，不读取任何登录 Cookie 值。两目录均有一行，明文长度为 0、密文长度为 83。没有读取或输出密文、密钥或组织 UUID。不可变快照忽略 WAL，只用于判断存储方式，不能作为实时组织选择依据。
+- `fcache` 虽含组织 UUID 与时间，但官方也会用当前 `lastActiveOrg` 核对它并丢弃不匹配缓存；不能反过来拿该缓存证明当前组织。`lastKnownAccountUuid` 是账号标识而非当前组织，旧会话目录也不能证明当前组织。上述候选均不能替代明确匹配。
+- 用户随后明确授权“允许仅本地解密组织标识”。实现只访问 `Claude Safe Storage` / `Claude Key`，仅解密上述选择行，用毕清除可控密钥缓冲区；不读取登录 Token，不调用官方 IPC，不启用调试端口，不发送 Claude 请求。
+- 本机两个数据库均为 schema 24、普通回滚日志格式，journal 为 0 字节，无 WAL。实现以已验证文件描述符通过 SQLite readonly + immutable 打开，拒绝 WAL 模式和活动日志，并在前后检查数据库 inode、大小、修改时间及路径；不复制数据库、不写账号目录、不创建锁或日志。查询仅选择 lastActiveOrg 所需字段，不返回其他 Cookie 行，限制查询权限、大小和步骤数。
+- 解密沿用公开的 [Chromium macOS v10 格式](https://raw.githubusercontent.com/chromium/chromium/138.0.7204.49/components/os_crypt/sync/os_crypt_mac.mm)：PBKDF2-HMAC-SHA1、1003 次、AES-128-CBC；验证 [Cookie schema 24 的域名 SHA-256 前缀](https://raw.githubusercontent.com/chromium/chromium/main/net/extras/sqlite/sqlite_persistent_cookie_store.cc) 和 UUID 格式。只支持已验证格式，未知格式不猜测。
+- 对历史先按该组织筛选，再取其最新样本。其他组织即使更新也不会被采用；当前组织无记录、多个有效选择行不一致或读取前后切换，均不显示数值。15 分钟新鲜度门槛保留。已落盘选择标识不是官方内存实时状态，也不是登录验证；官方尚未落盘的切换无法通过本地文件即时获知。
+- 下文“结论”至“实现与验证入口”为初版调查记录，保留当时的安全边界与验证结果；修复后的实现及发布状态以本节和 STATUS 为准。
+
 ## 结论
 
 采用用户指定的被动方案：启动器切到前台时，只读取官方客户端已经保存的用量历史。功能不发 HTTP 请求、不提取凭据、不驱动官方客户端刷新、不注入代码；因此不会新增限额查询流量或模型调用。对账号总体封禁概率没有可量化证据，不能承诺零风险。

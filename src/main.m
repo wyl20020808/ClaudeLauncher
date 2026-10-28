@@ -1451,7 +1451,7 @@ static const unsigned CardFill = 0xFFFCF7;
         if (self.scanError) status = @"进程待核对";
         BOOL available = [status isEqual:@"本地记录"];
         card.usageValues = @[(available ? record[@"fh"] : nil) ?: NSNull.null,(available ? record[@"sd"] : nil) ?: NSNull.null];
-        NSString *detail = @"仅显示此账号目录中官方保存的历史用量，不是实时查询，无法证明当前登录身份。超过 15 分钟或含多组织记录时隐藏百分比。请在官方 Claude 的「用量」中核对；本程序不发送查询、不触发刷新、不读取凭据。";
+        NSString *detail = @"仅显示与此目录中 lastActiveOrg 组织标识匹配的官方本地用量，不是实时查询或登录验证。仅在本机使用 Claude Safe Storage 解密组织标识，不读取登录 Token，不发送查询、不触发刷新。无法匹配或记录超过 15 分钟时隐藏百分比；未授权钥匙串时请重启后按系统提示允许。请在官方 Claude 的「用量」中核对。";
         if (date) detail = [detail stringByAppendingFormat:@"\n官方记录时间：%@。记录不含重置时间。",[NSDateFormatter localizedStringFromDate:date dateStyle:NSDateFormatterMediumStyle timeStyle:NSDateFormatterMediumStyle]];
         card.usageSource.stringValue = available ? [@"本地记录 · " stringByAppendingString:[clock stringFromDate:date]] : status;
         card.usageSource.toolTip = detail;
@@ -2046,7 +2046,9 @@ int main(int argc, const char *argv[]) {
             for (NSInteger n=1;n<=10;n++) {
                 NSTimeInterval start = NSProcessInfo.processInfo.systemUptime;
                 NSDictionary *result = ReadUsageHistory(ProfilePath(n),NSDate.date);
-                printf("account=%02ld status=%s read_ms=%.3f\n",(long)n,[result[@"status"] UTF8String],(NSProcessInfo.processInfo.systemUptime-start)*1000);
+                printf("account=%02ld status=%s read_ms=%.3f",(long)n,[result[@"status"] UTF8String],(NSProcessInfo.processInfo.systemUptime-start)*1000);
+                if (result[@"date"]) printf(" record_age_minutes=%.1f",-[result[@"date"] timeIntervalSinceNow]/60);
+                puts("");
             }
             return 0;
         }
@@ -2108,7 +2110,7 @@ int main(int argc, const char *argv[]) {
                 @{@"name":@"归档资料",@"group":@"",@"path":@"/Volumes/Archive/Research",@"lastAccount":@0,@"previewStatus":@"无权限"}];
             [launcher makeWindow]; [launcher refresh];
             if (argc > 4 && strcmp(argv[4],"--usage-demo") == 0) {
-                launcher.usageHistory = @{@1:@{@"status":@"本地记录",@"date":NSDate.date,@"fh":@62,@"sd":@70},@2:@{@"status":@"身份待核对"}};
+                launcher.usageHistory = @{@1:@{@"status":@"本地记录",@"date":NSDate.date,@"fh":@62,@"sd":@70},@2:@{@"status":@"无对应组织记录"}};
                 [launcher updateUsageCards];
             }
             NSView *view = launcher.window.contentView;
