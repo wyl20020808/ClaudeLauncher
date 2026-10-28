@@ -47,6 +47,8 @@
 3. 构建：`SIGN_IDENTITY="ClaudeLauncher Local Signing" /bin/zsh scripts/build.sh`。首次签名时系统询问是否允许 codesign 使用该密钥，选「始终允许」。
 4. 在系统设置中给这个构建授权一次辅助功能（需移除旧的 ad-hoc 条目）。以后用同一证书重建不应再需要授权。
 
+检查授权须经 LaunchServices 启动，否则系统按终端等父进程判断：`open -W -n --stdout /tmp/diag.txt "build/Claude 启动器.app" --args --diagnose`，查看输出中的 `accessibility=`。
+
 `security find-identity -v` 会把自签名证书列为不受信任，这不影响 codesign 签名，无需改信任设置。构建输出会打印 designated requirement，应看到 `certificate leaf` 而不是 `cdhash`。证书丢失或更换后需重新授权。`SIGN_KEYCHAIN` 可指定证书所在的钥匙串文件，通常不需要。
 
 不要通过修改 TCC 数据库、放宽签名要求或绕过权限解决授权问题。

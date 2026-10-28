@@ -21,7 +21,7 @@
 
 ## 未解决或未验证
 
-0. 稳定签名（2026-10-28，feature/stable-signing）：build.sh 支持 `SIGN_IDENTITY`。用临时钥匙串中的一次性自签名测试证书实测：两次构建 requirement 均为 `certificate leaf = H"…"`，不含 cdhash，codesign 校验与自检通过；测试钥匙串已删除，用户钥匙串搜索列表未变。未验证：用户创建正式证书后，系统辅助功能授权在重建后是否保持（需用户授权一次后重建确认）。下面第 1、2 项待该验证后关闭。
+0. 稳定签名（2026-10-28，feature/stable-signing）：build.sh 支持 `SIGN_IDENTITY`。用临时钥匙串中的一次性自签名测试证书实测：两次构建 requirement 均为 `certificate leaf = H"…"`，不含 cdhash，codesign 校验与自检通过；测试钥匙串已删除，用户钥匙串搜索列表未变。同日用户创建正式证书「ClaudeLauncher Local Signing」并为 build/ 中的 1.6 授权辅助功能后实测：临时修改代码重建，CDHash 由 a9fcb638… 变为 be38fd1e…，授权仍为 yes；还原代码重建后仍为 yes。授权身份稳定问题已解决。最小化窗口恢复的 GUI 实测仍未执行（需退出旧版启动器后运行 1.6）。
 1. 当前辅助功能授权不生效：2026-10-28 重启 1.5 后仍报告未授权。当前签名按代码哈希识别，前几轮重建使身份变化；尚未读取系统授权数据库确认旧条目具体匹配关系。最新版本的最小化恢复仍未通过实测。
 2. 没有稳定开发签名身份。需要解决后续 UI 重建导致重新授权的问题，再完成窗口恢复验收。
 3. 两个真实账号登录、回调归属及相互登出影响未验证。不能保证完全隔离。仍共享：钥匙串（Claude Safe Storage）、`claude://` 登录回调、~/Library/Logs/Claude、用户项目文件、网络出口。完整隔离只能用独立 macOS 用户。
