@@ -334,6 +334,32 @@ static BOOL VisibleWindow(pid_t pid) {
     return NO;
 }
 
+static ProjectStore *RegistrationValidator(void) {
+    return [[ProjectStore alloc] initWithDirectory:[NSHomeDirectory() stringByAppendingPathComponent:@"Library/Application Support/Claude Launcher"]
+        home:NSHomeDirectory() applicationPaths:@[NSBundle.mainBundle.bundlePath,@"/Applications/Claude 启动器.app",[NSHomeDirectory() stringByAppendingPathComponent:@"Applications/Claude 启动器.app"]]];
+}
+static NSString *RegistrationGuard(NSInteger account) {
+    if (account < 1 || account > 10) return @"目标账号编号无效。";
+    if ([NSUserDefaults.standardUserDefaults integerForKey:@"loginProtectionAccount"]) return @"登录保护期间不能登记项目，请先完成登录并结束保护。";
+    NSString *version = nil;
+    for (NSString *path in @[@"/Applications/Claude.app",[NSHomeDirectory() stringByAppendingPathComponent:@"Applications/Claude.app"]]) {
+        if (![NSFileManager.defaultManager isExecutableFileAtPath:[path stringByAppendingPathComponent:@"Contents/MacOS/Claude"]]) continue;
+        version = [NSDictionary dictionaryWithContentsOfFile:[path stringByAppendingPathComponent:@"Contents/Info.plist"]][@"CFBundleShortVersionString"]; break;
+    }
+    if (![version isEqual:@"4.29.0"]) return @"此功能只验证过 Claude 4.29.0；当前版本不匹配，已停止写入。";
+    NSString *failure = nil; NSDictionary *processes = Scan(&failure);
+    if (failure) return failure;
+    if ([processes[@(account)] count]) return @"请保存工作并正常退出目标账号后重试；登记期间不要从其他入口启动它。启动器不会替你退出。";
+    return ValidateProfileRoot(ProfilePath(account),ProfilePath(account));
+}
+static NSDictionary *RegisterForAccount(NSInteger account, NSArray *paths, BOOL apply) {
+    NSString *failure = RegistrationGuard(account) ?: ValidateProfileAtPath(ProfilePath(account),ProfilePath(account));
+    if (failure) return @{@"added":@0,@"skipped":@0,@"planned":@0,@"error":failure};
+    return RegisterProjectDirectories(ProfilePath(account),paths,RegistrationValidator(),NSHomeDirectory(),apply,^NSString *{
+        return RegistrationGuard(account);
+    });
+}
+
 static NSColor *Hex(unsigned hex) {
     return [NSColor colorWithSRGBRed:((hex>>16)&255)/255.0 green:((hex>>8)&255)/255.0 blue:(hex&255)/255.0 alpha:1];
 }
@@ -537,8 +563,8 @@ static const unsigned CardFill = 0xFFFCF7;
 @property ProjectStore *projectStore;
 @property NSView *projectRowsView;
 @property NSTextField *projectFooter, *projectFeedback;
-@property NSButton *addProjectButton, *importProjectsButton;
-@property BOOL discoveringProjects;
+@property NSButton *addProjectButton, *importProjectsButton, *registerProjectsButton;
+@property BOOL discoveringProjects, registeringProjects;
 @property NSArray<NSDictionary *> *snapshotProjects;
 @property BOOL snapshotMode;
 @property BOOL updating;
@@ -725,7 +751,9 @@ static const unsigned CardFill = 0xFFFCF7;
     [page addSubview:self.addProjectButton];
     self.importProjectsButton = [self toolButton:@"识别并导入" symbol:@"square.and.arrow.down" frame:NSMakeRect(484,56,146,44) action:@selector(importProjects:)];
     [page addSubview:self.importProjectsButton];
-    [page addSubview:Text(@"项目仅保存在本机 · 移除记录不会删除文件",NSMakeRect(38,238,470,20),[NSFont systemFontOfSize:13],Hex(0x6E655C))];
+    [page addSubview:Text(@"本机目录入口 · 移除不删除文件",NSMakeRect(38,238,340,20),[NSFont systemFontOfSize:13],Hex(0x6E655C))];
+    self.registerProjectsButton = [self toolButton:@"登记到账号…" symbol:@"sidebar.left" frame:NSMakeRect(492,228,156,38) action:@selector(registerProjects:)];
+    [page addSubview:self.registerProjectsButton];
     [page addSubview:[self toolButton:@"刷新状态" symbol:@"arrow.clockwise" frame:NSMakeRect(660,228,112,38) action:@selector(refreshProjects:)]];
     NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(37,319,734,281)];
     scroll.drawsBackground = NO; scroll.contentView.drawsBackground = NO;
@@ -744,6 +772,7 @@ static const unsigned CardFill = 0xFFFCF7;
     NSArray *projects = [self projectRecords];
     self.addProjectButton.enabled = self.snapshotMode || self.projectStore.writable;
     self.importProjectsButton.enabled = !self.discoveringProjects && (self.snapshotMode || self.projectStore.writable);
+    self.registerProjectsButton.enabled = !self.registeringProjects && !self.discoveringProjects && projects.count > 0;
     [self.projectRowsView setFrameSize:NSMakeSize(734,MAX(281,projects.count*64))];
     if (!projects.count) {
         [self.projectRowsView addSubview:Text(@"还没有项目",NSMakeRect(270,86,200,28),[NSFont systemFontOfSize:20 weight:NSFontWeightMedium],Hex(0x6E655C))];
@@ -851,6 +880,54 @@ static const unsigned CardFill = 0xFFFCF7;
             if (rows.count > 1000) { [self alert:@"项目清单容量不足" detail:@"最多保存 1000 项，本次没有写入。请减少选择或移除不需要的记录。"] ; return; }
             if (added && ![self saveProjects:rows]) return;
             [self projectNotice:[NSString stringWithFormat:@"已导入 %lu 个目录；跳过 %lu 个重复或状态已变化的目录。仅更新公共清单，客户端数据未改动。",(unsigned long)added,(unsigned long)skipped]];
+        });
+    });
+}
+- (void)registerProjects:(id)sender {
+    if (self.snapshotMode || self.registeringProjects || self.discoveringProjects) return;
+    NSArray *projects = [self projectRecords].copy; if (!projects.count) return;
+    NSAlert *choice = [NSAlert new]; choice.messageText = @"登记目录到 Claude 侧栏";
+    choice.informativeText = @"目标账号必须已正常退出。只新建目录路径和独立 ID 的空归档记录，不复制聊天、登录或权限配置；已有目录会跳过。\n完成后启动目标账号，在 Claude 的“分组和排序 → 显示”开启“空分组”。这些空记录需保留，且可能在归档列表中可见。";
+    [choice addButtonWithTitle:@"登记所选目录"]; [choice addButtonWithTitle:@"取消"];
+    Canvas *form = [[Canvas alloc] initWithFrame:NSMakeRect(0,0,620,340)];
+    NSPopUpButton *accounts = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(0,0,620,30) pullsDown:NO]; accounts.accessibilityLabel = @"登记目标账号";
+    [self refresh]; NSInteger preferred = -1;
+    for (NSInteger n = 1; n <= 10; n++) {
+        BOOL directory = NO;
+        if (![NSFileManager.defaultManager fileExistsAtPath:ProfilePath(n) isDirectory:&directory] || !directory) continue;
+        [accounts addItemWithTitle:[NSString stringWithFormat:@"账号 %02ld · %@",(long)n,self.processes[@(n)].count ? @"运行中，请先正常退出" : @"未运行"]];
+        accounts.lastItem.tag = n;
+        if (preferred < 0 && !self.processes[@(n)].count) preferred = accounts.numberOfItems-1;
+    }
+    if (preferred >= 0) [accounts selectItemAtIndex:preferred]; [form addSubview:accounts];
+    NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(0,42,620,298)]; scroll.hasVerticalScroller = YES; scroll.borderType = NSBezelBorder;
+    Canvas *rows = [[Canvas alloc] initWithFrame:NSMakeRect(0,0,598,MAX(298,projects.count*52))];
+    NSMutableArray<NSButton *> *checks = [NSMutableArray array];
+    for (NSUInteger i = 0; i < projects.count; i++) {
+        NSDictionary *project = projects[i]; NSString *path = project[@"path"];
+        NSButton *check = [NSButton checkboxWithTitle:project[@"name"] target:nil action:nil];
+        check.frame = NSMakeRect(10,i*52+4,578,24); check.toolTip = path; check.accessibilityLabel = [@"登记目录：" stringByAppendingString:path];
+        check.enabled = [[self.projectStore statusForPath:path] isEqual:@"正常"] && !ProjectNeedsManualImport(path,NSHomeDirectory());
+        check.state = check.enabled ? NSControlStateValueOn : NSControlStateValueOff; [checks addObject:check]; [rows addSubview:check];
+        NSTextField *label = Text(path,NSMakeRect(30,i*52+28,558,20),[NSFont systemFontOfSize:11],Hex(0x6E655C));
+        label.lineBreakMode = NSLineBreakByTruncatingMiddle; label.toolTip = path; [rows addSubview:label];
+    }
+    scroll.documentView = rows; [form addSubview:scroll]; choice.accessoryView = form;
+    choice.buttons.firstObject.enabled = accounts.numberOfItems > 0;
+    if ([choice runModal] != NSAlertFirstButtonReturn) return;
+    NSInteger account = accounts.selectedItem.tag; NSNumber *key = @(account);
+    if (self.loginAccount || self.starting[key] || [self.checking containsObject:key]) { [self alert:@"账号正在处理中" detail:@"请先结束登录保护或等待检查／启动完成。"] ; return; }
+    NSMutableArray *paths = [NSMutableArray array];
+    for (NSUInteger i = 0; i < checks.count; i++) if (checks[i].enabled && checks[i].state == NSControlStateValueOn) [paths addObject:projects[i][@"path"]];
+    if (!paths.count) { [self projectNotice:@"未选择可登记的目录，没有写入。"] ; return; }
+    self.registeringProjects = YES; [self.checking addObject:key]; [self refresh]; [self refreshProjects:nil];
+    [self projectNotice:@"正在校验目标账号并登记目录；请勿从 Dock 或终端启动目标账号。"];
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0), ^{
+        NSDictionary *result = RegisterForAccount(account,paths,YES);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            self.registeringProjects = NO; [self.checking removeObject:key]; [self refresh]; [self refreshProjects:nil];
+            NSString *summary = [NSString stringWithFormat:@"账号 %02ld：已登记 %@ 个目录，跳过 %@ 个已有目录。%@",(long)account,result[@"added"],result[@"skipped"],result[@"error"] ?: @"请启动该账号，并在 Claude 中开启“显示空分组”。"];
+            [self projectNotice:summary]; [self alert:result[@"error"] ? @"登记已停止" : @"目录登记完成" detail:summary];
         });
     });
 }
@@ -1705,6 +1782,7 @@ static int SelfTest(void) {
     @autoreleasepool {
         TestProjects();
         TestProjectImport();
+        TestProjectRegistration();
         NSCAssert(AccountForArguments(@[@"Claude"]) == 1, @"default");
         for (NSInteger n=1;n<=10;n++) {
             NSCAssert(AccountForArguments(@[@"Claude",[@"--user-data-dir=" stringByAppendingString:ProfilePath(n)]]) == n,@"equals");
@@ -1885,6 +1963,21 @@ int main(int argc, const char *argv[]) {
             // Development aid: would this app accept the given bundle as an update (same designated requirement)?
             NSString *failure = SameSigner(@(argv[2]));
             puts(failure ? failure.UTF8String : "same signer"); return failure ? 1 : 0;
+        }
+        if (argc > 1 && strcmp(argv[1],"--register-projects-from") == 0) {
+            NSInteger source = argc >= 4 ? [@(argv[2]) integerValue] : 0, target = argc >= 4 ? [@(argv[3]) integerValue] : 0;
+            BOOL apply = argc == 5 && strcmp(argv[4],"--apply") == 0;
+            if ((argc != 4 && !apply) || source < 1 || source > 10 || target < 1 || target > 10 || source == target ||
+                ![@(argv[2]) isEqual:[NSString stringWithFormat:@"%ld",(long)source]] || ![@(argv[3]) isEqual:[NSString stringWithFormat:@"%ld",(long)target]]) {
+                fputs("usage: --register-projects-from <1..10> <different target 1..10> [--apply]\n",stderr); return 2;
+            }
+            NSDictionary *found = DiscoverProjects(@[ProfilePath(source)],RegistrationValidator(),NSHomeDirectory());
+            if ([found[@"limited"] boolValue]) { fputs("source discovery reached its limit; no write\n",stderr); return 1; }
+            NSArray *paths = [found[@"candidates"] valueForKey:@"path"];
+            NSDictionary *result = RegisterForAccount(target,paths,apply);
+            printf("source=%02ld target=%02ld mode=%s candidates=%lu planned=%lu added=%lu skipped=%lu\n",(long)source,(long)target,apply ? "apply" : "preview",(unsigned long)paths.count,[result[@"planned"] unsignedLongValue],[result[@"added"] unsignedLongValue],[result[@"skipped"] unsignedLongValue]);
+            if (result[@"error"]) { puts([result[@"error"] UTF8String]); return 1; }
+            puts("Only directory paths and fresh empty archive records; enable Show empty groups in Claude."); return 0;
         }
         if (argc > 1 && strcmp(argv[1],"--project-import-check") == 0) {
             NSMutableArray *profiles = [NSMutableArray array];

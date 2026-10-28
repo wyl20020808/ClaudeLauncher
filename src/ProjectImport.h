@@ -6,3 +6,9 @@ BOOL ProjectNeedsManualImport(NSString *path, NSString *home);
 // Returns appended records without saving; revalidates every selected path.
 NSArray *PrepareProjectImport(ProjectStore *store, NSArray<NSString *> *paths, NSString *home, NSUInteger *skipped);
 void TestProjectImport(void);
+
+// Appends fresh, empty archived records only. guard is checked again before each atomic publication.
+// Results include added/skipped/planned and an optional error; a partial success is never hidden.
+NSDictionary *RegisterProjectDirectories(NSString *profile, NSArray<NSString *> *paths,
+    ProjectStore *validator, NSString *home, BOOL apply, NSString *(^guard)(void));
+void TestProjectRegistration(void);
