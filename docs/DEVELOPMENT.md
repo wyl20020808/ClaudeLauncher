@@ -111,3 +111,7 @@ arch -x86_64 "build/Claude 启动器.app/Contents/MacOS/ClaudeLauncher" --self-t
 - `ClaudeLauncher --check-signer <应用路径>`：开发用，判断该应用能否作为更新被接受。
 - `scripts/dmg.sh` 输出发布机签名清单需要的 `file`、`size`、`sha256`。
 - `ClaudeLauncher --update-test [--github-only]`：开发用。不弹对话框、自动接受更新，打印每个请求、跳转主机和结果，然后走真实下载与替换。只在临时目录的测试副本上运行（可把副本 Info.plist 的版本调低、改 `ClaudeLauncherUpdateBaseURL` 后用同一证书重签），不要对日常应用运行。
+
+## macOS 1.7.3 发布交接
+
+应用构建与 DMG 签名在 Mac 执行，自动更新清单仍使用 Windows 发布机的原 RSA 私钥；Windows 软件不更新、不构建。具体产物、验签原文、只切换 macOS 清单及失败回滚要求见 [RELEASE-macos-1.7.3.md](RELEASE-macos-1.7.3.md)。签名清单和两端附件齐全且验签通过后才将草稿设为 Latest。

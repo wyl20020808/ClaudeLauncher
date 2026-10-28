@@ -1,8 +1,8 @@
 # Claude 启动器
 
-非官方工具，与 Anthropic 无关联。原生 macOS 桌面账号启动器，Objective-C / AppKit。当前 macOS 版本号为 1.7.2 / build 9；`feature/project-import` 的导入功能尚未发布，本轮不改版本号。
+非官方工具，与 Anthropic 无关联。原生 macOS 桌面账号启动器，Objective-C / AppKit。当前 macOS 版本号为 1.7.3 / build 10；新增本机项目识别与批量导入，发布进度见 docs/STATUS.md。
 
-2026-10-28：`feature/project-import` 基于 dev `5cb6626`，保留手动项目管理，新增所有已创建账号的本机目录识别与批量导入；账号隔离机制保持不变。本轮只修改 macOS 实现与文档，不修改 Windows、不打包发布。验证结果见 [当前状态](docs/STATUS.md)。
+2026-10-28：`feature/project-import` 基于 dev `5cb6626`，保留手动项目管理，新增所有已创建账号的本机目录识别与批量导入；账号隔离机制保持不变。本轮只修改 macOS 实现、发布构建和文档，不修改 Windows；Windows 1.7.2 的清单和安装包原样沿用。验证结果见 [当前状态](docs/STATUS.md)。
 
 管理本机的 Claude 桌面账号（最多 10 个，只显示已有的）。水墨风界面：左侧导航（实例管理、账号管理、项目管理、日志记录、系统设置），右侧账号卡片；运行中显示棕色“打开”，已有目录未运行显示“启动”，无目录显示“创建”，“+ 新建实例”创建第一个未使用的编号。使用同一份官方 Claude.app，通过不同数据目录启动，不复制、修改或重签官方应用。
 

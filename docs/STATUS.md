@@ -2,6 +2,14 @@
 
 整理日期：2026-10-28。源码与本机日常 build/：1.6 / build 7（未发布）；历史交付：1.5 / build 6。
 
+## macOS 1.7.3 发布准备（2026-10-28）
+
+- 用户要求合并、推送并提供 Mac 应用内更新。本轮只更新 macOS 至 1.7.3 / build 10；Windows 保持 1.7.2，未改源码或重建安装包。合并 origin/dev 的 1.7.2 发布记录时，仅 STATUS 冲突，双方记录均保留。
+- 构建：`SIGN_IDENTITY="ClaudeLauncher Local Signing" UPDATE_BASE_URL="https://www.u4139693.nyat.app:53569/claude-launcher/" /bin/zsh scripts/build.sh build/release-1.7.3`。签名、Info.plist 和 arm64／x86_64 六组自检通过；与 /Applications 已安装 1.7.2 同签名，未替换日常应用。
+- `ClaudeLauncher-1.7.3.dmg`：1676413 字节，SHA-256 `55ecb85eb81d6deb2874413d49fad4a6cd210f6d4e11ad9e128450144a0682b0`。DMG 校验、只读挂载后的版本／更新地址／签名核对通过，1.7.3 项目页离屏截图已查看。
+- 发布目标 `macos-v1.7.3`；原样带入的 Windows 1.7.2 清单和 Setup 已验签并核对大小及哈希。需要原 Windows 发布机签名 macOS 清单、切换自建服务并转正式；该机器无连接，本机无法代签，完成前保持草稿且旧 Latest 不变。交接见 [RELEASE-macos-1.7.3.md](RELEASE-macos-1.7.3.md)。
+- 未验证：真实导入 GUI、完整导入弹窗、1.7.2 → 1.7.3 应用内自动更新。没有操作账号登录数据，没有退出或启动 Claude。
+
 ## macOS 项目识别与导入（2026-10-28，feature/project-import）
 
 - 基于本地 dev `5cb6626` 新建分支。先更新 SPEC，保留已有手动添加／编辑／排序／移除／账号打开，新增“识别并导入”。本轮只改 src/、scripts/build.sh、README 和 docs；Windows、账号隔离和登录流程不变，版本保持 1.7.2 / build 9。不合并、不推送、不安装、不打包发布。
