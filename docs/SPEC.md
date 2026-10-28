@@ -139,7 +139,9 @@ Windows 对应：重解析点（符号链接、junction）等同链接；硬链�
 签名原文（UTF-8，每行以 `\n` 结尾，顺序固定）：`platform`、`version`、`file`、`size`（十进制）、`sha256`。
 
 - 共用密钥：两端内置同一把公钥 `windows/assets/update-public-key.xml`；私钥只在 Windows 发布机（DPAPI 保护），不进仓库、不出现在日志。
-- macOS 独立密钥（计划，2026-10-28 用户同意）：Mac 发布机生成自己的 RSA-3072 私钥，只存在该 Mac 的钥匙串，公钥以同样的 RSAKeyValue XML 提交为 `resources/update-public-key-macos.xml`。Mac 客户端对 `latest-macos.json` 接受共用公钥或 Mac 公钥任一验签通过。过渡版（第一个内置 Mac 公钥的版本）仍由 Windows 发布机用共用密钥签名；之后 Mac 版本由 Mac 发布机自行签名发布。Windows 清单只认共用密钥。
+- macOS 独立密钥（2026-10-28 用户同意，1.7.4 起内置）：Mac 发布机生成自己的 RSA-3072 私钥，只存在该 Mac 的钥匙串，公钥以同样的 RSAKeyValue XML 提交为 `resources/update-public-key-macos.xml`。Mac 客户端对 `latest-macos.json` 接受共用公钥或 Mac 公钥任一验签通过。过渡版（第一个内置 Mac 公钥的版本）仍由 Windows 发布机用共用密钥签名；之后 Mac 版本由 Mac 发布机自行签名发布。Windows 清单只认共用密钥。
+  - 【macOS 差异】包内文件名为 `macos-publisher-key.xml`：NSBundle 把以 `-macos` 结尾的资源当作平台变体，会在查找 `update-public-key.xml` 时返回 `update-public-key-macos.xml`（实测），导致共用公钥加载不到。仓库路径仍为 `resources/update-public-key-macos.xml`。
+  - Mac 私钥创建为不可导出（用户选择不备份），只能在生成它的这台 Mac 上签名。这台 Mac 丢失或重装时：由 Windows 发布机用共用密钥继续为 Mac 签名（1.7.4 起的客户端两把都认），或生成新的 Mac 密钥并随一个共用密钥签名的版本发布新公钥。
 - 清单大于 16 KB、字段格式不符、文件名与版本不对应、签名无效，一律拒绝。下载后大小或 SHA-256 不符同样拒绝并删除临时文件。
 - 兼容：在所有 1.2.0 客户端更新到新协议前，服务器继续提供旧的 `latest.json` 与 `ClaudeLauncher-x.x.x.x.exe`。
 
