@@ -7,8 +7,9 @@
 - `src/ProfileDeletion.cs`：目录范围校验、运行状态拦截、回收站操作和未完成删除标记。
 - `src/Storage.cs`：存储元数据递归校验（链接、所有者、硬链接）及 `--self-test`。
 - `installer/ClaudeLauncher.iss`、`scripts/setup.ps1`：Inno Setup 安装包。
+- `scripts/publish-release.ps1`：两端一次发布（签名清单、上传自建服务与 GitHub Release、两来源复核）。
 - `src/Diagnostics.cs`：本地日志与账号进程退出观察。
-- `src/Updates.cs`：版本号、更新地址、公钥验签、下载验证、替换与回退。
+- `src/Updates.cs`：版本号、更新来源（自建 → GitHub）、清单验签、跳转白名单、下载校验、Authenticode 签名者比对、运行 Setup；以及 1.2.0 兼容的 `--apply-update` 原地替换。
 - `assets/update-public-key.xml`：客户端公开验签密钥，允许随源码分发。
 
 程序使用 C# 5 / .NET Framework WPF。无 NuGet 依赖；构建脚本直接调用系统 `csc.exe`。源文件编码 UTF-8；PowerShell 脚本使用 UTF-8 BOM 以兼容 Windows PowerShell 5.1。
@@ -36,12 +37,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File updates/start-server.ps1
 
 ## 发版流程
 
-1. 修改 `src/Updates.cs` 的 AssemblyVersion、AssemblyFileVersion 和 Updates.Version，保持一致并递增；更新说明。
-2. 构建并运行与改动相符的检查。检查版本比较用例仍然有效。
+1. 两端统一版本：修改 `src/Updates.cs` 的 AssemblyVersion、AssemblyFileVersion、`Version`（x.y.z.0）与 `DisplayVersion`（x.y.z）；更新说明。
+2. 构建并运行与改动相符的检查（`build.ps1`、`--self-test`；改动 `--apply-update` 时再跑 `test-install.ps1`）。
 3. 在开发机做界面及真实账号的小范围验证，记录未验证边界。
-4. 获得该次发布授权后运行 `scripts/publish-update.ps1`；默认读取 `artifacts/bin/ClaudeLauncher.exe`，写入本项目 `updates/public/`。
-5. 用客户端核实 HTTPS 公网清单、签名、版本和文件哈希。
-6. 更新客户 ZIP 与发行说明；旧版本保留，禁止混入账号数据或私钥。
+4. macOS 端把 DMG 上传到草稿 Release `v<版本>` 并给出 size、sha256。
+5. 获得该次发布授权后运行 `scripts/publish-release.ps1 -MacSize … -MacSha256 …`（详见 `updates/维护说明.md`）；可先加 `-DryRun` 演练。
+6. 脚本最后会从自建服务和 GitHub 各下载一次验签核对；之后可再用客户端“检查更新”确认。
 
 更新服务器保留在 `updates/`，避免破坏当前隧道和运行服务。不要把 `updates/public/` 当开发输出目录；普通构建不能改写这里的已签名文件。
 

@@ -1,13 +1,14 @@
 ﻿; Claude 多开启动器 Windows 安装程序（Inno Setup 6）。由 scripts/setup.ps1 调用 ISCC 生成。
-; 按当前用户安装到 %LOCALAPPDATA%\Programs，不需要管理员权限，自建更新可直接替换程序。
+; 按当前用户安装到 %LOCALAPPDATA%\Programs，不需要管理员权限。应用内更新下载本 Setup，以
+; /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /RELAUNCH=1 运行，装好后重新打开启动器。
 ; 卸载只删除本程序安装的文件和更新残留；绝不删除任何账号数据目录
 ; （%APPDATA%\Claude-*、%LOCALAPPDATA%\Claude-Data、商店版 Packages 目录）或启动器日志/状态目录。
 
 #ifndef AppVersion
-  #define AppVersion "1.6.0"
+  #define AppVersion "1.7.0"
 #endif
 #ifndef FileVersion
-  #define FileVersion "1.6.0.0"
+  #define FileVersion "1.7.0.0"
 #endif
 #ifndef SourceExe
   #define SourceExe "..\artifacts\bin\ClaudeLauncher.exe"
@@ -28,6 +29,8 @@ DefaultDirName={autopf}\Claude 多开启动器
 DefaultGroupName=Claude 多开启动器
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
+; 与清单 minimumOS 一致。
+MinVersion=10.0.19041
 ArchitecturesInstallIn64BitMode=x64compatible
 OutputDir={#OutputDir}
 OutputBaseFilename=ClaudeLauncherSetup-{#AppVersion}
@@ -54,6 +57,8 @@ Name: "{autodesktop}\Claude 多开启动器"; Filename: "{app}\ClaudeLauncher.ex
 
 [Run]
 Filename: "{app}\ClaudeLauncher.exe"; Description: "{cm:LaunchProgram,Claude 多开启动器}"; Flags: nowait postinstall skipifsilent
+; 应用内更新的静默安装：完成后重新打开启动器。
+Filename: "{app}\ClaudeLauncher.exe"; Flags: nowait; Check: RelaunchRequested
 
 [UninstallDelete]
 ; 自建更新在程序旁留下的备份与中间文件，仅限安装目录内。
@@ -108,6 +113,11 @@ begin
     if Pos(',' + IntToStr(Pid) + ',', Ids) > 0 then PostMessage(Wnd, WM_CLOSE, 0, 0);
     Wnd := FindWindowEx(0, Wnd, 0, LauncherTitle);
   end;
+end;
+
+function RelaunchRequested(): Boolean;
+begin
+  Result := WizardSilent and (ExpandConstant('{param:RELAUNCH|0}') = '1');
 end;
 
 function InitializeSetup(): Boolean;

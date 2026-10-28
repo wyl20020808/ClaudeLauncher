@@ -2,6 +2,20 @@
 
 整理日期：2026-10-28。源码与本机日常 build/：1.6 / build 7（未发布）；历史交付：1.5 / build 6。
 
+## Windows 1.7.0 更新协议（2026-10-28，feature/windows-sync）
+
+上一轮交接内容（托盘重启动、递归后台存储检查、只显示已有账号、新建提醒、删除规则、Code 状态、登录保护、四页界面、Setup）已在 `ec71c69` 合入 dev，本轮在其上继续。只改 `windows/` 及 SPEC/STATUS。
+
+- 版本 1.7.0（程序集 1.7.0.0）。
+- `Updates.cs` 改为新协议：`latest-windows.json` 验签（RSA-3072 + SHA-256，沿用现有密钥）、自建 → GitHub 回退、“前往 GitHub 下载”、HTTPS 与跳转白名单、超时与大小上限、只升不降、`minimumOS`、下载核对失败即删除并换来源、运行前比对 Authenticode 签名者、静默运行 Setup；启动 8 秒后每 24 小时最多自动检查一次。保留 1.2.0 兼容的 `--apply-update`。
+- Setup：`MinVersion=10.0.19041`；`/RELAUNCH=1` 时静默安装后重新打开启动器；先卸载再安装逻辑沿用上一轮。
+- `updates/server.py`：白名单增加 `latest-windows.json`、`latest-macos.json`、`ClaudeLauncherSetup-x.y.z.exe`、`Claude多开启动器-x.y.z.dmg`，保留 `latest.json` 与 `ClaudeLauncher-x.x.x.x.exe`。
+- 新增 `windows/scripts/publish-release.ps1`（取代 `publish-update.ps1`）：构建 Setup、下载并核对草稿中的 macOS DMG、签名两份清单与 1.2.0 兼容清单、上传自建服务与 GitHub 草稿、转正式、两来源复核，失败回滚。
+- SPEC 标注【Windows 差异】：无代码签名时无法比对签名者；先卸载再安装导致新版安装失败时不能回滚旧版；`minimumOS` 每段 1～5 位。
+- 已执行：`build.ps1`（241 项）、`--self-test`（130 项，含更新协议 32 项）、`test-install.ps1`（3 场景）、`setup.ps1` 及临时目录安装/覆盖/卸载、`publish-release.ps1 -DryRun`（测试密钥）、`server.py` 回环端口白名单测试、旧 `latest.json` 用仓库公钥验签通过。
+- 未验证：真实公网更新端到端、正式发布路径（gh 上传/转正式/回滚）、启动器运行时 Setup 的关闭流程、`/RELAUNCH` 重新打开、有签名时的签名者比对、所有 GUI 点击。
+- 发布前需要：发布私钥（本机 `%LOCALAPPDATA%\ClaudeLauncher-Publisher\signing-key.dpapi` 不存在）；自建服务恢复运行并确定地址（当前 502）；macOS 端上传 1.7.0 DMG 到草稿 Release 并给出 size/sha256。gh 已登录（wyl20020808）。
+
 ## Windows 同步到 1.6（2026-10-28，feature/windows-sync）
 
 从 dev `5ccb1fc` 创建分支，只改 `windows/` 及 SPEC/STATUS 记录，未改 `src/`、`scripts/` 等 macOS 文件。详细对应与差异见 `windows/README.md`。

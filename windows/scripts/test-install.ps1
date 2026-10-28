@@ -28,9 +28,9 @@ foreach ($scenario in @('success','rollback','tamper')) {
     [IO.File]::Copy((Join-Path $fixture 'new/ClaudeLauncher.exe'), $source)
     [IO.File]::Copy((Join-Path $fixture 'old/ClaudeLauncher.exe'), $target)
     $oldHash = [ClaudeLauncher.Updates]::Hash($target)
-    $release = New-Object ClaudeLauncher.Release
+    $release = New-Object ClaudeLauncher.LegacyRelease
     $release.version='1.1.0.0'; $release.file='ClaudeLauncher-1.1.0.0.exe'; $release.size=(Get-Item -LiteralPath $source).Length; $release.sha256=[ClaudeLauncher.Updates]::Hash($source)
-    $release.signature=[Convert]::ToBase64String($rsa.SignData([ClaudeLauncher.Updates]::Payload($release),[Security.Cryptography.CryptoConfig]::MapNameToOID('SHA256')))
+    $release.signature=[Convert]::ToBase64String($rsa.SignData([ClaudeLauncher.Updates]::LegacyPayload($release),[Security.Cryptography.CryptoConfig]::MapNameToOID('SHA256')))
     if ($scenario -eq 'tamper') { $release.sha256 = '0' * 64 }
     [IO.File]::WriteAllText((Join-Path $incoming 'release.json'), ($release | ConvertTo-Json -Compress))
     [IO.File]::WriteAllText((Join-Path $incoming 'plan.json'), (@{target=$target;originalHash=$oldHash;pid=2147483647;started=0} | ConvertTo-Json -Compress))

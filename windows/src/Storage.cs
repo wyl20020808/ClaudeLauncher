@@ -103,6 +103,8 @@ namespace ClaudeLauncher {
             string roaming = Path.Combine(root, "Roaming"), local = Path.Combine(root, "Local");
             const string app = @"""C:\Program Files\WindowsApps\Claude_4.29.0.0_x64__pzs8sxrjxfjjc\app\claude.exe""";
             try {
+                Directory.CreateDirectory(root);
+                UpdateChecks(root);
                 // 账号与 Code 配置映射
                 var folders = Enumerable.Range(1, 10).Select(n => Core.Folder(n, roaming)).ToArray();
                 Check(folders[0] == null && folders[1] == Path.Combine(roaming, "Claude-Second") && folders[9] == Path.Combine(roaming, "Claude-Profile-10"), "账号目录映射错误");
@@ -221,6 +223,55 @@ namespace ClaudeLauncher {
                 Rejects(() => Storage.Validate(3, roaming, local), "链接账号目录必须拒绝");
                 Directory.Delete(folders[2]);
             } finally { Cleanup(root); }
+        }
+        // 更新协议：用一次性 RSA-3072 密钥签名，覆盖验签、篡改拒绝、macOS 清单、版本比较、系统版本、跳转白名单、签名者规则。
+        static void UpdateChecks(string root) {
+            using (var probe = new System.Security.Cryptography.RSACryptoServiceProvider()) {
+                probe.PersistKeyInCsp = false; probe.FromXmlString(Updates.PublicKey());
+                Check(probe.KeySize == 3072, "内置更新公钥应为 RSA-3072");
+            }
+            using (var rsa = new System.Security.Cryptography.RSACryptoServiceProvider(3072)) {
+                rsa.PersistKeyInCsp = false;
+                string key = rsa.ToXmlString(false);
+                Func<Release, string> sign = r => {
+                    r.signature = Convert.ToBase64String(rsa.SignData(Updates.Payload(r), System.Security.Cryptography.CryptoConfig.MapNameToOID("SHA256")));
+                    return new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(r);
+                };
+                Func<Release> good = () => new Release { platform = "windows", version = "1.8.0", file = "ClaudeLauncherSetup-1.8.0.exe", size = 2048, sha256 = new string('a', 64), minimumOS = "10.0.19041" };
+                string json = sign(good());
+                Check(Updates.Verify(json, key).version == "1.8.0", "有效清单被拒绝");
+                Check(Updates.Payload(good()).SequenceEqual(System.Text.Encoding.UTF8.GetBytes("windows\n1.8.0\nClaudeLauncherSetup-1.8.0.exe\n2048\n" + new string('a', 64) + "\n")), "签名原文格式错误");
+                Rejects(() => Updates.Verify(json.Replace(new string('a', 64), new string('b', 64)), key), "篡改哈希必须被签名拒绝");
+                Rejects(() => Updates.Verify(json.Replace("2048", "4096"), key), "篡改大小必须被签名拒绝");
+                Rejects(() => Updates.Verify(json, new System.Security.Cryptography.RSACryptoServiceProvider(3072) { PersistKeyInCsp = false }.ToXmlString(false)), "其他密钥签名必须拒绝");
+                Rejects(() => Updates.Verify(json, key, "macos"), "Windows 清单不能当 macOS 清单");
+                Rejects(() => Updates.Verify(new string(' ', 16385), key), "超大清单必须拒绝");
+                Rejects(() => Updates.Verify("null", key), "空清单必须拒绝");
+                Rejects(() => Updates.Verify(json.Replace("\"signature\":\"", "\"signature\":\"!"), key), "非 Base64 签名必须拒绝");
+                var changes = new Action<Release>[] {
+                    r => r.platform = "macos", r => r.file = "evil.exe", r => r.file = "ClaudeLauncherSetup-1.9.0.exe", r => r.size = Updates.SizeLimit + 1, r => r.size = 10,
+                    r => r.version = "1.8", r => r.version = "1.8.0.0", r => r.sha256 = "ABC", r => r.sha256 = new string('A', 64), r => r.minimumOS = "ten" };
+                foreach (var change in changes) {
+                    Release bad = good(); change(bad);
+                    Rejects(() => Updates.Verify(sign(bad), key), "格式不符的清单必须拒绝（即使签名正确）");
+                }
+                var mac = new Release { platform = "macos", version = "1.8.0", file = "Claude多开启动器-1.8.0.dmg", size = 4096, sha256 = new string('c', 64), minimumOS = "12.0" };
+                Check(Updates.Verify(sign(mac), key, "macos").file == "Claude多开启动器-1.8.0.dmg", "macOS 清单验签失败");
+                Check(System.Text.Encoding.UTF8.GetString(Updates.Payload(mac)).StartsWith("macos\n1.8.0\nClaude多开启动器-1.8.0.dmg\n4096\n"), "macOS 签名原文错误");
+            }
+            Check(Updates.Compare("1.10.0", "1.9.9") > 0 && Updates.Compare("1.7.0", "1.7") == 0 && Updates.Compare("1.6.9", "1.7.0") < 0, "版本比较错误");
+            Check(!Updates.IsNewer(new Release { version = Updates.DisplayVersion }) && !Updates.IsNewer(new Release { version = "1.6.0" }) && Updates.IsNewer(new Release { version = "1.7.1" }), "只升级、不降级");
+            Check(Updates.OsSupported("10.0.19041", new Version(10, 0, 26200)) && !Updates.OsSupported("10.0.19041", new Version(10, 0, 18363)), "系统版本比较错误");
+            Check(Updates.RedirectAllowed(new Uri("https://objects.githubusercontent.com/x"), true) && Updates.RedirectAllowed(new Uri("https://release-assets.githubusercontent.com/x"), true) && Updates.RedirectAllowed(new Uri("https://github.com/x"), true), "GitHub 下载域名应允许");
+            Check(!Updates.RedirectAllowed(new Uri("https://evil.example/x"), true) && !Updates.RedirectAllowed(new Uri("http://github.com/x"), true) &&
+                !Updates.RedirectAllowed(new Uri("https://github.com:8443/x"), true) && !Updates.RedirectAllowed(new Uri("https://github.com.evil.example/x"), true), "未允许的跳转必须拒绝");
+            Check(!Updates.RedirectAllowed(new Uri("https://github.com/x"), false), "自建服务不允许任何跳转");
+            Check(Updates.Sources().Last().Base == Updates.GitHubBase && Updates.Sources().All(s => s.Base.StartsWith("https://")), "更新来源顺序或协议错误");
+            Check(Updates.SignerProblem(null, null) == null && Updates.SignerProblem("AA", "aa") == null, "签名者规则错误");
+            Check(Updates.SignerProblem("AA", null) != null && Updates.SignerProblem("AA", "BB") != null, "签名者不一致必须拒绝");
+            string unsigned = Path.Combine(root, "unsigned.exe");
+            File.WriteAllBytes(unsigned, new byte[4096]);
+            Check(Updates.Signer(unsigned) == null, "未签名文件应返回空签名者");
         }
         static void Junction(string link, string target) {
             var info = new ProcessStartInfo(Path.Combine(Environment.SystemDirectory, "cmd.exe"), "/c mklink /J \"" + link + "\" \"" + target + "\"") { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true };
