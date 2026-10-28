@@ -14,7 +14,7 @@ PUBLIC = ROOT / 'public'
 ALLOWED = (
     (re.compile(r'latest(-windows|-macos)?\.json', re.ASCII), 'application/json'),
     (re.compile(r'ClaudeLauncherSetup-\d{1,4}\.\d{1,4}\.\d{1,4}\.exe', re.ASCII), 'application/octet-stream'),
-    (re.compile(r'Claude多开启动器-\d{1,4}\.\d{1,4}\.\d{1,4}\.dmg', re.ASCII), 'application/x-apple-diskimage'),
+    (re.compile(r'ClaudeLauncher-\d{1,4}\.\d{1,4}\.\d{1,4}\.dmg', re.ASCII), 'application/x-apple-diskimage'),
     (re.compile(r'ClaudeLauncher-\d+\.\d+\.\d+\.\d+\.exe', re.ASCII), 'application/octet-stream'),
 )
 
