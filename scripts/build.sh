@@ -19,7 +19,7 @@ if [[ -z "$BUILD_SDK" ]]; then
         BUILD_SDK=$(xcrun --show-sdk-path)
     fi
 fi
-xcrun clang -isysroot "$BUILD_SDK" -fobjc-arc -Wall -Wextra -Wno-unused-parameter -mmacosx-version-min=12.0 -framework Cocoa -framework ApplicationServices src/main.m -o "$APP/Contents/MacOS/ClaudeLauncher"
+xcrun clang -isysroot "$BUILD_SDK" -arch arm64 -arch x86_64 -fobjc-arc -Wall -Wextra -Wno-unused-parameter -mmacosx-version-min=12.0 -framework Cocoa -framework ApplicationServices src/main.m -o "$APP/Contents/MacOS/ClaudeLauncher"
 cp "$CLAUDE/Contents/Resources/$ICON" "$APP/Contents/Resources/Claude.icns"
 cp resources/ui/*.webp "$APP/Contents/Resources/"
 cat > "$APP/Contents/Info.plist" <<'PLIST'

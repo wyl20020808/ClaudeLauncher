@@ -17,6 +17,17 @@ C# 5 / .NET Framework 4.8 WPF（系统自带），无 NuGet 依赖。构建脚�
 
 目录：`src/` 生产源码，`tests/` 自动检查，`scripts/` 构建与发布工具，`assets/` 官方图标与更新验签公钥，`updates/` 自建更新服务，`docs/` 开发、设计和用户说明。
 
+## 待办：Setup 安装程序
+
+与 macOS DMG 对应，Windows 需要提供一个 Setup 安装程序，方便发给客户：
+
+- 推荐 Inno Setup（单个 setup.exe，体积小）；也可用 WiX 生成 MSI。
+- 安装到 `%LOCALAPPDATA%\Programs\Claude 多开启动器` 或 `Program Files`，创建开始菜单与可选桌面快捷方式，提供卸载入口。
+- 卸载只删除启动器程序，**不得删除任何账号数据目录**（`%APPDATA%\Claude-*`、`Claude-Data` 等）。
+- 对安装程序和 exe 做代码签名（无签名时客户会看到 SmartScreen 警告）。
+- 版本号与 macOS 保持一致，输出到 `windows/artifacts/`，不提交到 Git。
+- 与现有自建更新（Updates.cs）的关系需说明：安装版是否仍走自动更新、更新包是否也用 Setup。
+
 ## 构建与自检
 
 在 `windows/` 目录下运行：

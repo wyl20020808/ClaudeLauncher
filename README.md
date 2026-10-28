@@ -15,7 +15,8 @@ src/main.m                  macOS 应用实现与内置自检
 windows/                    Windows 版（规划中，未实现）
 docs/SPEC.md                跨平台行为规格
 scripts/build.sh            构建、签名和自检
-scripts/package.sh          打包已构建的应用
+scripts/package.sh          打包已构建的应用（ZIP）
+scripts/dmg.sh              生成拖拽安装的 DMG
 resources/ui/               界面插画（侧栏与卡片）
 build/                      开发构建输出（Git 忽略）
 releases/1.5/               当前已交付应用副本（Git 忽略）
@@ -29,7 +30,7 @@ AGENTS.md                   后续开发约束
 
 ## 运行与构建
 
-日常使用双击 `build/Claude 启动器.app`（用固定证书签名构建），不需要安装 Python 或 Node.js。旧版 1.5 副本已于 2026-10-28 按用户要求移到废纸篓。
+日常使用 `/Applications/Claude 启动器.app`（从 DMG 安装，固定证书签名），不需要安装 Python 或 Node.js。旧版 1.5 副本已于 2026-10-28 按用户要求移到废纸篓。
 
 开发需要 macOS、Xcode Command Line Tools 和 `/Applications/Claude.app` 或 `~/Applications/Claude.app`。在项目根目录执行：
 
@@ -39,6 +40,28 @@ SIGN_IDENTITY="ClaudeLauncher Local Signing" /bin/zsh scripts/build.sh
 ```
 
 设置 `SIGN_IDENTITY` 可用固定证书签名，重建后辅助功能授权不失效，步骤见 [开发流程](docs/DEVELOPMENT.md#打包与签名)。开发应用位于 `build/Claude 启动器.app`，发布 ZIP 位于 `build/Claude启动器.zip`。构建不会替换原交付应用。支持 `SDKROOT` 指定 SDK，默认优先本机兼容的 MacOSX15.4.sdk。当前仅在本机 Apple Silicon 验证，未做 Apple 公证。
+
+## 安装与分发
+
+### macOS（DMG）
+
+```sh
+SIGN_IDENTITY="ClaudeLauncher Local Signing" /bin/zsh scripts/build.sh
+SIGN_IDENTITY="ClaudeLauncher Local Signing" /bin/zsh scripts/dmg.sh
+```
+
+生成 `build/Claude多开启动器-<版本>.dmg`。打开后把「Claude 启动器」拖到「应用程序」即可安装。应用为通用二进制（Apple 芯片 + Intel），要求 macOS 12 及以上，并需要客户本机已安装官方 Claude 桌面版。
+
+发给客户前须知：
+
+- **未经 Apple 公证。** 当前用自签名证书签名，客户首次打开会被系统拦截（“无法验证开发者”）。客户需要在 Finder 中右键应用选「打开」，或到「系统设置 → 隐私与安全性」点「仍要打开」。正式分发应加入 Apple Developer Program，用 Developer ID 证书签名，再经 `notarytool` 公证并 `stapler` 装订，客户即可直接打开。
+- **授权在客户机器上重新授予。** 恢复最小化窗口需要客户自己在「隐私与安全性 → 辅助功能」里允许本应用。
+- **图标与名称。** 应用图标在构建时复制自本机官方 Claude.app，名称含“Claude”。对外分发前请自行确认商标与图标的使用许可，必要时换成自有图标和名称。
+- 本机安装位置为 `/Applications/Claude 启动器.app`。重新构建不会自动更新已安装版本，需重新生成 DMG 安装（证书不变时辅助功能授权保留）。
+
+### Windows（安装程序，待做）
+
+计划由 Windows 端提供 Setup 安装程序（例如 Inno Setup 或 WiX/MSIX），安装到“程序”目录并创建开始菜单与桌面快捷方式，带卸载入口。详见 [windows/README.md](windows/README.md) 待办。
 
 ## 隔离范围
 
