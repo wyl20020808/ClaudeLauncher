@@ -25,16 +25,23 @@ namespace ClaudeLauncher {
             public uint Volume, SizeHigh, SizeLow, Links, IndexHigh, IndexLow;
         }
 
+        // 扩展长度路径：Claude 缓存常超过 260 字符，且客户电脑多未开启系统长路径支持，遍历一律用 \\?\ 前缀。
+        public static string Extended(string path) {
+            return path.StartsWith(@"\\") ? path : @"\\?\" + Path.GetFullPath(path);
+        }
+        public static string Display(string path) {
+            return path.StartsWith(@"\\?\") ? path.Substring(4) : path;
+        }
         public static int LinkCount(string path) {
             // FILE_READ_ATTRIBUTES，共享全部；BACKUP_SEMANTICS | OPEN_REPARSE_POINT 不跟随链接。
-            using (SafeFileHandle handle = CreateFile(path, 0x80, 7, IntPtr.Zero, 3, 0x02000000 | 0x00200000, IntPtr.Zero)) {
+            using (SafeFileHandle handle = CreateFile(Extended(path), 0x80, 7, IntPtr.Zero, 3, 0x02000000 | 0x00200000, IntPtr.Zero)) {
                 FileInfoByHandle info;
                 if (handle.IsInvalid) {
                     int error = Marshal.GetLastWin32Error();
                     if (error == 2 || error == 3) return 0; // 检查期间被 Claude 删除的缓存文件。
-                    throw new IOException("无法检查存储项：" + path, Marshal.GetHRForLastWin32Error());
+                    throw new IOException("无法检查存储项：" + Display(path), Marshal.GetHRForLastWin32Error());
                 }
-                if (!GetFileInformationByHandle(handle, out info)) throw new IOException("无法检查存储项：" + path, Marshal.GetHRForLastWin32Error());
+                if (!GetFileInformationByHandle(handle, out info)) throw new IOException("无法检查存储项：" + Display(path), Marshal.GetHRForLastWin32Error());
                 return (int)info.Links;
             }
         }
@@ -60,25 +67,25 @@ namespace ClaudeLauncher {
         }
         // 逐项检查存储项及其内部：不跟随链接，检查期间消失的条目跳过，其余异常一律停止。
         static void Check(string root, SecurityIdentifier user, bool recursive) {
-            var pending = new Stack<string>(); pending.Push(root);
+            var pending = new Stack<string>(); pending.Push(Extended(root));
             while (pending.Count > 0) {
-                string path = pending.Pop();
+                string path = pending.Pop(), shown = Display(path);
                 FileAttributes? attributes = Attributes(path);
                 if (attributes == null) continue;
-                if ((attributes.Value & FileAttributes.ReparsePoint) != 0) throw new IOException("存储项含链接或重定向，已停止：" + path);
+                if ((attributes.Value & FileAttributes.ReparsePoint) != 0) throw new IOException("存储项含链接或重定向，已停止：" + shown);
                 bool directory = (attributes.Value & FileAttributes.Directory) != 0;
                 SecurityIdentifier owner;
                 try {
                     FileSystemSecurity security = directory ? (FileSystemSecurity)Directory.GetAccessControl(path, AccessControlSections.Owner) : File.GetAccessControl(path, AccessControlSections.Owner);
                     owner = (SecurityIdentifier)security.GetOwner(typeof(SecurityIdentifier));
                 } catch (FileNotFoundException) { continue; } catch (DirectoryNotFoundException) { continue; }
-                catch (UnauthorizedAccessException) { throw new IOException("无法读取存储项所有者，已停止：" + path); }
-                if (!user.Equals(owner)) throw new IOException("存储项不属于当前用户，已停止：" + path);
-                if (!directory && LinkCount(path) > 1) throw new IOException("存储项是硬链接，已停止：" + path);
+                catch (UnauthorizedAccessException) { throw new IOException("无法读取存储项所有者，已停止：" + shown); }
+                if (!user.Equals(owner)) throw new IOException("存储项不属于当前用户，已停止：" + shown);
+                if (!directory && LinkCount(path) > 1) throw new IOException("存储项是硬链接，已停止：" + shown);
                 if (!directory || !recursive) continue;
                 try { foreach (string entry in Directory.EnumerateFileSystemEntries(path)) pending.Push(entry); }
                 catch (DirectoryNotFoundException) { }
-                catch (UnauthorizedAccessException) { throw new IOException("无法读取存储目录，已停止：" + path); }
+                catch (UnauthorizedAccessException) { throw new IOException("无法读取存储目录，已停止：" + shown); }
             }
         }
     }
@@ -219,6 +226,18 @@ namespace ClaudeLauncher {
                 Rejects(() => Storage.Validate(2, roaming, local), "深层 Code 存储链接必须拒绝");
                 Directory.Delete(code);
                 Storage.Validate(2, roaming, local);
+                // 长路径（超过 260 字符，Claude 缓存常见）：正常文件通过，深层硬链接仍拒绝
+                string longDir = Path.Combine(folder, "Cache", new string('d', 120), new string('e', 120), new string('f', 120));
+                Directory.CreateDirectory(Storage.Extended(longDir));
+                string longFile = Storage.Extended(Path.Combine(longDir, "data_0"));
+                File.WriteAllText(longFile, "x");
+                Check(Storage.Display(longFile).Length > 300, "长路径夹具不够长");
+                Storage.Validate(2, roaming, local);
+                File.Delete(longFile);
+                Check(CreateHardLink(longFile, outside, IntPtr.Zero), "无法创建长路径硬链接夹具");
+                Rejects(() => Storage.Validate(2, roaming, local), "长路径下的硬链接必须拒绝");
+                File.Delete(longFile);
+                Storage.Validate(2, roaming, local);
                 Junction(folders[2], target);
                 Rejects(() => Storage.Validate(3, roaming, local), "链接账号目录必须拒绝");
                 Directory.Delete(folders[2]);
@@ -284,9 +303,10 @@ namespace ClaudeLauncher {
             if (!full.StartsWith(Path.GetFullPath(Path.GetTempPath()), StringComparison.OrdinalIgnoreCase) || !Path.GetFileName(full).StartsWith("claude-selftest-")) throw new IOException("自检清理路径无效");
             if (!Directory.Exists(full)) return;
             // 先移除夹具内残留的链接本身，再递归删除，避免跟随链接。
-            foreach (string entry in Directory.EnumerateDirectories(full, "*", SearchOption.AllDirectories).ToArray())
+            string extended = Storage.Extended(full);
+            foreach (string entry in Directory.EnumerateDirectories(extended, "*", SearchOption.AllDirectories).ToArray())
                 if (Directory.Exists(entry) && (File.GetAttributes(entry) & FileAttributes.ReparsePoint) != 0) Directory.Delete(entry);
-            Directory.Delete(full, true);
+            Directory.Delete(extended, true);
         }
     }
 }
