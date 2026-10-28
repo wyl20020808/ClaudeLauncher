@@ -21,6 +21,7 @@ if [[ -z "$BUILD_SDK" ]]; then
 fi
 xcrun clang -isysroot "$BUILD_SDK" -fobjc-arc -Wall -Wextra -Wno-unused-parameter -mmacosx-version-min=12.0 -framework Cocoa -framework ApplicationServices src/main.m -o "$APP/Contents/MacOS/ClaudeLauncher"
 cp "$CLAUDE/Contents/Resources/$ICON" "$APP/Contents/Resources/Claude.icns"
+cp resources/ui/*.webp "$APP/Contents/Resources/"
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

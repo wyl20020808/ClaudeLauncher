@@ -13,6 +13,7 @@ macOS（`src/main.m`）和 Windows（`windows/`）各自原生实现，共同遵
 - 基础目录：macOS 为 `~/Library/Application Support`；Windows 为 `%APPDATA%`（沿用已有 02/03 数据）。
   - **[Windows 差异，已确认]** MSIX 版 01 的默认 userData 实测为 `%LOCALAPPDATA%\Claude-Data\claude_pzs8sxrjxfjjc`，不在基础目录下；商店版还可能把目录虚拟化到 `%LOCALAPPDATA%\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\<名称>`，Windows 端按同一账号识别和校验。见 `windows/README.md`。
 - 02～10 启动参数 `--user-data-dir=<数据目录>`，环境变量 `CLAUDE_CONFIG_DIR=<数据目录>/ClaudeCodeConfig`。
+- 界面只显示本机已有的账号（数据目录存在、正在运行或正在启动），按编号紧凑排列；没有任何账号时显示空状态提示。“新建实例”创建 01～10 中编号最小的未使用账号。编号与目录映射不变。
 - 已有目录直接复用，不迁移、删除、覆盖、修改权限。新目录仅本人可访问。
   - **[Windows 差异，已确认]** 不设置 ACL，新目录继承 `%APPDATA%` 默认权限（本人、SYSTEM、Administrators），与“仅本人可访问”意图一致。
 - 01 的子进程环境不得带 `CLAUDE_CONFIG_DIR`。Windows 用 `UseShellExecute=false` 会继承启动器环境，因此须显式移除；macOS 经 LaunchServices 启动，不继承启动器环境，只附加显式设置的变量，无需处理。
@@ -45,8 +46,8 @@ Windows 对应：重解析点（符号链接、junction）等同链接；硬链�
 - 不读取、复制、打印凭据；登录由用户完成。
 - 不强杀 Claude；不修改系统权限或安全设置。
 - 不伪装设备指纹或网络出口。
-- 删除账号功能暂停。
-  - **[Windows 兼容例外，已确认]** Windows 1.2.0 已发布回收站删除。开发版隐藏删除入口，只对此前未完成的删除保留重试（否则该账号无法启动）。这是遗留状态的退出路径，与 macOS 保留旧版“结束登录保护”同理；不恢复或扩展删除功能。
+- 删除账号（2026-10-28 用户要求恢复）：仅通过“···”菜单，二次确认后移到废纸篓（可恢复），不永久删除；01 默认目录不可删；运行中或启动中不可删；删除前重新扫描进程并校验路径。
+  - **[Windows 待同步]** 规格已恢复删除：Windows 可重新开放回收站删除入口，按上条约束对齐（01 不可删、运行中不可删、二次确认）；“删除未完成”的重试保留。
 
 ## 自检
 
