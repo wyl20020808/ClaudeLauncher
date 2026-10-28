@@ -1,14 +1,14 @@
 ﻿; Claude 多开启动器 Windows 安装程序（Inno Setup 6）。由 scripts/setup.ps1 调用 ISCC 生成。
 ; 按当前用户安装到 %LOCALAPPDATA%\Programs，不需要管理员权限。应用内更新下载本 Setup，以
-; /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /RELAUNCH=1 运行，装好后重新打开启动器。
+; /SILENT /SUPPRESSMSGBOXES /NORESTART /RELAUNCH=1 运行（只显示中文进度窗口），装好后重新打开启动器。
 ; 卸载只删除本程序安装的文件和更新残留；绝不删除任何账号数据目录
 ; （%APPDATA%\Claude-*、%LOCALAPPDATA%\Claude-Data、商店版 Packages 目录）或启动器日志/状态目录。
 
 #ifndef AppVersion
-  #define AppVersion "1.7.1"
+  #define AppVersion "1.7.2"
 #endif
 #ifndef FileVersion
-  #define FileVersion "1.7.1.0"
+  #define FileVersion "1.7.2.0"
 #endif
 #ifndef SourceExe
   #define SourceExe "..\artifacts\bin\ClaudeLauncher.exe"
@@ -43,6 +43,10 @@ WizardStyle=modern
 ; 只关闭占用本程序文件的进程（即启动器本身），不涉及 Claude。
 CloseApplications=yes
 RestartApplications=no
+
+[Languages]
+; 简体中文向导文字，取自 Inno Setup 官方源码 Files/Languages/ChineseSimplified.isl（6.5.0+）。
+Name: "chs"; MessagesFile: "ChineseSimplified.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
@@ -158,6 +162,9 @@ begin
       Exit;
     end;
   end;
+  // 进度窗口里告诉用户当前在做什么（卸载程序本身静默运行）。
+  WizardForm.PreparingLabel.Caption := '正在卸载旧版 ' + OldVersion + '（只卸载启动器程序，账号数据不受影响）…';
+  WizardForm.PreparingLabel.Visible := True;
   if not Exec(OldUninstaller, '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART', '', SW_HIDE, ewWaitUntilTerminated, Code) or (Code <> 0) then begin
     Result := '旧版卸载失败（代码 ' + IntToStr(Code) + '）。已中止安装，旧版仍可使用。';
     Exit;
