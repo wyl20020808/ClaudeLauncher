@@ -281,6 +281,21 @@ namespace ClaudeLauncher {
                 Rejects(() => Updates.Verify(sign(oldName), key, "macos"), "旧的中文 DMG 文件名必须拒绝");
             }
             Check(Updates.Compare("1.10.0", "1.9.9") > 0 && Updates.Compare("1.7.0", "1.7") == 0 && Updates.Compare("1.6.9", "1.7.0") < 0, "版本比较错误");
+            // 取较高版本：自建落后选 GitHub；同版本自建优先、GitHub 作下载备用；全部失败为空；按数值而非字符串比较。
+            var self = new UpdateSource { Name = "自建服务" }; var hub = new UpdateSource { Name = "GitHub", GitHub = true };
+            Func<UpdateSource, string, SourceCheck> found = (s, v) => new SourceCheck { Source = s, Release = new Release { version = v } };
+            Func<UpdateSource, SourceCheck> failed = s => new SourceCheck { Source = s, Failure = "服务器返回 502。" };
+            var picked = Updates.Candidates(new[] { found(self, "1.7.2"), found(hub, "1.7.3") });
+            Check(picked.Length == 1 && picked[0].Source == hub && picked[0].Release.version == "1.7.3", "自建落后时应选 GitHub");
+            picked = Updates.Candidates(new[] { found(self, "1.7.3"), found(hub, "1.7.3") });
+            Check(picked.Length == 2 && picked[0].Source == self && picked[1].Source == hub, "同版本应自建优先、GitHub 备用");
+            picked = Updates.Candidates(new[] { failed(self), found(hub, "1.7.3") });
+            Check(picked.Length == 1 && picked[0].Source == hub, "自建失败时应用 GitHub");
+            Check(Updates.Candidates(new[] { failed(self), failed(hub) }).Length == 0, "全部来源失败应为空");
+            picked = Updates.Candidates(new[] { found(self, "1.10.0"), found(hub, "1.9.9") });
+            Check(picked.Length == 1 && picked[0].Source == self, "版本须按数值比较（1.10.0 > 1.9.9）");
+            var unreachable = Updates.CheckAll(new[] { new UpdateSource { Name = "无效地址", Base = "http://127.0.0.1/" } });
+            Check(unreachable.Length == 1 && unreachable[0].Release == null && !String.IsNullOrEmpty(unreachable[0].Failure), "来源失败须记录原因而不是抛出");
             // 相对当前版本构造“更高/更低”，版本号递增后无需改测试。
             int[] current = Updates.DisplayVersion.Split('.').Select(Int32.Parse).ToArray();
             string higher = current[0] + "." + current[1] + "." + (current[2] + 1);
