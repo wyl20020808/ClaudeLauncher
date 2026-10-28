@@ -17,3 +17,7 @@ mkdir -p "${DMG:h}"
 [[ -n "${SIGN_IDENTITY:-}" ]] && /usr/bin/codesign --force --sign "$SIGN_IDENTITY" "$DMG"
 /usr/bin/hdiutil verify "$DMG" >/dev/null
 print "已生成：${DMG:A}"
+# 发布机签名清单所需：文件名、字节数、SHA-256。
+print "file=${DMG:t}"
+print "size=$(stat -f %z "$DMG")"
+print "sha256=$(shasum -a 256 "$DMG" | cut -d" " -f1)"

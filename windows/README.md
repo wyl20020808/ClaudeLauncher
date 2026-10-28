@@ -49,19 +49,22 @@ artifacts\bin\ClaudeLauncher.exe --self-test | Write-Output
 
 ## 安装包（Setup）
 
+更新与安装的完整规则（来源回退、清单签名、先卸载再安装、回滚）见 [SPEC 更新与安装](../docs/SPEC.md#更新与安装)，以此为准。
+
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup.ps1
 ```
 
-先执行 `build.ps1`（含自动检查与自检），再调用 Inno Setup 6（`ISCC.exe`，可用 `winget install JRSoftware.InnoSetup --scope user` 安装）生成 `artifacts/setup/ClaudeLauncher-Setup-1.6.exe`。产物不提交到 Git。
+先执行 `build.ps1`（含自动检查与自检），再调用 Inno Setup 6（`ISCC.exe`，可用 `winget install JRSoftware.InnoSetup --scope user` 安装）生成 `artifacts/setup/ClaudeLauncherSetup-1.6.0.exe`（SPEC 文件名）。产物不提交到 Git。
 
 - 按当前用户安装到 `%LOCALAPPDATA%\Programs\Claude 多开启动器`，不需要管理员权限；创建开始菜单快捷方式，桌面快捷方式可选；“应用和功能”中可卸载。
+- 先卸载再安装（SPEC）：用固定 AppId 查当前用户的卸载项；已安装时提示“检测到已安装 x.y.z，将先卸载再安装新版”。随后按 PID 核对、对旧安装目录中运行的启动器窗口发送正常关闭（WM_CLOSE，不结束进程，不涉及 Claude），等待退出；再静默运行旧版卸载程序，等卸载项和旧卸载程序都消失后才安装新版。启动器无法正常关闭（如删除未完成）或旧版卸载失败、超时，都中止安装并提示原因。
 - 卸载只删除安装的 `ClaudeLauncher.exe`、卸载程序以及自建更新在安装目录内留下的 `.previous-*`、`.new-*`、`.failed-*` 文件。**不删除任何账号数据目录**（`%APPDATA%\Claude-*`、`%LOCALAPPDATA%\Claude-Data`、商店版 `Packages\Claude_*`），也不删除启动器日志、登录保护和删除状态目录 `%LOCALAPPDATA%\Claude-MultiLauncher`。
 - 升级覆盖安装时，Inno Setup 只会请求关闭占用本程序文件的进程（启动器本身），不涉及 Claude。
-- 版本号与 macOS 一致：1.6（文件版本 1.6.0.0，见 `src/Updates.cs`）。
+- 版本号与 macOS 一致：1.6.0（文件版本 1.6.0.0，见 `src/Updates.cs`；界面显示 V1.6）。
 - 安装向导使用 Inno Setup 默认英文界面（Inno 6.7.3 未内置简体中文向导文件），程序名、快捷方式为中文。
 - **代码签名：未签名。** 本机没有代码签名证书，安装程序和 `ClaudeLauncher.exe` 都没有 Authenticode 签名。客户首次运行会看到 SmartScreen“Windows 已保护你的电脑”，需点“更多信息 → 仍要运行”；部分杀毒软件可能更谨慎。需要正式证书（OV/EV）后在打包时对 exe 和 setup.exe 签名，此项待用户决定。
-- 与自建更新（`Updates.cs`）的关系：安装版仍走现有自建更新——启动器检查签名清单，下载单个 exe 并在安装目录内原地替换（用户目录可写，无需管理员）。更新包仍是单个 exe，不是 Setup。原地更新后“应用和功能”里显示的版本号停留在安装时的版本；需要同步显示时，可改为用新 Setup 覆盖安装。未改动更新逻辑本身。
+- 与自建更新（`Updates.cs`）的关系：**当前代码**仍是 1.2.0 协议——检查自建服务的 `latest.json`（RSA 签名），下载单个 `ClaudeLauncher-x.x.x.x.exe` 并在安装目录内原地替换（用户目录可写，无需管理员）；原地更新后“应用和功能”里的版本号停留在安装时的版本。SPEC“更新与安装”已改为：`latest-windows.json`（RSA-3072 + SHA-256，两端同一公钥）、自建失败回退 GitHub Releases、两处都失败时提示前往 GitHub 下载，自动更新下载并静默运行 Setup。这部分 **Windows 待同步**，本轮未改动更新逻辑（需要新密钥与发布流程，见 STATUS）。
 
 ## 与 SPEC 的对应
 
@@ -108,7 +111,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup.ps1
 - `scripts/build.ps1 -Preview`：编译通过。`LauncherTests` 241 项断言通过（含四个页面以合成状态布局、删除确认框默认取消、启动探针验证参数和 `CLAUDE_CONFIG_DIR`）。
 - `ClaudeLauncher.exe --self-test | Write-Output`：98 项通过，临时目录已清理。
 - 离屏渲染四个页面（合成进程状态，不扫描或启动 Claude），人工比对 `docs/assets/界面.png` 与 macOS 四页：布局、插画、文字无裁切。图片在 `artifacts/previews/`，未提交。离屏渲染不代表桌面输入。
-- `scripts/setup.ps1`：生成 `ClaudeLauncher-Setup-1.6.exe`（约 2.9 MB）。静默安装到 `%TEMP%` 随机目录（`/NOICONS`，不运行程序）：文件版本 1.6.0.0；放入一个模拟的 `.previous-*` 更新备份后静默卸载：安装目录被完整移除，`%APPDATA%\Claude-Second`、`Claude-Profile-03`、`%LOCALAPPDATA%\Claude-Data`、`Claude-MultiLauncher` 均保留，卸载注册表项已清除。
+- `scripts/setup.ps1`：生成 `ClaudeLauncherSetup-1.6.0.exe`（约 2.9 MB）。静默安装到 `%TEMP%` 随机目录（`/NOICONS`，不运行程序）：文件版本 1.6.0.0；放入一个模拟的 `.previous-*` 更新备份后静默卸载：安装目录被完整移除，`%APPDATA%\Claude-Second`、`Claude-Profile-03`、`%LOCALAPPDATA%\Claude-Data`、`Claude-MultiLauncher` 均保留，卸载注册表项已清除。随后测试覆盖安装：先装到随机目录并放入模拟 `.previous-*` 备份，再静默运行同一 Setup——旧版先被静默卸载（备份被移除），新版装回同一目录，卸载程序仍为 `unins000`；最后卸载，目录与注册表项清除，账号目录保留。启动器运行中时的关闭流程未测（未启动启动器）。
 - `scripts/test-install.ps1`：见 STATUS 本轮记录。
 
 ### GUI / 真实实例（本轮未执行）

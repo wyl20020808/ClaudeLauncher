@@ -6,6 +6,8 @@
 #import <unistd.h>
 #import <errno.h>
 #import <sys/stat.h>
+#import <Security/Security.h>
+#import <CommonCrypto/CommonDigest.h>
 
 static NSString * const BundleID = @"local.claude.profile-launcher";
 static NSString * const WakeNotification = @"local.claude.profile-launcher.show";
@@ -80,6 +82,137 @@ static NSString *DeleteBlocker(NSInteger account, NSArray *pids, BOOL starting) 
     if (starting || pids.count) return @"该账号正在运行或启动中。请先在 Claude 中正常退出（⌘Q），再删除。";
     return nil;
 }
+// ---- Updates (docs/SPEC.md「更新与安装」) ----
+static NSString * const ReleasesPage = @"https://github.com/wyl20020808/ClaudeLauncher/releases";
+static NSString * const GitHubDownloads = @"https://github.com/wyl20020808/ClaudeLauncher/releases/latest/download/";
+static const long long UpdateSizeLimit = 50LL*1024*1024;
+static NSData *DERWrap(uint8_t tag, NSData *content) {
+    NSMutableData *out = [NSMutableData dataWithBytes:&tag length:1];
+    NSUInteger length = content.length;
+    if (length < 128) { uint8_t byte = (uint8_t)length; [out appendBytes:&byte length:1]; }
+    else {
+        uint8_t bytes[sizeof(NSUInteger)]; int count = 0;
+        for (NSUInteger value = length; value; value >>= 8) bytes[count++] = value & 0xff;
+        uint8_t first = 0x80 | (uint8_t)count; [out appendBytes:&first length:1];
+        for (int i = count-1; i >= 0; i--) [out appendBytes:&bytes[i] length:1];
+    }
+    [out appendData:content]; return out;
+}
+static NSData *DERInteger(NSData *value) {
+    NSMutableData *bytes = [value mutableCopy];
+    while (bytes.length > 1 && ((const uint8_t *)bytes.bytes)[0] == 0) [bytes replaceBytesInRange:NSMakeRange(0,1) withBytes:NULL length:0];
+    if (bytes.length && (((const uint8_t *)bytes.bytes)[0] & 0x80)) { uint8_t zero = 0; [bytes replaceBytesInRange:NSMakeRange(0,0) withBytes:&zero length:1]; }
+    return DERWrap(0x02, bytes);
+}
+// The release key is published as .NET RSAKeyValue XML (Windows side). Build a PKCS#1 RSAPublicKey from it.
+static SecKeyRef PublicKeyFromXML(NSString *xml) CF_RETURNS_RETAINED {
+    NSString *(^field)(NSString *) = ^NSString *(NSString *name) {
+        NSRange open = [xml rangeOfString:[NSString stringWithFormat:@"<%@>",name]], close = [xml rangeOfString:[NSString stringWithFormat:@"</%@>",name]];
+        if (open.location == NSNotFound || close.location == NSNotFound || NSMaxRange(open) > close.location) return nil;
+        return [xml substringWithRange:NSMakeRange(NSMaxRange(open),close.location-NSMaxRange(open))];
+    };
+    NSData *modulus = [[NSData alloc] initWithBase64EncodedString:field(@"Modulus") ?: @"" options:0];
+    NSData *exponent = [[NSData alloc] initWithBase64EncodedString:field(@"Exponent") ?: @"" options:0];
+    if (modulus.length < 256 || !exponent.length) return NULL;
+    NSMutableData *sequence = [DERInteger(modulus) mutableCopy]; [sequence appendData:DERInteger(exponent)];
+    return SecKeyCreateWithData((__bridge CFDataRef)DERWrap(0x30,sequence), (__bridge CFDictionaryRef)@{(id)kSecAttrKeyType:(id)kSecAttrKeyTypeRSA,(id)kSecAttrKeyClass:(id)kSecAttrKeyClassPublic}, NULL);
+}
+static SecKeyRef ReleaseKey(void) {
+    static SecKeyRef key; static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSString *xml = [NSString stringWithContentsOfFile:[NSBundle.mainBundle pathForResource:@"update-public-key" ofType:@"xml"] encoding:NSUTF8StringEncoding error:nil];
+        key = xml ? PublicKeyFromXML(xml) : NULL;
+    });
+    return key;
+}
+static NSComparisonResult CompareVersions(NSString *a, NSString *b) {
+    NSArray *x = [a componentsSeparatedByString:@"."], *y = [b componentsSeparatedByString:@"."];
+    for (NSUInteger i = 0; i < MAX(x.count,y.count); i++) {
+        NSInteger p = i < x.count ? [x[i] integerValue] : 0, q = i < y.count ? [y[i] integerValue] : 0;
+        if (p != q) return p < q ? NSOrderedAscending : NSOrderedDescending;
+    }
+    return NSOrderedSame;
+}
+static BOOL Matches(id value, NSString *pattern) {
+    return [value isKindOfClass:NSString.class] && [value rangeOfString:pattern options:NSRegularExpressionSearch].location != NSNotFound;
+}
+static NSString *SHA256Hex(NSData *data) {
+    unsigned char digest[CC_SHA256_DIGEST_LENGTH]; CC_SHA256(data.bytes,(CC_LONG)data.length,digest);
+    NSMutableString *hex = [NSMutableString string];
+    for (int i = 0; i < CC_SHA256_DIGEST_LENGTH; i++) [hex appendFormat:@"%02x",digest[i]];
+    return hex;
+}
+// Validates shape and RSA-SHA256 (PKCS#1 v1.5) signature of latest-macos.json. Returns the manifest or nil with *failure set.
+static NSDictionary *VerifyManifest(NSData *data, SecKeyRef key, NSString **failure) {
+    *failure = @"更新清单格式无效。";
+    if (!data.length || data.length > 16384) { *failure = @"更新清单过大或为空。"; return nil; }
+    NSDictionary *m = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+    if (![m isKindOfClass:NSDictionary.class]) return nil;
+    NSString *version = m[@"version"]; NSNumber *size = m[@"size"];
+    if (![m[@"platform"] isEqual:@"macos"] || !Matches(version,@"^[0-9]{1,4}\\.[0-9]{1,4}\\.[0-9]{1,4}$")) return nil;
+    if (![m[@"file"] isEqual:[NSString stringWithFormat:@"Claude多开启动器-%@.dmg",version]]) return nil;
+    if (![size isKindOfClass:NSNumber.class] || size.doubleValue != size.longLongValue || size.longLongValue < 1024 || size.longLongValue > UpdateSizeLimit) return nil;
+    if (!Matches(m[@"sha256"],@"^[a-f0-9]{64}$") || !Matches(m[@"minimumOS"],@"^[0-9]{1,3}(\\.[0-9]{1,3}){0,2}$") || ![m[@"signature"] isKindOfClass:NSString.class]) return nil;
+    NSData *signature = [[NSData alloc] initWithBase64EncodedString:m[@"signature"] options:0];
+    NSString *payload = [NSString stringWithFormat:@"macos\n%@\n%@\n%lld\n%@\n",version,m[@"file"],size.longLongValue,m[@"sha256"]];
+    if (!key || !signature || !SecKeyVerifySignature(key, kSecKeyAlgorithmRSASignatureMessagePKCS1v15SHA256, (__bridge CFDataRef)[payload dataUsingEncoding:NSUTF8StringEncoding], (__bridge CFDataRef)signature, NULL)) {
+        *failure = @"更新清单签名无效，已拒绝。"; return nil;
+    }
+    *failure = nil; return m;
+}
+// Only GitHub may redirect, and only to its own download hosts; the self-hosted source may not redirect at all.
+static BOOL RedirectAllowed(NSURL *url, BOOL github) {
+    if (!github || ![url.scheme isEqual:@"https"]) return NO;
+    return [@[@"github.com",@"objects.githubusercontent.com",@"release-assets.githubusercontent.com"] containsObject:url.host.lowercaseString];
+}
+// The running app may replace itself only from a normal, writable .app location (not App Translocation or a mounted image).
+static NSString *InstallBlocker(NSString *bundlePath) {
+    if (![bundlePath.pathExtension isEqual:@"app"] || [bundlePath containsString:@"/AppTranslocation/"] || [bundlePath hasPrefix:@"/Volumes/"])
+        return @"请先把启动器拖到「应用程序」文件夹并从那里打开，再检查更新。";
+    if (![NSFileManager.defaultManager isWritableFileAtPath:bundlePath.stringByDeletingLastPathComponent]) return @"没有写入应用所在文件夹的权限，无法自动安装。";
+    return nil;
+}
+// New app must satisfy the running app's designated requirement (same bundle id and signing certificate).
+static NSString *SameSigner(NSString *candidate) {
+    SecCodeRef me = NULL; SecRequirementRef requirement = NULL; SecStaticCodeRef other = NULL; NSString *failure = nil;
+    if (SecCodeCopySelf(kSecCSDefaultFlags,&me) || SecCodeCopyDesignatedRequirement(me,kSecCSDefaultFlags,&requirement)) failure = @"无法读取当前应用的签名要求。";
+    else if (SecStaticCodeCreateWithPath((__bridge CFURLRef)[NSURL fileURLWithPath:candidate],kSecCSDefaultFlags,&other)) failure = @"无法读取新版本的签名。";
+    else if (SecStaticCodeCheckValidity(other,kSecCSCheckAllArchitectures|kSecCSStrictValidate|kSecCSCheckNestedCode,requirement)) failure = @"新版本与当前版本的签名证书不一致或签名无效，已拒绝更新。";
+    if (me) CFRelease(me); if (requirement) CFRelease(requirement); if (other) CFRelease(other);
+    return failure;
+}
+@interface RedirectGuard : NSObject <NSURLSessionTaskDelegate>
+@property BOOL github;
+@end
+@implementation RedirectGuard
+- (void)URLSession:(NSURLSession *)session task:(NSURLSessionTask *)task willPerformHTTPRedirection:(NSHTTPURLResponse *)response newRequest:(NSURLRequest *)request completionHandler:(void (^)(NSURLRequest *))completionHandler {
+    completionHandler(RedirectAllowed(request.URL,self.github) ? request : nil);
+}
+@end
+static void Fetch(NSURL *url, BOOL github, long long limit, NSTimeInterval timeout, void (^done)(NSData *data, NSString *failure)) {
+    if (![url.scheme isEqual:@"https"]) { done(nil,@"更新地址必须使用 HTTPS。"); return; }
+    RedirectGuard *guard = [RedirectGuard new]; guard.github = github;
+    NSURLSessionConfiguration *config = NSURLSessionConfiguration.ephemeralSessionConfiguration;
+    config.timeoutIntervalForRequest = 15; config.timeoutIntervalForResource = timeout; config.requestCachePolicy = NSURLRequestReloadIgnoringLocalCacheData;
+    config.HTTPAdditionalHeaders = @{@"User-Agent":[@"ClaudeProfileLauncher/" stringByAppendingString:[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"0"]};
+    NSURLSession *session = [NSURLSession sessionWithConfiguration:config delegate:guard delegateQueue:nil];
+    [[session dataTaskWithURL:url completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        NSInteger status = [response isKindOfClass:NSHTTPURLResponse.class] ? ((NSHTTPURLResponse *)response).statusCode : 0;
+        NSString *failure = error ? error.localizedDescription : status != 200 ? [NSString stringWithFormat:@"服务器返回 %ld。",(long)status] : (long long)data.length > limit ? @"下载内容超出上限。" : nil;
+        [session finishTasksAndInvalidate];
+        dispatch_async(dispatch_get_main_queue(), ^{ done(failure ? nil : data, failure); });
+    }] resume];
+}
+static NSString *RunTool(NSString *path, NSArray<NSString *> *arguments, NSData **output) {
+    NSTask *task = [NSTask new]; task.executableURL = [NSURL fileURLWithPath:path]; task.arguments = arguments;
+    NSPipe *pipe = [NSPipe pipe]; task.standardOutput = pipe; task.standardError = [NSFileHandle fileHandleWithNullDevice];
+    NSError *error = nil;
+    if (![task launchAndReturnError:&error]) return error.localizedDescription;
+    NSData *data = [pipe.fileHandleForReading readDataToEndOfFile]; [task waitUntilExit];
+    if (output) *output = data;
+    return task.terminationStatus == 0 ? nil : [NSString stringWithFormat:@"%@ 执行失败（%d）。",path.lastPathComponent,task.terminationStatus];
+}
+
 static BOOL LoginConflict(NSDictionary<NSNumber *,NSArray *> *processes, NSInteger account) {
     for (NSNumber *key in processes) if (key.integerValue != account && [processes[key] count]) return YES;
     return NO;
@@ -385,6 +518,7 @@ static const unsigned CardFill = 0xFFFCF7;
 @property NSView *rowsView;
 @property NSArray<NSTextField *> *stats;
 @property NSTextField *tableFooter;
+@property BOOL updating;
 @property NSString *lastLogged;
 @property NSTextField *accessibilityStatus;
 @property NSTextField *message;
@@ -430,6 +564,10 @@ static const unsigned CardFill = 0xFFFCF7;
     NSInteger savedLogin = [NSUserDefaults.standardUserDefaults integerForKey:@"loginProtectionAccount"];
     self.loginAccount = savedLogin >= 1 && savedLogin <= 10 ? savedLogin : 0;
     [self makeWindow]; [self refresh]; [self show:nil];
+    [self finishPendingUpdate];
+    NSDate *lastCheck = [NSUserDefaults.standardUserDefaults objectForKey:@"lastUpdateCheck"];
+    if (![lastCheck isKindOfClass:NSDate.class] || -lastCheck.timeIntervalSinceNow > 24*3600)
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(8*NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ [self runUpdateCheck:NO]; });
     self.timer = [NSTimer scheduledTimerWithTimeInterval:1.0 target:self selector:@selector(refresh) userInfo:nil repeats:YES];
 }
 - (void)alert:(NSString *)title detail:(NSString *)detail {
@@ -640,6 +778,7 @@ static const unsigned CardFill = 0xFFFCF7;
     reveal.frame = NSMakeRect(522,594,210,28); reveal.bordered = NO; reveal.transparent = YES; reveal.toolTip = @"在 Finder 中显示";
     [page addSubview:reveal];
     ActionButton *reset = [self toolButton:@"恢复默认" symbol:nil frame:NSMakeRect(530,642,100,38) action:nil]; [page addSubview:reset];
+    [page addSubview:[self toolButton:@"检查更新" symbol:@"arrow.down.circle" frame:NSMakeRect(640,56,132,44) action:@selector(checkForUpdates:)]];
     ActionButton *save = [self toolButton:@"保存设置" symbol:@"checkmark.circle" frame:NSMakeRect(640,642,116,38) action:nil]; save.primary = YES; [page addSubview:save];
     return page;
 }
@@ -663,6 +802,115 @@ static const unsigned CardFill = 0xFFFCF7;
     for (NSDictionary *entry in self.logEntries.reverseObjectEnumerator) [out appendFormat:@"%@\t%@\t%@\t%@\n",entry[@"time"],entry[@"level"],entry[@"instance"],entry[@"text"]];
     NSError *error = nil;
     if (![out writeToURL:panel.URL atomically:YES encoding:NSUTF8StringEncoding error:&error]) [self alert:@"导出失败" detail:error.localizedDescription];
+}
+// ---- Updates: self-hosted first, then GitHub Releases, then manual download. ----
+- (NSArray<NSDictionary *> *)updateSources {
+    NSMutableArray *sources = [NSMutableArray array];
+    NSString *base = [NSBundle.mainBundle objectForInfoDictionaryKey:@"ClaudeLauncherUpdateBaseURL"];
+    if ([base isKindOfClass:NSString.class] && [base hasPrefix:@"https://"]) [sources addObject:@{@"name":@"自建更新服务",@"base":[base hasSuffix:@"/"] ? base : [base stringByAppendingString:@"/"],@"github":@NO}];
+    [sources addObject:@{@"name":@"GitHub",@"base":GitHubDownloads,@"github":@YES}];
+    return sources;
+}
+- (void)checkForUpdates:(id)sender { [self runUpdateCheck:YES]; }
+- (void)runUpdateCheck:(BOOL)manual {
+    if (self.updating) { if (manual) [self alert:@"正在检查更新" detail:@"请稍候。"]; return; }
+    self.updating = YES;
+    [NSUserDefaults.standardUserDefaults setObject:[NSDate date] forKey:@"lastUpdateCheck"];
+    [self trySource:0 failures:@[] manual:manual];
+}
+- (void)updateFailed:(NSArray<NSString *> *)failures manual:(BOOL)manual {
+    self.updating = NO;
+    NSString *detail = [failures componentsJoinedByString:@"\n"];
+    [self addLog:[@"检查更新失败：" stringByAppendingString:[failures componentsJoinedByString:@"；"]]];
+    if (!manual) return;
+    NSAlert *alert = [NSAlert new]; alert.messageText = @"自动更新失败";
+    alert.informativeText = [detail stringByAppendingString:@"\n\n可以前往 GitHub 手动下载最新版本。"];
+    [alert addButtonWithTitle:@"前往 GitHub 下载"]; [alert addButtonWithTitle:@"关闭"];
+    if ([alert runModal] == NSAlertFirstButtonReturn) [NSWorkspace.sharedWorkspace openURL:[NSURL URLWithString:ReleasesPage]];
+}
+- (void)trySource:(NSUInteger)index failures:(NSArray<NSString *> *)failures manual:(BOOL)manual {
+    NSArray *sources = [self updateSources];
+    if (index >= sources.count) { [self updateFailed:failures manual:manual]; return; }
+    NSDictionary *source = sources[index]; BOOL github = [source[@"github"] boolValue];
+    NSArray *(^failed)(NSString *) = ^NSArray *(NSString *why) { return [failures arrayByAddingObject:[NSString stringWithFormat:@"%@：%@",source[@"name"],why]]; };
+    Fetch([NSURL URLWithString:[source[@"base"] stringByAppendingString:@"latest-macos.json"]], github, 16384, 30, ^(NSData *data, NSString *failure) {
+        NSString *invalid = failure;
+        NSDictionary *manifest = data ? VerifyManifest(data, ReleaseKey(), &invalid) : nil;
+        if (!manifest) { [self trySource:index+1 failures:failed(invalid) manual:manual]; return; }
+        NSString *current = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"0";
+        if (CompareVersions(manifest[@"version"],current) != NSOrderedDescending) {
+            self.updating = NO;
+            if (manual) [self alert:@"已是最新版本" detail:[NSString stringWithFormat:@"当前版本 %@。",current]];
+            return;
+        }
+        NSArray *minimum = [manifest[@"minimumOS"] componentsSeparatedByString:@"."];
+        NSOperatingSystemVersion need = {[minimum[0] integerValue], minimum.count > 1 ? [minimum[1] integerValue] : 0, minimum.count > 2 ? [minimum[2] integerValue] : 0};
+        if (![NSProcessInfo.processInfo isOperatingSystemAtLeastVersion:need]) {
+            self.updating = NO;
+            if (manual) [self alert:@"新版本需要更高的系统版本" detail:[NSString stringWithFormat:@"%@ 需要 macOS %@ 及以上。",manifest[@"version"],manifest[@"minimumOS"]]];
+            return;
+        }
+        NSString *blocker = InstallBlocker(NSBundle.mainBundle.bundlePath);
+        NSAlert *offer = [NSAlert new];
+        offer.messageText = [NSString stringWithFormat:@"发现新版本 %@",manifest[@"version"]];
+        offer.informativeText = blocker ?: [NSString stringWithFormat:@"当前版本 %@。更新会先校验安装包，再退出启动器、替换旧版并重新打开；Claude 实例和账号数据不受影响。",current];
+        [offer addButtonWithTitle:blocker ? @"前往 GitHub 下载" : @"立即更新"]; [offer addButtonWithTitle:@"稍后"];
+        if ([offer runModal] != NSAlertFirstButtonReturn) { self.updating = NO; return; }
+        if (blocker) { self.updating = NO; [NSWorkspace.sharedWorkspace openURL:[NSURL URLWithString:ReleasesPage]]; return; }
+        [self addLog:[NSString stringWithFormat:@"正在从%@下载 %@",source[@"name"],manifest[@"file"]]];
+        Fetch([NSURL URLWithString:[source[@"base"] stringByAppendingString:[manifest[@"file"] stringByAddingPercentEncodingWithAllowedCharacters:NSCharacterSet.URLPathAllowedCharacterSet]]], github, UpdateSizeLimit, 300, ^(NSData *package, NSString *downloadFailure) {
+            NSString *problem = downloadFailure ?: (long long)package.length != [manifest[@"size"] longLongValue] || ![SHA256Hex(package) isEqual:manifest[@"sha256"]] ? @"安装包大小或 SHA-256 不匹配，已拒绝。" : nil;
+            if (problem) { [self trySource:index+1 failures:failed(problem) manual:YES]; return; }
+            [self installPackage:package version:manifest[@"version"]];
+        });
+    });
+}
+- (void)installPackage:(NSData *)package version:(NSString *)version {
+    NSString *current = NSBundle.mainBundle.bundlePath, *folder = current.stringByDeletingLastPathComponent;
+    NSString *token = NSUUID.UUID.UUIDString;
+    NSString *staged = [folder stringByAppendingPathComponent:[NSString stringWithFormat:@".%@-update-%@.app",current.lastPathComponent.stringByDeletingPathExtension,token]];
+    NSString *backup = [folder stringByAppendingPathComponent:[NSString stringWithFormat:@".%@-backup-%@.app",current.lastPathComponent.stringByDeletingPathExtension,token]];
+    NSString *helper = [NSBundle.mainBundle pathForResource:@"update-helper" ofType:@"sh"];
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0), ^{
+        NSFileManager *fm = NSFileManager.defaultManager;
+        NSString *work = [NSTemporaryDirectory() stringByAppendingPathComponent:[@"claude-launcher-update-" stringByAppendingString:token]];
+        NSString *dmg = [work stringByAppendingPathComponent:@"update.dmg"], *mount = [work stringByAppendingPathComponent:@"mount"], *script = [work stringByAppendingPathComponent:@"update-helper.sh"];
+        NSString *failure = nil; BOOL mounted = NO;
+        if (!helper || ![fm createDirectoryAtPath:mount withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions:@0700} error:nil] || ![package writeToFile:dmg atomically:YES] || ![fm copyItemAtPath:helper toPath:script error:nil]) failure = @"无法准备临时文件。";
+        if (!failure) { failure = RunTool(@"/usr/bin/hdiutil", @[@"attach",@"-nobrowse",@"-readonly",@"-noautoopen",@"-mountpoint",mount,dmg], NULL); mounted = !failure; }
+        NSString *candidate = [mount stringByAppendingPathComponent:current.lastPathComponent];
+        if (!failure) {
+            NSDictionary *info = [NSDictionary dictionaryWithContentsOfFile:[candidate stringByAppendingPathComponent:@"Contents/Info.plist"]];
+            if (![info[@"CFBundleIdentifier"] isEqual:BundleID] || ![info[@"CFBundleShortVersionString"] isEqual:version]) failure = @"安装包中的应用标识或版本与清单不符。";
+        }
+        if (!failure) failure = SameSigner(candidate);
+        if (!failure) failure = RunTool(@"/usr/bin/ditto", @[candidate,staged], NULL);
+        if (mounted) RunTool(@"/usr/bin/hdiutil", @[@"detach",@"-quiet",mount], NULL);
+        if (!failure) failure = SameSigner(staged);
+        if (failure) [fm removeItemAtPath:staged error:nil];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (failure) { [fm removeItemAtPath:work error:nil]; [self updateFailed:@[failure] manual:YES]; return; }
+            NSTask *task = [NSTask new]; task.executableURL = [NSURL fileURLWithPath:@"/bin/zsh"];
+            task.arguments = @[script,[NSString stringWithFormat:@"%d",getpid()],current,staged,backup];
+            NSError *error = nil;
+            if (![task launchAndReturnError:&error]) { [fm removeItemAtPath:staged error:nil]; [self updateFailed:@[error.localizedDescription ?: @"无法启动安装步骤。"] manual:YES]; return; }
+            [NSUserDefaults.standardUserDefaults setObject:backup forKey:@"updateBackupPath"];
+            [NSUserDefaults.standardUserDefaults synchronize];
+            [self addLog:[NSString stringWithFormat:@"更新包校验通过，退出并安装 %@",version]];
+            [NSApp terminate:nil];
+        });
+    });
+}
+// After a successful replacement the previous version waits as a hidden backup next to the app; move it to the Trash.
+- (void)finishPendingUpdate {
+    NSString *backup = [NSUserDefaults.standardUserDefaults stringForKey:@"updateBackupPath"];
+    if (!backup) return;
+    [NSUserDefaults.standardUserDefaults removeObjectForKey:@"updateBackupPath"];
+    NSString *current = NSBundle.mainBundle.bundlePath;
+    NSString *prefix = [NSString stringWithFormat:@".%@-backup-",current.lastPathComponent.stringByDeletingPathExtension];
+    if (![backup.stringByDeletingLastPathComponent isEqual:current.stringByDeletingLastPathComponent] || ![backup.lastPathComponent hasPrefix:prefix] || ![backup.pathExtension isEqual:@"app"]) return;
+    if ([NSFileManager.defaultManager fileExistsAtPath:backup] && [NSFileManager.defaultManager trashItemAtURL:[NSURL fileURLWithPath:backup] resultingItemURL:nil error:nil])
+        [self addLog:[NSString stringWithFormat:@"已更新到 %@，旧版本已移到废纸篓",[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"]]];
 }
 - (void)makeWindow {
     NSApp.appearance = [NSAppearance appearanceNamed:NSAppearanceNameAqua]; // Artwork is light-only.
@@ -761,6 +1009,7 @@ static const unsigned CardFill = 0xFFFCF7;
     NSMenu *menu = [NSMenu new]; NSMenuItem *appItem = [NSMenuItem new]; [menu addItem:appItem];
     NSMenu *appMenu = [NSMenu new]; appItem.submenu = appMenu;
     NSMenuItem *show = [appMenu addItemWithTitle:@"显示账号窗口" action:@selector(show:) keyEquivalent:@"0"]; show.target = self;
+    NSMenuItem *update = [appMenu addItemWithTitle:@"检查更新…" action:@selector(checkForUpdates:) keyEquivalent:@""]; update.target = self;
     [appMenu addItem:NSMenuItem.separatorItem];
     [appMenu addItemWithTitle:@"退出 Claude 启动器" action:@selector(terminate:) keyEquivalent:@"q"];
     NSApp.mainMenu = menu;
@@ -1225,6 +1474,47 @@ static int SelfTest(void) {
         puts("PASS: login conflict guard, delete guards, duplicate overrides, exact paths, symlink and hardlink rejection; synthetic fixtures only");
         puts("PASS: profile mapping, helper/CLI filtering, malformed arguments, kernel argv");
         puts("PASS: login admission, per-account operation guards, conservative Code status, concurrent metadata checks with main-queue completion");
+        // Update verification with a throwaway key: XML key round trip, signed manifest, tampering, versions, redirects, install paths.
+        SecKeyRef privateKey = SecKeyCreateRandomKey((__bridge CFDictionaryRef)@{(id)kSecAttrKeyType:(id)kSecAttrKeyTypeRSA,(id)kSecAttrKeySizeInBits:@2048}, NULL);
+        NSCAssert(privateKey,@"test key");
+        SecKeyRef publicKey = SecKeyCopyPublicKey(privateKey);
+        NSData *pkcs1 = CFBridgingRelease(SecKeyCopyExternalRepresentation(publicKey,NULL));
+        // Test-only reader for SEQUENCE { INTEGER modulus, INTEGER exponent }, to produce the XML form the Windows side publishes.
+        NSData *(^readInteger)(const uint8_t **) = ^NSData *(const uint8_t **p) {
+            NSCAssert(**p == 0x02,@"integer tag"); (*p)++;
+            NSUInteger length = *(*p)++;
+            if (length & 0x80) { NSUInteger count = length & 0x7f; length = 0; while (count--) length = (length << 8) | *(*p)++; }
+            NSData *value = [NSData dataWithBytes:*p length:length]; *p += length; return value;
+        };
+        const uint8_t *cursor = pkcs1.bytes; NSCAssert(*cursor == 0x30,@"sequence"); cursor++;
+        cursor += (*cursor & 0x80) ? 1 + (*cursor & 0x7f) : 1;
+        NSData *modulus = readInteger(&cursor), *exponent = readInteger(&cursor);
+        NSString *xml = [NSString stringWithFormat:@"<RSAKeyValue><Modulus>%@</Modulus><Exponent>%@</Exponent></RSAKeyValue>",[modulus base64EncodedStringWithOptions:0],[exponent base64EncodedStringWithOptions:0]];
+        SecKeyRef rebuilt = PublicKeyFromXML(xml);
+        NSCAssert(rebuilt && [CFBridgingRelease(SecKeyCopyExternalRepresentation(rebuilt,NULL)) isEqual:pkcs1],@"XML key rebuilds identical PKCS#1");
+        NSString *(^sign)(NSDictionary *) = ^NSString *(NSDictionary *m) {
+            NSString *payload = [NSString stringWithFormat:@"%@\n%@\n%@\n%lld\n%@\n",m[@"platform"],m[@"version"],m[@"file"],[m[@"size"] longLongValue],m[@"sha256"]];
+            return [CFBridgingRelease(SecKeyCreateSignature(privateKey,kSecKeyAlgorithmRSASignatureMessagePKCS1v15SHA256,(__bridge CFDataRef)[payload dataUsingEncoding:NSUTF8StringEncoding],NULL)) base64EncodedStringWithOptions:0];
+        };
+        NSData *(^json)(NSDictionary *) = ^NSData *(NSDictionary *m) { return [NSJSONSerialization dataWithJSONObject:m options:0 error:nil]; };
+        NSMutableDictionary *good = [@{@"platform":@"macos",@"version":@"1.8.0",@"file":@"Claude多开启动器-1.8.0.dmg",@"size":@2048,@"sha256":SHA256Hex([NSData data]),@"minimumOS":@"12.0"} mutableCopy];
+        good[@"signature"] = sign(good);
+        NSString *why = nil;
+        NSCAssert(VerifyManifest(json(good),rebuilt,&why) && !why,@"signed manifest accepted");
+        NSMutableDictionary *tampered = [good mutableCopy]; tampered[@"sha256"] = SHA256Hex([@"x" dataUsingEncoding:NSUTF8StringEncoding]);
+        NSCAssert(!VerifyManifest(json(tampered),rebuilt,&why) && [why containsString:@"签名"],@"tampered hash rejected by signature");
+        for (NSArray *change in @[@[@"platform",@"windows"],@[@"file",@"evil.dmg"],@[@"size",@(UpdateSizeLimit+1)],@[@"version",@"1.8"],@[@"sha256",@"ABC"]]) {
+            NSMutableDictionary *bad = [good mutableCopy]; bad[change[0]] = change[1]; bad[@"signature"] = sign(bad);
+            NSCAssert(!VerifyManifest(json(bad),rebuilt,&why),@"signed but malformed manifest rejected: %@",change[0]);
+        }
+        NSCAssert(!VerifyManifest([NSMutableData dataWithLength:20000],rebuilt,&why),@"oversized manifest rejected");
+        CFRelease(rebuilt); CFRelease(publicKey); CFRelease(privateKey);
+        NSCAssert(CompareVersions(@"1.7.0",@"1.6") == NSOrderedDescending && CompareVersions(@"1.6.0",@"1.6") == NSOrderedSame && CompareVersions(@"1.10.0",@"1.9.9") == NSOrderedDescending,@"numeric version order");
+        NSCAssert(RedirectAllowed([NSURL URLWithString:@"https://objects.githubusercontent.com/x"],YES) && !RedirectAllowed([NSURL URLWithString:@"https://evil.example/x"],YES) && !RedirectAllowed([NSURL URLWithString:@"https://github.com/x"],NO) && !RedirectAllowed([NSURL URLWithString:@"http://github.com/x"],YES),@"redirect allowlist");
+        NSCAssert(InstallBlocker(@"/private/var/folders/x/AppTranslocation/y/Claude 启动器.app") && InstallBlocker(@"/Volumes/Claude/Claude 启动器.app") && InstallBlocker(@"/tmp/not-an-app"),@"unsafe install locations rejected");
+        SecKeyRef bundled = ReleaseKey();
+        NSCAssert(bundled && SecKeyGetBlockSize(bundled) == 384,@"bundled release key is RSA-3072");
+        puts("PASS: update manifest signature and tampering, XML key import, version order, redirect allowlist, install location, bundled RSA-3072 key");
     } return 0;
 }
 int main(int argc, const char *argv[]) {
@@ -1235,6 +1525,11 @@ int main(int argc, const char *argv[]) {
             if (failure) { puts(failure.UTF8String); return 1; }
             for (NSNumber *n in [[pids allKeys] sortedArrayUsingSelector:@selector(compare:)]) printf("account=%02d pids=%s\n",n.intValue,[pids[n] description].UTF8String);
             printf("accessibility=%s\n",AXIsProcessTrusted()?"yes":"no"); return 0;
+        }
+        if (argc > 2 && strcmp(argv[1],"--check-signer") == 0) {
+            // Development aid: would this app accept the given bundle as an update (same designated requirement)?
+            NSString *failure = SameSigner(@(argv[2]));
+            puts(failure ? failure.UTF8String : "same signer"); return failure ? 1 : 0;
         }
         if (argc > 2 && strcmp(argv[1],"--snapshot") == 0) {
             // Development aid: render the window offscreen to PNG without taking the instance lock or launching Claude.
