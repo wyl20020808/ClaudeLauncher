@@ -1,5 +1,19 @@
 # 项目状态
 
+## Windows 1.7.3 发布（2026-10-29，windows-v1.7.3）
+
+- 内容：下节“取较高版本”。版本号改为 1.7.3（`ebac307`），`build.ps1` 通过（LauncherTests 246 项、自检 140 项）。
+- 首次运行 `publish-release.ps1` 在带入 Mac 文件时停止（未上传、未改动）：Mac 1.7.6 清单由 Mac 密钥签名，脚本只认共用公钥。修正为 Mac 清单接受共用公钥或 `resources/update-public-key-macos.xml`，发布后复核同样适用（`5beb06a`）。
+- 只发布 Windows：标签 windows-v1.7.3（Latest，目标 `5beb06a`），含 `ClaudeLauncherSetup-1.7.3.exe`（2794723 字节）、`latest-windows.json`，以及从 macos-v1.7.6 原样带入并验签核对的 `ClaudeLauncher-1.7.6.dmg` 与 `latest-macos.json`。自建与 GitHub 复核：windows 1.7.3、macos 1.7.6 全部通过。
+- 未验证：客户端 1.7.2 → 1.7.3 的实际更新（1.7.2 仍按旧逻辑先查自建，自建已是 1.7.3）；1.7.3 起的进度窗口来源显示与取较高版本的 GUI 表现。
+
+## Windows 取较高版本（2026-10-29，feature/windows-higher-source，已随 1.7.3 发布）
+
+- 对齐 SPEC“来源与回退·取较高版本”：`Updates.CheckAll` 并发向自建与 GitHub 取 `latest-windows.json` 并各自验签，失败原因逐来源记录；`Updates.Candidates` 在通过的清单中取最高版本，同版本按自建优先排列。界面先比较版本再询问，下载失败或大小/SHA-256 不符换同版本下一个来源；只有全部来源无有效清单才算失败，列出各来源原因并提供“前往 GitHub 下载”。进度窗口新增“来源：…”一行。版本号未改（仍 1.7.2），未发布。
+- 自检（`--self-test` 140 项通过，新增 6 项）：自建落后选 GitHub；同版本自建优先、GitHub 备用；自建失败用 GitHub；全部失败为空；1.10.0 > 1.9.9；来源失败记录原因不抛出。`build.ps1`：LauncherTests 246 项、自检、离屏预览通过（下载状态截图含“来源：GitHub”）。
+- 实测（构建产物代码，非 GUI）：并发取两个真实来源均为 1.7.2，候选顺序“自建服务、GitHub”。
+- 未验证：桌面 GUI 中的实际更新流程（需发布新 Windows 版本后，从 1.7.2 以上版本触发）；自建落后场景的端到端更新。
+
 ## macOS 1.7.6 发布（2026-10-28）
 
 - `publish-macos.sh` 发布 macos-v1.7.6（Latest，目标 b06530d）：DMG 1768902 字节，sha256 bd0d6424617a864db46a1d9d21313fda4748335ff76eb74e2ee053b69c1efa65，Mac 私钥签名；Windows 1.7.2 文件原样带入并核对。
