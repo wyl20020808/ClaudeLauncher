@@ -7,7 +7,8 @@
 - SPEC 新增“常驻图标”（macOS 菜单栏、Windows 托盘，两端同一菜单）。
 - macOS：NSStatusItem，占位图（SF Symbol，单色模板），菜单每次打开重新扫描：显示窗口、本机账号（与主按钮同一检查流程）、检查更新、退出启动器。保留程序坞图标。
 - 构建与自检通过；新构建已运行。菜单栏图标是否可见、菜单点击：**未验证**（无截屏与界面操作权限，本机 macOS 27 的窗口列表中看不到状态栏窗口，需用户目视确认）。
-- 待办：替换为用户提供的图标；Windows 托盘由 Windows 端实现。
+- 图标：用户提供自有图标（源图背景已透明，无需抠图）。生成 AppIcon.icns（按 macOS 图标网格留白）、菜单栏单色模板图 menubar.png（36px，线条版：三层窗口 + 星芒）、Windows 用 icon_full_1024.png（无留白）；清除源图主体外的零散像素。构建改用自有图标，不再复制官方 Claude 图标，并在构建前清空输出应用。离屏截图确认侧栏 Logo 已更换。
+- 待办：Windows 托盘与 .ico 由 Windows 端用 resources/icon/icon_full_1024.png 生成。
 
 ## Windows 1.7.1 发布（2026-10-28，windows-v1.7.1）
 

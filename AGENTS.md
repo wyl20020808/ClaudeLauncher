@@ -3,7 +3,7 @@
 - 本项目使用 Objective-C / AppKit，保持日常运行不依赖 Python、Node.js。Windows 版在 windows/ 原生实现，同样遵守此要求。
 - 两端行为以 docs/SPEC.md 为准；修改行为时同步规格。
 - 日常开发在 dev 分支，验证后合并到 main。
-- 不修改、复制或重签官方 Claude.app；仅可复制官方图标。
+- 不修改、复制或重签官方 Claude.app。应用图标使用 resources/icon/ 中的自有图标，不再复制官方图标。
 - 固定账号目录不可迁移或覆盖，删除仅按下方删除规则。不得读取、复制、打印凭据，登录由用户自行完成。
 - 必须通过官方主进程和目录识别账号，排除 Helper、GPU、renderer、Claude Code CLI；按 PID 激活。
 - 不强杀 Claude，不以泛泛打开 bundle 代替目标 PID 激活。

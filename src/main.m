@@ -934,7 +934,7 @@ static const unsigned CardFill = 0xFFFCF7;
     Canvas *root = [[Canvas alloc] initWithFrame:NSMakeRect(0,0,1080,720)];
     root.paint = ^(NSRect bounds) { [paper setFill]; NSRectFill(bounds); };
     self.window.contentView = root;
-    NSImage *icon = [[NSImage alloc] initWithContentsOfFile:[NSBundle.mainBundle pathForResource:@"Claude" ofType:@"icns"]];
+    NSImage *icon = [[NSImage alloc] initWithContentsOfFile:[NSBundle.mainBundle pathForResource:@"AppIcon" ofType:@"icns"]];
     NSApp.applicationIconImage = icon;
 
     __weak Launcher *weakSelf = self;
