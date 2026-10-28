@@ -233,13 +233,50 @@ static void DrawCentered(NSString *text, NSRect rect, NSDictionary *attributes) 
 - (void)drawRect:(NSRect)dirtyRect { if (self.paint) self.paint(self.bounds); }
 @end
 
+static NSImage *Tinted(NSString *symbol, CGFloat size, NSColor *color) {
+    NSImage *image = [[NSImage imageWithSystemSymbolName:symbol accessibilityDescription:nil] imageWithSymbolConfiguration:[NSImageSymbolConfiguration configurationWithPointSize:size weight:NSFontWeightRegular]];
+    if (!image) return nil;
+    return [NSImage imageWithSize:image.size flipped:NO drawingHandler:^BOOL(NSRect rect) {
+        [image drawInRect:rect]; [color set]; NSRectFillUsingOperation(rect, NSCompositingOperationSourceAtop); return YES;
+    }];
+}
+static NSFont *TitleFont(CGFloat size) {
+    return [NSFont fontWithName:@"Songti SC Bold" size:size] ?: [NSFont systemFontOfSize:size weight:NSFontWeightBold];
+}
+// Rounded translucent panel used by tables, stat cards and settings groups; lets the page background show through.
+static void DrawPanel(NSRect rect, CGFloat radius, CGFloat alpha) {
+    NSBezierPath *path = [NSBezierPath bezierPathWithRoundedRect:rect xRadius:radius yRadius:radius];
+    [[Hex(0xFFFDFA) colorWithAlphaComponent:alpha] setFill]; [path fill];
+    [Hex(0xEDE4D8) setStroke]; path.lineWidth = 1; [path stroke];
+}
+// Static input lookalike: optional leading symbol, text, optional trailing chevron. Visual placeholder only.
+static void DrawField(NSRect rect, NSString *symbol, NSString *text, NSColor *color, BOOL chevron) {
+    DrawPanel(rect, 10, 0.92);
+    CGFloat x = NSMinX(rect)+14;
+    if (symbol) { NSImage *icon = Tinted(symbol, 13, Hex(0x6E655C)); [icon drawInRect:NSMakeRect(x,NSMidY(rect)-icon.size.height/2,icon.size.width,icon.size.height) fromRect:NSZeroRect operation:NSCompositingOperationSourceOver fraction:1 respectFlipped:YES hints:nil]; x += 26; }
+    NSDictionary *attributes = @{NSFontAttributeName:[NSFont systemFontOfSize:13],NSForegroundColorAttributeName:color};
+    NSMutableParagraphStyle *clip = [NSMutableParagraphStyle new]; clip.lineBreakMode = NSLineBreakByTruncatingMiddle;
+    NSMutableDictionary *clipped = [attributes mutableCopy]; clipped[NSParagraphStyleAttributeName] = clip;
+    CGFloat height = [text sizeWithAttributes:attributes].height;
+    [text drawInRect:NSMakeRect(x,NSMidY(rect)-height/2,NSMaxX(rect)-x-(chevron ? 34 : 12),height) withAttributes:clipped];
+    if (chevron) { NSImage *down = Tinted(@"chevron.down", 10, Hex(0x6E655C)); [down drawInRect:NSMakeRect(NSMaxX(rect)-28,NSMidY(rect)-down.size.height/2,down.size.width,down.size.height) fromRect:NSZeroRect operation:NSCompositingOperationSourceOver fraction:1 respectFlipped:YES hints:nil]; }
+}
+static void DrawToggle(NSRect rect, BOOL on) {
+    [(on ? Hex(0xA8765A) : Hex(0xE6DED4)) setFill]; [[NSBezierPath bezierPathWithRoundedRect:rect xRadius:NSHeight(rect)/2 yRadius:NSHeight(rect)/2] fill];
+    CGFloat knob = NSHeight(rect)-4;
+    [NSColor.whiteColor setFill]; [[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(on ? NSMaxX(rect)-knob-2 : NSMinX(rect)+2,NSMinY(rect)+2,knob,knob)] fill];
+}
+
 @interface ActionButton : NSButton
+@property NSString *symbol;   // Optional leading SF Symbol.
+@property CGFloat fontSize;   // 0 keeps the card-button default.
+@property BOOL primary;       // Filled brown style regardless of title.
 @end
 @implementation ActionButton
 - (void)drawRect:(NSRect)dirtyRect {
     NSRect rect = NSInsetRect(self.bounds,1,1);
-    BOOL pill = [self.title hasPrefix:@"+"], filled = pill || [self.title isEqualToString:@"打开"];
-    CGFloat radius = pill ? NSHeight(rect)/2 : 12;
+    BOOL pill = [self.title hasPrefix:@"+"], filled = self.primary || pill || [self.title isEqualToString:@"打开"];
+    CGFloat radius = pill ? NSHeight(rect)/2 : MIN(12,NSHeight(rect)/3);
     NSBezierPath *shape = [NSBezierPath bezierPathWithRoundedRect:rect xRadius:radius yRadius:radius];
     NSColor *fill = filled ? Hex(0xA8765A) : Hex(0xFFFFFF);
     NSColor *text = filled ? NSColor.whiteColor : [self.title isEqualToString:@"创建"] ? Hex(0x9A6447) : Hex(0x2B2622);
@@ -247,7 +284,14 @@ static void DrawCentered(NSString *text, NSRect rect, NSDictionary *attributes) 
     if (self.highlighted && self.enabled) fill = [fill blendedColorWithFraction:0.12 ofColor:NSColor.blackColor];
     [fill setFill]; [shape fill];
     if (!filled) { [Hex(0xE3D9CD) setStroke]; shape.lineWidth = 1; [shape stroke]; }
-    DrawCentered(self.title, self.bounds, @{NSFontAttributeName:[NSFont systemFontOfSize:pill ? 16 : 17 weight:NSFontWeightMedium],NSForegroundColorAttributeName:text});
+    NSDictionary *attributes = @{NSFontAttributeName:[NSFont systemFontOfSize:self.fontSize ?: (pill ? 16 : 17) weight:NSFontWeightMedium],NSForegroundColorAttributeName:text};
+    if (self.symbol) {
+        NSImage *icon = Tinted(self.symbol, (self.fontSize ?: 14)-1, text);
+        NSSize size = [self.title sizeWithAttributes:attributes];
+        CGFloat x = NSMidX(self.bounds)-(icon.size.width+8+size.width)/2;
+        [icon drawInRect:NSMakeRect(x,NSMidY(self.bounds)-icon.size.height/2,icon.size.width,icon.size.height) fromRect:NSZeroRect operation:NSCompositingOperationSourceOver fraction:1 respectFlipped:YES hints:nil];
+        [self.title drawAtPoint:NSMakePoint(x+icon.size.width+8,NSMidY(self.bounds)-size.height/2) withAttributes:attributes];
+    } else DrawCentered(self.title, self.bounds, attributes);
     if (self.window.firstResponder == self && NSApp.active) {
         [NSColor.keyboardFocusIndicatorColor setStroke]; shape.lineWidth = 3; [shape stroke];
     }
@@ -256,6 +300,32 @@ static void DrawCentered(NSString *text, NSRect rect, NSDictionary *attributes) 
 
 static const unsigned BadgePalette[4][2] = {{0xFCE7D4,0xC0743A},{0xE9E3FA,0x6A55C8},{0xDDF0E6,0x3C8A68},{0xFCE3DD,0xC75F47}};
 static const unsigned CardFill = 0xFFFCF7;
+
+// One row of the account table. Text lives in subviews; the row paints checkbox, badge, status dot and action boxes.
+@interface AccountRow : NSView
+@property NSInteger number;
+@property NSColor *dot;
+@property NSTextField *status, *recent;
+@end
+@implementation AccountRow
+- (BOOL)isFlipped { return YES; }
+- (void)drawRect:(NSRect)dirtyRect {
+    [Hex(0xEFE7DC) setFill]; NSRectFill(NSMakeRect(0,NSHeight(self.bounds)-1,NSWidth(self.bounds),1));
+    NSBezierPath *box = [NSBezierPath bezierPathWithRoundedRect:NSMakeRect(24,18,16,16) xRadius:4 yRadius:4];
+    [NSColor.whiteColor setFill]; [box fill]; [Hex(0xD9CFC3) setStroke]; [box stroke];
+    const unsigned *palette = BadgePalette[(self.number-1)%4];
+    NSRect badge = NSMakeRect(64,12,28,28);
+    [Hex(palette[0]) setFill]; [[NSBezierPath bezierPathWithRoundedRect:badge xRadius:8 yRadius:8] fill];
+    DrawCentered([NSString stringWithFormat:@"%02ld",(long)self.number], badge, @{NSFontAttributeName:[NSFont systemFontOfSize:12 weight:NSFontWeightSemibold],NSForegroundColorAttributeName:Hex(palette[1])});
+    [self.dot setFill]; [[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(478,22,8,8)] fill];
+    NSBezierPath *edit = [NSBezierPath bezierPathWithRoundedRect:NSMakeRect(652,11,30,30) xRadius:8 yRadius:8];
+    [NSColor.whiteColor setFill]; [edit fill]; [Hex(0xE6DCCF) setStroke]; [edit stroke];
+    NSImage *pencil = Tinted(@"pencil", 12, Hex(0x8A7F74));
+    [pencil drawInRect:NSMakeRect(667-pencil.size.width/2,26-pencil.size.height/2,pencil.size.width,pencil.size.height) fromRect:NSZeroRect operation:NSCompositingOperationSourceOver fraction:1 respectFlipped:YES hints:nil];
+    NSBezierPath *more = [NSBezierPath bezierPathWithRoundedRect:NSMakeRect(690,11,30,30) xRadius:8 yRadius:8];
+    [NSColor.whiteColor setFill]; [more fill]; [Hex(0xE6DCCF) setStroke]; [more stroke];
+}
+@end
 @interface AccountCard : NSView
 @property NSInteger number;
 @property NSImage *art;
@@ -309,7 +379,12 @@ static const unsigned CardFill = 0xFFFCF7;
 @property NSView *cardsView;
 @property NSTextField *emptyHint;
 @property NSButton *createButton;
-@property NSTextView *logView;
+@property NSMutableArray<NSDictionary *> *logEntries; // Newest first: time, level, instance, text.
+@property NSView *logTable;
+@property NSMutableArray<AccountRow *> *rows;
+@property NSView *rowsView;
+@property NSArray<NSTextField *> *stats;
+@property NSTextField *tableFooter;
 @property NSString *lastLogged;
 @property NSTextField *accessibilityStatus;
 @property NSTextField *message;
@@ -398,6 +473,197 @@ static const unsigned CardFill = 0xFFFCF7;
     item.accessibilityElement = YES; item.accessibilityRole = NSAccessibilityButtonRole; item.accessibilityLabel = title;
     return item;
 }
+- (Canvas *)pageTitled:(NSString *)title subtitle:(NSString *)subtitle frame:(NSRect)frame {
+    Canvas *page = [[Canvas alloc] initWithFrame:frame];
+    [page addSubview:Text(title, NSMakeRect(36,52,420,46), TitleFont(32), Hex(0x2B2622))];
+    [page addSubview:Text(subtitle, NSMakeRect(37,104,600,20), [NSFont systemFontOfSize:13], Hex(0x6E655C))];
+    return page;
+}
+- (ActionButton *)toolButton:(NSString *)title symbol:(NSString *)symbol frame:(NSRect)frame action:(SEL)action {
+    ActionButton *button = [ActionButton buttonWithTitle:title target:self action:action];
+    button.frame = frame; button.bordered = NO; button.symbol = symbol; button.fontSize = 14;
+    return button;
+}
+- (NSView *)accountsPage:(NSRect)frame {
+    NSColor *ink = Hex(0x2B2622), *muted = Hex(0x6E655C);
+    Canvas *page = [self pageTitled:@"账号管理" subtitle:@"统一管理本机 Claude 账号空间，查看对应实例、运行状态与最近使用记录。" frame:frame];
+    page.paint = ^(NSRect bounds) {
+        for (NSInteger i = 0; i < 3; i++) DrawPanel(NSMakeRect(36+i*248,140,240,84), 16, 0.86);
+        DrawField(NSMakeRect(36,240,268,38), @"magnifyingglass", @"搜索账号名称或目录…", Hex(0xA59B90), NO);
+        DrawField(NSMakeRect(316,240,130,38), nil, @"全部状态", ink, YES);
+        DrawPanel(NSMakeRect(36,292,736,404), 16, 0.86);
+        [Hex(0xEFE7DC) setFill]; NSRectFill(NSMakeRect(37,336,734,1)); NSRectFill(NSMakeRect(37,655,734,1));
+        NSBezierPath *box = [NSBezierPath bezierPathWithRoundedRect:NSMakeRect(60,306,16,16) xRadius:4 yRadius:4];
+        [NSColor.whiteColor setFill]; [box fill]; [Hex(0xD9CFC3) setStroke]; [box stroke];
+        NSDictionary *head = @{NSFontAttributeName:[NSFont systemFontOfSize:13 weight:NSFontWeightSemibold],NSForegroundColorAttributeName:Hex(0x7A6F64)};
+        NSArray *columns = @[@[@"账号名称",@100],@[@"登录邮箱",@250],@[@"对应实例",@416],@[@"状态",@478],@[@"最近使用",@566],@[@"操作",@660]];
+        for (NSArray *column in columns) [column[0] drawAtPoint:NSMakePoint(36+[column[1] doubleValue],305) withAttributes:head];
+    };
+    ActionButton *add = [ActionButton buttonWithTitle:@"+  添加账号" target:self action:@selector(newInstance:)];
+    add.frame = NSMakeRect(612,56,160,44); add.bordered = NO; [page addSubview:add];
+    [page addSubview:[self toolButton:@"刷新状态" symbol:@"arrow.clockwise" frame:NSMakeRect(660,240,112,38) action:@selector(refresh)]];
+    NSArray *statInfo = @[@[@"账号总数",@"本机已有账号空间",@0x2B2622],@[@"运行中",@"主进程正在运行",@0x3C8A68],@[@"需要处理",@"启动失败或检查未通过",@0xC7704A]];
+    NSMutableArray *stats = [NSMutableArray array];
+    for (NSInteger i = 0; i < 3; i++) {
+        CGFloat x = 36+i*248;
+        [page addSubview:Text(statInfo[i][0], NSMakeRect(x+20,154,200,18), [NSFont systemFontOfSize:12], muted)];
+        NSTextField *value = Text(@"00", NSMakeRect(x+18,176,60,38), [NSFont systemFontOfSize:30 weight:NSFontWeightMedium], Hex([statInfo[i][2] unsignedIntValue]));
+        [page addSubview:value]; [stats addObject:value];
+        [page addSubview:Text(statInfo[i][1], NSMakeRect(x+80,190,150,16), [NSFont systemFontOfSize:11], muted)];
+    }
+    self.stats = stats;
+    NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(37,337,734,318)];
+    scroll.drawsBackground = NO; scroll.contentView.drawsBackground = NO; scroll.hasVerticalScroller = YES; scroll.autohidesScrollers = YES; scroll.scrollerStyle = NSScrollerStyleOverlay;
+    Canvas *rowsView = [[Canvas alloc] initWithFrame:NSMakeRect(0,0,734,10*52)];
+    self.rows = [NSMutableArray array];
+    for (NSInteger n = 1; n <= 10; n++) {
+        AccountRow *row = [[AccountRow alloc] initWithFrame:NSMakeRect(0,(n-1)*52,734,52)];
+        row.number = n; row.dot = Hex(0xB9B1A7);
+        [row addSubview:Text([NSString stringWithFormat:@"账号 %02ld",(long)n], NSMakeRect(100,16,110,20), [NSFont systemFontOfSize:14 weight:NSFontWeightMedium], ink)];
+        NSTextField *email = Text(@"不读取", NSMakeRect(250,17,150,18), [NSFont systemFontOfSize:13], Hex(0xA59B90));
+        email.toolTip = @"启动器不读取登录凭据或账号邮箱。"; [row addSubview:email];
+        [row addSubview:Text([NSString stringWithFormat:@"Claude %ld",(long)n], NSMakeRect(416,17,90,18), [NSFont systemFontOfSize:13], muted)];
+        row.status = Text(@"未运行", NSMakeRect(492,16,80,20), [NSFont systemFontOfSize:13 weight:NSFontWeightSemibold], muted); [row addSubview:row.status];
+        row.recent = Text(@"—", NSMakeRect(566,17,80,18), [NSFont systemFontOfSize:13], muted); [row addSubview:row.recent];
+        NSButton *more = [NSButton buttonWithTitle:@"" image:[NSImage imageWithSystemSymbolName:@"ellipsis" accessibilityDescription:@"更多"] target:self action:@selector(showMore:)];
+        more.frame = NSMakeRect(690,11,30,30); more.bordered = NO; more.tag = n; more.contentTintColor = Hex(0xA59B90);
+        [row addSubview:more];
+        [rowsView addSubview:row]; [self.rows addObject:row];
+    }
+    scroll.documentView = rowsView; [page addSubview:scroll]; self.rowsView = rowsView;
+    self.tableFooter = Text(@"", NSMakeRect(60,667,300,18), [NSFont systemFontOfSize:12], muted); [page addSubview:self.tableFooter];
+    NSTextField *note = Text(@"登录信息由各实例独立管理", NSMakeRect(500,667,248,18), [NSFont systemFontOfSize:12], muted);
+    note.alignment = NSTextAlignmentRight; [page addSubview:note];
+    return page;
+}
+- (NSView *)logsPage:(NSRect)frame {
+    Canvas *page = [self pageTitled:@"日志记录" subtitle:@"查看实例启动、关闭与异常信息，便于追踪运行情况和排查问题。" frame:frame];
+    page.paint = ^(NSRect bounds) {
+        NSColor *ink = Hex(0x2B2622);
+        DrawField(NSMakeRect(36,140,170,40), @"calendar", @"本次运行", ink, YES);
+        DrawField(NSMakeRect(216,140,150,40), nil, @"全部实例", ink, YES);
+        DrawField(NSMakeRect(376,140,150,40), nil, @"全部级别", ink, YES);
+        DrawField(NSMakeRect(552,140,220,40), @"magnifyingglass", @"搜索日志内容…", Hex(0xA59B90), NO);
+    };
+    [page addSubview:[self toolButton:@"导出日志" symbol:@"square.and.arrow.down" frame:NSMakeRect(502,56,128,44) action:@selector(exportLogs:)]];
+    [page addSubview:[self toolButton:@"清空日志" symbol:@"trash" frame:NSMakeRect(640,56,132,44) action:@selector(clearLogs:)]];
+    __weak Launcher *weakSelf = self;
+    Canvas *table = [[Canvas alloc] initWithFrame:NSMakeRect(36,196,736,494)];
+    table.paint = ^(NSRect bounds) {
+        DrawPanel(NSInsetRect(bounds,0.5,0.5), 16, 0.86);
+        NSDictionary *head = @{NSFontAttributeName:[NSFont systemFontOfSize:13 weight:NSFontWeightSemibold],NSForegroundColorAttributeName:Hex(0x7A6F64)};
+        NSArray *columns = @[@[@"时间",@24],@[@"级别",@196],@[@"实例",@290],@[@"事件内容",@404]];
+        for (NSArray *column in columns) [column[0] drawAtPoint:NSMakePoint([column[1] doubleValue],14) withAttributes:head];
+        [Hex(0xEFE7DC) setFill]; NSRectFill(NSMakeRect(1,44,734,1)); NSRectFill(NSMakeRect(1,444,734,1));
+        NSArray *entries = weakSelf.logEntries;
+        NSDictionary *body = @{NSFontAttributeName:[NSFont systemFontOfSize:13],NSForegroundColorAttributeName:Hex(0x2B2622)};
+        NSDictionary *faint = @{NSFontAttributeName:[NSFont systemFontOfSize:13],NSForegroundColorAttributeName:Hex(0x8A7F74)};
+        NSMutableParagraphStyle *clip = [NSMutableParagraphStyle new]; clip.lineBreakMode = NSLineBreakByTruncatingTail;
+        if (!entries.count) DrawCentered(@"暂无日志", NSMakeRect(0,44,NSWidth(bounds),400), faint);
+        for (NSUInteger i = 0; i < MIN(entries.count,(NSUInteger)10); i++) {
+            NSDictionary *entry = entries[i]; CGFloat y = 45+i*40;
+            if (i) { [Hex(0xF3ECE3) setFill]; NSRectFill(NSMakeRect(1,y,734,1)); }
+            [entry[@"time"] drawAtPoint:NSMakePoint(24,y+11) withAttributes:faint];
+            NSDictionary *tones = @{@"信息":@[@0xE3F3EA,@0x3C8A68],@"警告":@[@0xFBEFD9,@0xB7832A],@"错误":@[@0xFBE3DF,@0xC9604A]};
+            NSArray *tone = tones[entry[@"level"]];
+            NSRect pill = NSMakeRect(196,y+9,44,22);
+            [Hex([tone[0] unsignedIntValue]) setFill]; [[NSBezierPath bezierPathWithRoundedRect:pill xRadius:6 yRadius:6] fill];
+            DrawCentered(entry[@"level"], pill, @{NSFontAttributeName:[NSFont systemFontOfSize:11 weight:NSFontWeightSemibold],NSForegroundColorAttributeName:Hex([tone[1] unsignedIntValue])});
+            [entry[@"instance"] drawAtPoint:NSMakePoint(290,y+11) withAttributes:body];
+            NSMutableDictionary *text = [body mutableCopy]; text[NSParagraphStyleAttributeName] = clip;
+            [entry[@"text"] drawInRect:NSMakeRect(404,y+11,310,18) withAttributes:text];
+        }
+        NSUInteger pages = MAX((NSUInteger)1,(entries.count+9)/10);
+        for (NSUInteger i = 0; i < MIN(pages,(NSUInteger)4); i++) {
+            NSRect box = NSMakeRect(24+i*40,456,30,28);
+            NSBezierPath *path = [NSBezierPath bezierPathWithRoundedRect:box xRadius:7 yRadius:7];
+            [(i == 0 ? Hex(0xA8765A) : NSColor.whiteColor) setFill]; [path fill];
+            if (i) { [Hex(0xE3D9CD) setStroke]; [path stroke]; }
+            DrawCentered([NSString stringWithFormat:@"%lu",(unsigned long)i+1], box, @{NSFontAttributeName:[NSFont systemFontOfSize:12],NSForegroundColorAttributeName:i == 0 ? NSColor.whiteColor : Hex(0x6E655C)});
+        }
+        NSString *summary = [NSString stringWithFormat:@"共 %lu 条日志 · 每页显示 10 条",(unsigned long)entries.count];
+        NSDictionary *small = @{NSFontAttributeName:[NSFont systemFontOfSize:12],NSForegroundColorAttributeName:Hex(0x6E655C)};
+        [summary drawAtPoint:NSMakePoint(NSWidth(bounds)-24-[summary sizeWithAttributes:small].width,462) withAttributes:small];
+    };
+    [page addSubview:table]; self.logTable = table;
+    return page;
+}
+- (NSView *)settingsPage:(NSRect)frame {
+    NSColor *muted = Hex(0x6E655C);
+    Canvas *page = [self pageTitled:@"系统设置" subtitle:@"调整启动行为、窗口管理、界面偏好以及本地数据存储。" frame:frame];
+    NSString *dataPath = @"~/Library/Application Support/Claude Launcher";
+    // Rows: title, subtitle, control kind (toggle on/off, field text, or "button").
+    NSArray *sections = @[
+        @[@"启动与运行",@"管理启动器的常规行为",@[@[@"开机自动启动",@"系统登录后自动运行启动器",@NO],@[@"关闭窗口后继续运行",@"保留在程序坞，不退出启动器",@YES],@[@"启动时恢复上次窗口",@"自动恢复上一次打开的实例",@NO],@[@"辅助功能权限",@"",@"button"]]],
+        @[@"默认行为",@"新实例将沿用这些设置",@[@[@"默认打开方式",@"控制 Claude 实例的窗口行为",@"独立窗口"],@[@"默认浏览器",@"用于登录回调的浏览器",@"系统默认浏览器"],@[@"启动间隔",@"批量启动时的间隔时间",@"3 秒"]]],
+        @[@"界面与存储",@"",@[@[@"应用语言",@"界面显示语言",@"简体中文"],@[@"界面主题",@"当前为水墨浅色",@"浅色 · 水墨风"],@[@"数据存储路径",@"启动器偏好与运行锁的位置",dataPath]]]];
+    NSArray *menu = @[@[@"常规设置",@"gearshape"],@[@"启动行为",@"play"],@[@"外观设置",@"display"],@[@"数据与存储",@"internaldrive"],@[@"消息通知",@"bell"],@[@"关于软件",@"info.circle"]];
+    page.paint = ^(NSRect bounds) {
+        NSRect panel = NSMakeRect(36,140,736,556);
+        DrawPanel(panel, 16, 0.86);
+        [Hex(0xEDE4D8) setFill]; NSRectFill(NSMakeRect(36+170,141,1,554));
+        for (NSUInteger i = 0; i < menu.count; i++) {
+            NSRect item = NSMakeRect(48,154+i*46,146,38);
+            if (i == 0) { [Hex(0xEDDDC9) setFill]; [[NSBezierPath bezierPathWithRoundedRect:item xRadius:10 yRadius:10] fill]; }
+            NSColor *color = i == 0 ? Hex(0x9A6447) : Hex(0x3A332D);
+            NSImage *icon = Tinted(menu[i][1], 13, color);
+            [icon drawInRect:NSMakeRect(NSMinX(item)+14,NSMidY(item)-icon.size.height/2,icon.size.width,icon.size.height) fromRect:NSZeroRect operation:NSCompositingOperationSourceOver fraction:1 respectFlipped:YES hints:nil];
+            NSDictionary *label = @{NSFontAttributeName:[NSFont systemFontOfSize:14 weight:i == 0 ? NSFontWeightSemibold : NSFontWeightRegular],NSForegroundColorAttributeName:color};
+            [menu[i][0] drawAtPoint:NSMakePoint(NSMinX(item)+42,NSMidY(item)-9) withAttributes:label];
+        }
+        CGFloat x = 230, width = 518, y = 156;
+        for (NSArray *section in sections) {
+            [section[0] drawAtPoint:NSMakePoint(x,y) withAttributes:@{NSFontAttributeName:[NSFont systemFontOfSize:15 weight:NSFontWeightSemibold],NSForegroundColorAttributeName:Hex(0x2B2622)}];
+            CGFloat titleWidth = [section[0] sizeWithAttributes:@{NSFontAttributeName:[NSFont systemFontOfSize:15 weight:NSFontWeightSemibold]}].width;
+            [section[1] drawAtPoint:NSMakePoint(x+titleWidth+10,y+3) withAttributes:@{NSFontAttributeName:[NSFont systemFontOfSize:11],NSForegroundColorAttributeName:Hex(0x8A7F74)}];
+            NSArray *rows = section[2];
+            NSRect group = NSMakeRect(x,y+26,width,rows.count*36);
+            DrawPanel(group, 10, 0.95);
+            for (NSUInteger r = 0; r < rows.count; r++) {
+                CGFloat top = NSMinY(group)+r*36;
+                if (r) { [Hex(0xF0E8DE) setFill]; NSRectFill(NSMakeRect(x+14,top,width-28,1)); }
+                [rows[r][0] drawAtPoint:NSMakePoint(x+16,top+3) withAttributes:@{NSFontAttributeName:[NSFont systemFontOfSize:13 weight:NSFontWeightSemibold],NSForegroundColorAttributeName:Hex(0x2B2622)}];
+                [rows[r][1] drawAtPoint:NSMakePoint(x+16,top+19) withAttributes:@{NSFontAttributeName:[NSFont systemFontOfSize:10],NSForegroundColorAttributeName:Hex(0x8A7F74)}];
+                id control = rows[r][2];
+                if ([control isKindOfClass:NSNumber.class]) DrawToggle(NSMakeRect(x+width-58,top+8,40,20), [control boolValue]);
+                else if ([control isKindOfClass:NSString.class] && ![control isEqual:@"button"]) DrawField(NSMakeRect(x+width-226,top+4,210,28), nil, control, Hex(0x2B2622), ![control isEqual:dataPath] && ![control isEqual:@"3 秒"]);
+            }
+            y = NSMaxY(group)+16;
+        }
+        [@"更改仅作用于本地启动器" drawAtPoint:NSMakePoint(x,652) withAttributes:@{NSFontAttributeName:[NSFont systemFontOfSize:12],NSForegroundColorAttributeName:Hex(0x8A7F74)}];
+    };
+    // Accessibility is the one live setting: status text plus a real button into System Settings.
+    self.accessibilityStatus = Text(@"", NSMakeRect(246,309,330,14), [NSFont systemFontOfSize:10], muted); [page addSubview:self.accessibilityStatus];
+    ActionButton *ax = [self toolButton:@"打开设置" symbol:nil frame:NSMakeRect(664,295,84,26) action:@selector(openAccessibility:)];
+    ax.fontSize = 12; [page addSubview:ax];
+    NSButton *reveal = [NSButton buttonWithTitle:@"" target:self action:@selector(revealSupport:)];
+    reveal.frame = NSMakeRect(522,594,210,28); reveal.bordered = NO; reveal.transparent = YES; reveal.toolTip = @"在 Finder 中显示";
+    [page addSubview:reveal];
+    ActionButton *reset = [self toolButton:@"恢复默认" symbol:nil frame:NSMakeRect(530,642,100,38) action:nil]; [page addSubview:reset];
+    ActionButton *save = [self toolButton:@"保存设置" symbol:@"checkmark.circle" frame:NSMakeRect(640,642,116,38) action:nil]; save.primary = YES; [page addSubview:save];
+    return page;
+}
+- (void)addLog:(NSString *)text {
+    if (!self.logEntries) self.logEntries = [NSMutableArray array];
+    NSDateFormatter *clock = [NSDateFormatter new]; clock.dateFormat = @"yyyy-MM-dd HH:mm:ss";
+    NSString *level = @"信息";
+    for (NSString *word in @[@"失败",@"错误",@"未通过",@"无法"]) if ([text containsString:word]) level = @"错误";
+    if ([level isEqual:@"信息"]) for (NSString *word in @[@"超时",@"保护",@"未确认",@"已变化",@"多个"]) if ([text containsString:word]) level = @"警告";
+    NSString *instance = @"系统";
+    NSRange match = [text rangeOfString:@"账号 [0-9]{2}" options:NSRegularExpressionSearch];
+    if (match.location != NSNotFound) instance = [NSString stringWithFormat:@"Claude %ld",(long)[text substringWithRange:NSMakeRange(match.location+3,2)].integerValue];
+    [self.logEntries insertObject:@{@"time":[clock stringFromDate:[NSDate date]],@"level":level,@"instance":instance,@"text":text} atIndex:0];
+    self.logTable.needsDisplay = YES;
+}
+- (void)clearLogs:(id)sender { [self.logEntries removeAllObjects]; self.logTable.needsDisplay = YES; }
+- (void)exportLogs:(id)sender {
+    NSSavePanel *panel = [NSSavePanel savePanel]; panel.nameFieldStringValue = @"Claude 启动器日志.txt";
+    if ([panel runModal] != NSModalResponseOK) return;
+    NSMutableString *out = [NSMutableString string];
+    for (NSDictionary *entry in self.logEntries.reverseObjectEnumerator) [out appendFormat:@"%@\t%@\t%@\t%@\n",entry[@"time"],entry[@"level"],entry[@"instance"],entry[@"text"]];
+    NSError *error = nil;
+    if (![out writeToURL:panel.URL atomically:YES encoding:NSUTF8StringEncoding error:&error]) [self alert:@"导出失败" detail:error.localizedDescription];
+}
 - (void)makeWindow {
     NSApp.appearance = [NSAppearance appearanceNamed:NSAppearanceNameAqua]; // Artwork is light-only.
     self.window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,1080,720) styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskFullSizeContentView backing:NSBackingStoreBuffered defer:NO];
@@ -430,14 +696,26 @@ static const unsigned CardFill = 0xFFFCF7;
     NSImageView *logo = [[NSImageView alloc] initWithFrame:NSMakeRect(32,54,58,58)]; logo.image = icon; [sidebar addSubview:logo];
     [sidebar addSubview:Text(@"Claude", NSMakeRect(98,48,170,48), SerifFont(40), ink)];
     [sidebar addSubview:Text(@"多开启动器", NSMakeRect(100,96,160,24), [NSFont systemFontOfSize:17 weight:NSFontWeightMedium], ink)];
+    NSTextField *edition = Text(@"", NSMakeRect(101,124,170,14), [NSFont systemFontOfSize:9], muted);
+    edition.attributedStringValue = [[NSAttributedString alloc] initWithString:[NSString stringWithFormat:@"DESKTOP · V%@",[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"DEV"] attributes:@{NSKernAttributeName:@2,NSFontAttributeName:[NSFont systemFontOfSize:9],NSForegroundColorAttributeName:muted}];
+    [sidebar addSubview:edition];
     NSArray *nav = @[@[@"实例管理",@"briefcase"],@[@"账号管理",@"person.2"],@[@"日志记录",@"doc.text"],@[@"系统设置",@"gearshape"]];
     NSMutableArray *items = [NSMutableArray array];
     for (NSUInteger i = 0; i < nav.count; i++) { NSView *item = [self navItem:nav[i][0] symbol:nav[i][1] index:i]; [sidebar addSubview:item]; [items addObject:item]; }
     self.navItems = items;
 
     Canvas *main = [[Canvas alloc] initWithFrame:NSMakeRect(272,0,808,720)];
+    NSImage *backdrop = Art(@"background");
     main.paint = ^(NSRect bounds) {
         [paper setFill]; NSRectFill(bounds);
+        DrawFill(backdrop, bounds, 1);
+        // Wash the painting toward paper on the left so text stays readable; the right side keeps more colour.
+        [[[NSGradient alloc] initWithStartingColor:[paper colorWithAlphaComponent:0.93] endingColor:[paper colorWithAlphaComponent:0.72]] drawInRect:bounds angle:0];
+    };
+    [root addSubview:main];
+
+    Canvas *instances = [[Canvas alloc] initWithFrame:main.bounds];
+    instances.paint = ^(NSRect bounds) {
         // Brush underline beneath the slogan.
         NSBezierPath *stroke = [NSBezierPath bezierPath];
         [stroke moveToPoint:NSMakePoint(196,104)]; [stroke curveToPoint:NSMakePoint(388,94) controlPoint1:NSMakePoint(260,100) controlPoint2:NSMakePoint(330,92)];
@@ -447,15 +725,13 @@ static const unsigned CardFill = 0xFFFCF7;
         [tail moveToPoint:NSMakePoint(232,108)]; [tail curveToPoint:NSMakePoint(360,101) controlPoint1:NSMakePoint(280,104) controlPoint2:NSMakePoint(320,101)];
         tail.lineWidth = 1.4; tail.lineCapStyle = NSLineCapStyleRound; [[Hex(0xEE9A63) colorWithAlphaComponent:0.5] setStroke]; [tail stroke];
     };
-    [root addSubview:main];
+    [main addSubview:instances];
     NSTextField *slogan = Text(@"让多个 Claude，服务你的不同灵感", NSMakeRect(40,56,420,40), BrushFont(26), Hex(0x3A332D));
-    slogan.frameCenterRotation = 1.5; [main addSubview:slogan];
-    self.summaryLabel = Text(@"正在读取状态", NSMakeRect(44,114,300,18), [NSFont systemFontOfSize:12], muted); [main addSubview:self.summaryLabel];
+    slogan.frameCenterRotation = 1.5; [instances addSubview:slogan];
+    self.summaryLabel = Text(@"正在读取状态", NSMakeRect(44,114,300,18), [NSFont systemFontOfSize:12], muted); [instances addSubview:self.summaryLabel];
     self.createButton = [ActionButton buttonWithTitle:@"+  新建实例" target:self action:@selector(newInstance:)];
-    self.createButton.frame = NSMakeRect(612,52,160,48); self.createButton.bordered = NO; [main addSubview:self.createButton];
-
-    NSRect pageFrame = NSMakeRect(16,140,776,528);
-    NSScrollView *list = [[NSScrollView alloc] initWithFrame:pageFrame];
+    self.createButton.frame = NSMakeRect(612,52,160,48); self.createButton.bordered = NO; [instances addSubview:self.createButton];
+    NSScrollView *list = [[NSScrollView alloc] initWithFrame:NSMakeRect(16,140,776,528)];
     list.drawsBackground = NO; list.contentView.drawsBackground = NO; list.hasVerticalScroller = YES; list.autohidesScrollers = YES; list.scrollerStyle = NSScrollerStyleOverlay;
     Canvas *cardsView = [[Canvas alloc] initWithFrame:NSMakeRect(0,0,776,10*136-12)];
     NSArray *arts = @[Art(@"card-1") ?: [NSNull null],Art(@"card-2") ?: [NSNull null],Art(@"card-3") ?: [NSNull null],Art(@"card-4") ?: [NSNull null]];
@@ -465,45 +741,21 @@ static const unsigned CardFill = 0xFFFCF7;
         AccountCard *card = [self cardFor:n frame:NSMakeRect(0,(n-1)*136,776,124) art:art == [NSNull null] ? nil : art];
         [cardsView addSubview:card]; [self.cards addObject:card]; [self.buttons addObject:card.button]; [self.statuses addObject:card.status];
     }
-    list.documentView = cardsView; [main addSubview:list]; self.cardsView = cardsView;
+    list.documentView = cardsView; [instances addSubview:list]; self.cardsView = cardsView;
     self.emptyHint = Text(@"本机还没有 Claude 账号目录。点击右上角「+ 新建实例」创建第一个。", NSMakeRect(40,180,700,22), [NSFont systemFontOfSize:15], muted);
-    self.emptyHint.hidden = YES; [main addSubview:self.emptyHint];
-
-    Canvas *accounts = [[Canvas alloc] initWithFrame:pageFrame];
-    accounts.paint = ^(NSRect bounds) { [Hex(CardFill) setFill]; [[NSBezierPath bezierPathWithRoundedRect:bounds xRadius:14 yRadius:14] fill]; };
-    [accounts addSubview:Text(@"账号管理", NSMakeRect(28,26,300,24), [NSFont systemFontOfSize:17 weight:NSFontWeightSemibold], ink)];
-    NSTextField *soon = [NSTextField wrappingLabelWithString:@"登录或重新登录：从账号卡片的「···」进入登录保护，按提示正常退出其他 Claude，再自行登录并核对身份。\n\nCode 已指定：本次启动器启动时指定了独立配置目录，不代表已验证 Code 实际写入位置。Code 未确认：请在保存工作后正常退出该 Claude，再从这里启动。\n\n不同账号应使用各自的项目副本和服务端口。共同操作同一项目、MCP 或本地服务仍会互相影响。01 的 Code 默认配置与普通终端 CLI 共用。启动器不读取凭据，不迁移历史数据。"];
-    soon.frame = NSMakeRect(28,60,720,260); soon.textColor = muted; [accounts addSubview:soon];
-    [main addSubview:accounts];
-
-    NSScrollView *logScroll = [NSTextView scrollableTextView];
-    logScroll.frame = pageFrame; logScroll.wantsLayer = YES; logScroll.layer.cornerRadius = 14; logScroll.borderType = NSNoBorder;
-    self.logView = logScroll.documentView; self.logView.editable = NO; self.logView.backgroundColor = Hex(CardFill);
-    self.logView.textContainerInset = NSMakeSize(18,18); self.logView.font = [NSFont systemFontOfSize:13]; self.logView.textColor = ink;
-    [main addSubview:logScroll];
-
-    Canvas *settings = [[Canvas alloc] initWithFrame:pageFrame];
-    settings.paint = accounts.paint;
-    NSString *version = [NSString stringWithFormat:@"%@（build %@）",[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"开发版",[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleVersion"] ?: @"-"];
-    NSArray *rows = @[@[@"辅助功能权限",@""],@[@"账号数据目录",@"~/Library/Application Support（01 为 Claude，02 为 Claude-Second，03～10 为 Claude-Profile-NN）"],@[@"隔离范围",@"02～10 新启动时指定独立 Code 配置；实际写入未验证。系统权限、登录回调、日志、项目和本地服务仍可能共享。"],@[@"版本",version]];
-    for (NSUInteger i = 0; i < rows.count; i++) {
-        CGFloat y = 26+i*92;
-        [settings addSubview:Text(rows[i][0], NSMakeRect(28,y,300,22), [NSFont systemFontOfSize:15 weight:NSFontWeightSemibold], ink)];
-        NSTextField *detail = [NSTextField wrappingLabelWithString:rows[i][1]]; detail.frame = NSMakeRect(28,y+26,500,40); detail.textColor = muted;
-        [settings addSubview:detail]; if (i == 0) self.accessibilityStatus = detail;
-    }
-    NSButton *axButton = [NSButton buttonWithTitle:@"打开辅助功能设置" target:self action:@selector(openAccessibility:)];
-    axButton.frame = NSMakeRect(566,30,180,30); [settings addSubview:axButton];
-    NSButton *revealButton = [NSButton buttonWithTitle:@"在 Finder 中显示" target:self action:@selector(revealSupport:)];
-    revealButton.frame = NSMakeRect(566,122,180,30); [settings addSubview:revealButton];
-    [main addSubview:settings];
-    self.pages = @[list,accounts,logScroll,settings];
-
+    self.emptyHint.hidden = YES; [instances addSubview:self.emptyHint];
     self.message = Text(@"", NSMakeRect(24,678,580,32), [NSFont systemFontOfSize:12], muted);
-    self.message.maximumNumberOfLines = 2; self.message.lineBreakMode = NSLineBreakByWordWrapping; [main addSubview:self.message];
+    self.message.maximumNumberOfLines = 2; self.message.lineBreakMode = NSLineBreakByWordWrapping; [instances addSubview:self.message];
     self.endLoginButton = [NSButton buttonWithTitle:@"结束登录保护" target:self action:@selector(endLogin:)];
     self.endLoginButton.frame = NSMakeRect(640,680,140,28); self.endLoginButton.bezelStyle = NSBezelStyleRounded;
-    [main addSubview:self.endLoginButton];
+    [instances addSubview:self.endLoginButton];
+
+    NSView *accounts = [self accountsPage:main.bounds];
+    NSView *logs = [self logsPage:main.bounds];
+    NSView *settings = [self settingsPage:main.bounds];
+    for (NSView *page in @[accounts,logs,settings]) [main addSubview:page];
+    self.pages = @[instances,accounts,logs,settings];
+    [self addLog:@"启动器已完成初始化"];
     self.message.accessibilityIdentifier = @"launcher-feedback";
     [self showPage:self.page];
     NSMenu *menu = [NSMenu new]; NSMenuItem *appItem = [NSMenuItem new]; [menu addItem:appItem];
@@ -568,11 +820,36 @@ static const unsigned CardFill = 0xFFFCF7;
     self.accessibilityStatus.stringValue = AXIsProcessTrusted() ? @"已授权：可恢复最小化的 Claude 窗口。" : @"未授权：无法恢复最小化窗口。授权不会修改账号数据。";
     NSString *text = self.message.stringValue;
     if (text.length && ![text isEqual:self.lastLogged]) {
-        self.lastLogged = text;
-        NSDateFormatter *clock = [NSDateFormatter new]; clock.dateFormat = @"HH:mm:ss";
-        NSString *line = [NSString stringWithFormat:@"%@  %@\n",[clock stringFromDate:[NSDate date]],text];
-        [self.logView.textStorage appendAttributedString:[[NSAttributedString alloc] initWithString:line attributes:@{NSFontAttributeName:[NSFont systemFontOfSize:13],NSForegroundColorAttributeName:Hex(0x2B2622)}]];
+        self.lastLogged = text; [self addLog:text];
     }
+    [self refreshAccountTable];
+}
+- (void)refreshAccountTable {
+    NSUInteger shown = 0, running = 0, attention = 0; CGFloat y = 0;
+    NSDateFormatter *day = [NSDateFormatter new]; day.dateFormat = @"M 月 d 日";
+    NSDateFormatter *clock = [NSDateFormatter new]; clock.dateFormat = @"HH:mm";
+    for (NSInteger n = 1; n <= 10; n++) {
+        NSNumber *key = @(n); AccountRow *row = self.rows[n-1];
+        BOOL visible = !self.cards[n-1].hidden;
+        row.hidden = !visible; if (!visible) continue;
+        [row setFrameOrigin:NSMakePoint(0,y)]; y += 52; shown++;
+        NSArray *pids = self.processes[key];
+        BOOL busy = self.starting[key] || [self.checking containsObject:key];
+        if (pids.count) running++;
+        if (self.errors[key]) attention++;
+        row.status.stringValue = self.errors[key] ? @"异常" : busy ? @"处理中" : pids.count ? @"运行中" : @"未运行";
+        row.dot = self.errors[key] ? NSColor.systemRedColor : busy ? Hex(0xE0A23A) : pids.count ? Hex(0x3BAA6E) : Hex(0xB9B1A7);
+        row.status.textColor = self.errors[key] ? NSColor.systemRedColor : busy ? Hex(0xB7832A) : pids.count ? Hex(0x3C8A68) : Hex(0x8A7F74);
+        // Directory modification time is metadata only; it approximates last use without opening account files.
+        NSDate *modified = [NSFileManager.defaultManager attributesOfItemAtPath:ProfilePath(n) error:nil].fileModificationDate;
+        NSCalendar *calendar = NSCalendar.currentCalendar;
+        row.recent.stringValue = !modified ? @"—" : [calendar isDateInToday:modified] ? [@"今天 " stringByAppendingString:[clock stringFromDate:modified]] : [calendar isDateInYesterday:modified] ? [@"昨天 " stringByAppendingString:[clock stringFromDate:modified]] : [day stringFromDate:modified];
+        row.needsDisplay = YES;
+    }
+    [self.rowsView setFrameSize:NSMakeSize(734,MAX(y,1))];
+    NSArray *values = @[@(shown),@(running),@(attention)];
+    for (NSUInteger i = 0; i < self.stats.count; i++) self.stats[i].stringValue = [NSString stringWithFormat:@"%02lu",[values[i] unsignedLongValue]];
+    self.tableFooter.stringValue = [NSString stringWithFormat:@"共 %lu 个账号 · 选中 0 项",(unsigned long)shown];
 }
 - (void)showPage:(NSInteger)page {
     self.page = page;
