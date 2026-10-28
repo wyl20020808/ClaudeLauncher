@@ -2,6 +2,14 @@
 
 整理日期：2026-10-28。源码与本机日常 build/：1.6 / build 7（未发布）；历史交付：1.5 / build 6。
 
+## macOS 1.7.3 发布（2026-10-28，macos-v1.7.3，Windows 发布机）
+
+- 按 [RELEASE-macos-1.7.3.md](RELEASE-macos-1.7.3.md) 执行；Windows 保持 1.7.2，未改代码、未重新构建，只加载已有 1.7.2 构建中的验签代码。
+- 草稿目标 `b6edb00`（含项目导入 `3a6b452` 与 1.7.3 构建 `b54a3e5`）。草稿 DMG 大小与 SHA-256 与交接一致；带入的 Windows 1.7.2 清单验签、Setup 大小与哈希一致。
+- 用 DPAPI 发布密钥在内存中签名 `latest-macos.json`（签名原文与交接逐字节一致），用仓库公钥验签后上传；DMG 复制到自建 `public/`，原 macOS 清单备份为 `latest-macos.json.before-1.7.3`，原子切换。自建 Windows 清单、`latest.json` 和 Setup 未动。
+- 转正式并设为 Latest。自建与 GitHub `releases/latest/download/` 分别取两端清单和安装包：windows 1.7.2、macos 1.7.3，验签、版本、大小、SHA-256 全部通过。
+- 未验证：Mac 上 1.7.2 → 1.7.3 应用内更新、真实导入 GUI。
+
 ## macOS 1.7.3 发布准备（2026-10-28）
 
 - 用户要求合并、推送并提供 Mac 应用内更新。本轮只更新 macOS 至 1.7.3 / build 10；Windows 保持 1.7.2，未改源码或重建安装包。合并 origin/dev 的 1.7.2 发布记录时，仅 STATUS 冲突，双方记录均保留。
