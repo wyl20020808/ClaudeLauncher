@@ -255,9 +255,11 @@ namespace ClaudeLauncher {
                     Release bad = good(); change(bad);
                     Rejects(() => Updates.Verify(sign(bad), key), "格式不符的清单必须拒绝（即使签名正确）");
                 }
-                var mac = new Release { platform = "macos", version = "1.8.0", file = "Claude多开启动器-1.8.0.dmg", size = 4096, sha256 = new string('c', 64), minimumOS = "12.0" };
-                Check(Updates.Verify(sign(mac), key, "macos").file == "Claude多开启动器-1.8.0.dmg", "macOS 清单验签失败");
-                Check(System.Text.Encoding.UTF8.GetString(Updates.Payload(mac)).StartsWith("macos\n1.8.0\nClaude多开启动器-1.8.0.dmg\n4096\n"), "macOS 签名原文错误");
+                var mac = new Release { platform = "macos", version = "1.8.0", file = "ClaudeLauncher-1.8.0.dmg", size = 4096, sha256 = new string('c', 64), minimumOS = "12.0" };
+                Check(Updates.Verify(sign(mac), key, "macos").file == "ClaudeLauncher-1.8.0.dmg", "macOS 清单验签失败");
+                Check(System.Text.Encoding.UTF8.GetString(Updates.Payload(mac)).StartsWith("macos\n1.8.0\nClaudeLauncher-1.8.0.dmg\n4096\n"), "macOS 签名原文错误");
+                var oldName = new Release { platform = "macos", version = "1.8.0", file = "Claude多开启动器-1.8.0.dmg", size = 4096, sha256 = new string('c', 64), minimumOS = "12.0" };
+                Rejects(() => Updates.Verify(sign(oldName), key, "macos"), "旧的中文 DMG 文件名必须拒绝");
             }
             Check(Updates.Compare("1.10.0", "1.9.9") > 0 && Updates.Compare("1.7.0", "1.7") == 0 && Updates.Compare("1.6.9", "1.7.0") < 0, "版本比较错误");
             Check(!Updates.IsNewer(new Release { version = Updates.DisplayVersion }) && !Updates.IsNewer(new Release { version = "1.6.0" }) && Updates.IsNewer(new Release { version = "1.7.1" }), "只升级、不降级");

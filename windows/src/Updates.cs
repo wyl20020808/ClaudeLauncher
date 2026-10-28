@@ -46,7 +46,8 @@ namespace ClaudeLauncher {
 
         public static string FileName(string platform, string version) {
             if (platform == "windows") return "ClaudeLauncherSetup-" + version + ".exe";
-            if (platform == "macos") return "Claude多开启动器-" + version + ".dmg";
+            // 只用 ASCII：GitHub 会改写附件名中的非 ASCII 字符。
+            if (platform == "macos") return "ClaudeLauncher-" + version + ".dmg";
             throw new ArgumentException("未知平台：" + platform);
         }
         // 签名原文：platform、version、file、size、sha256，各行以 \n 结尾。
