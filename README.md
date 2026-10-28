@@ -1,10 +1,10 @@
 # Claude 启动器
 
-非官方工具，与 Anthropic 无关联。原生 macOS 桌面账号启动器。源码与本机 build/：1.6（build 7，未发布）；历史交付版本为 1.5（build 6）。Objective-C / AppKit。
+非官方工具，与 Anthropic 无关联。原生 macOS 桌面账号启动器，Objective-C / AppKit。当前 macOS 版本号为 1.7.0 / build 8；`feature/projects` 的项目管理功能尚未发布，本轮不改版本号。
 
-2026-10-28：在 `feature/isolation-hardening` 加固 macOS 账号隔离，基于 `origin/dev` 的 `ad91581`。本轮不修改 Windows 或构建脚本，版本号仍为 1.6 / build 7；功能差异与验证结果以 [当前状态](docs/STATUS.md) 的最新记录为准。
+2026-10-28：`feature/projects` 基于更新后的 dev `604fe55`，新增本机公共项目清单；账号隔离机制保持不变。本轮只修改 macOS 实现与文档，不修改 Windows、不打包发布。验证结果见 [当前状态](docs/STATUS.md)。
 
-管理本机的 Claude 桌面账号（最多 10 个，只显示已有的）。水墨风界面：左侧导航（实例管理、账号管理、日志记录、系统设置），右侧账号卡片；运行中显示棕色“打开”，已有目录未运行显示“启动”，无目录显示“创建”，“+ 新建实例”创建第一个未使用的编号。使用同一份官方 Claude.app，通过不同数据目录启动，不复制、修改或重签官方应用。
+管理本机的 Claude 桌面账号（最多 10 个，只显示已有的）。水墨风界面：左侧导航（实例管理、账号管理、项目管理、日志记录、系统设置），右侧账号卡片；运行中显示棕色“打开”，已有目录未运行显示“启动”，无目录显示“创建”，“+ 新建实例”创建第一个未使用的编号。使用同一份官方 Claude.app，通过不同数据目录启动，不复制、修改或重签官方应用。
 
 ![界面](docs/assets/界面.png)
 
@@ -12,7 +12,8 @@
 
 ```text
 src/main.m                  macOS 应用实现与内置自检
-windows/                    Windows 版（规划中，未实现）
+src/Projects.h / Projects.m  项目清单、路径校验与合成自检
+windows/                    Windows 原生实现（项目管理待按 SPEC 实现）
 docs/SPEC.md                跨平台行为规格
 scripts/build.sh            构建、签名和自检
 scripts/package.sh          打包已构建的应用（ZIP）
@@ -59,9 +60,19 @@ SIGN_IDENTITY="ClaudeLauncher Local Signing" /bin/zsh scripts/dmg.sh
 - **图标与名称。** 应用图标在构建时复制自本机官方 Claude.app，名称含“Claude”。对外分发前请自行确认商标与图标的使用许可，必要时换成自有图标和名称。
 - 本机安装位置为 `/Applications/Claude 启动器.app`。重新构建不会自动更新已安装版本，需重新生成 DMG 安装（证书不变时辅助功能授权保留）。
 
-### Windows（安装程序，待做）
+### Windows
 
-计划由 Windows 端提供 Setup 安装程序（例如 Inno Setup 或 WiX/MSIX），安装到“程序”目录并创建开始菜单与桌面快捷方式，带卸载入口。详见 [windows/README.md](windows/README.md) 待办。
+Windows 的版本、Setup 安装程序与验证状态见 [windows/README.md](windows/README.md)。本轮未修改 Windows。
+
+## 项目管理（macOS，第一版）
+
+“项目管理 → 添加目录”选择已有文件夹，编辑显示名称和分组。表格显示目录状态和上次使用的账号；“···”支持编辑、上移／下移、在 Finder 显示、复制路径、移除记录。移除只删入口，绝不删除目录或文件。
+
+点击“打开”选择 01～10 中的任意账号，默认选上次账号，不建立绑定。完整复用账号的 PID、登录保护与后台存储检查，通过后复制路径、在 Finder 显示并激活／启动目标账号；**请在 Claude 中选择此文件夹**。未使用 `claude://` 或按应用名打开文件夹，也不修改 Claude 内部项目列表。“上次账号”记录通过检查后发起的账号操作，不代表 Claude 已加载项目。
+
+项目文件本来就由同一 macOS 用户下的账号共享，本功能只是统一入口，不复制、不同步、不合并项目或会话。选择共享项目也就选择共享 `CLAUDE.md`、`.claude/settings*.json`、`.mcp.json` 等项目规则，与账号隔离存在取舍；**同一项目请轮流使用，启动器无法检测同时编辑。**
+
+清单只保存在本机 `~/Library/Application Support/Claude Launcher/projects.json`，新文件为 0600，原子写入。不扫描磁盘、不读取项目内容；账号数据目录、ClaudeCodeConfig 和启动器自己的目录不能添加，主目录或根目录需确认。路径失效只标记；损坏 JSON 改名保留并提示，不能安全保留时停止写入，未知版本也不覆盖。Windows 后续按 [SPEC](docs/SPEC.md#项目清单) 实现。
 
 ## 隔离范围
 
@@ -75,6 +86,6 @@ SIGN_IDENTITY="ClaudeLauncher Local Signing" /bin/zsh scripts/dmg.sh
 
 存储元数据检查在后台执行，各账号独立等待。检查完成后重新核对进程和路径；原实例在检查期间退出时不会被自动重启。删除仍仅经菜单确认后移到废纸篓，01、运行中、启动中、检查中和受登录保护的账号不可删。
 
-独立目录不是安全沙箱。系统权限、应用身份和加密设施、浏览器登录回调、日志目录（~/Library/Logs/Claude）、网络与本地服务仍可能共享。不同账号共同操作同一项目时，项目文件、规则和工具配置也会互相影响，建议使用各自项目副本和端口。两个真实账号登录、重登录及相互登出的影响尚未验证。
+独立目录不是安全沙箱。系统权限、应用身份和加密设施、浏览器登录回调、日志目录（~/Library/Logs/Claude）、网络与本地服务仍可能共享。需要更强工作区隔离时可使用各自项目副本和端口；选择公共项目入口则接受项目文件、规则和工具配置共享，应轮流使用。本轮没有重新验证真实账号登录、重登录或相互登出的影响。
 
 签名身份已稳定；新版 GUI 操作和真实账号隔离的验收结果分别记录，详见 [项目状态](docs/STATUS.md)。

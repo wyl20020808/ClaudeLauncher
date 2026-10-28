@@ -2,7 +2,7 @@
 
 ## 实现入口
 
-`src/main.m` 包含目录映射、进程参数解析、主进程扫描、存储路径校验、AppKit 窗口、启动与 PID 激活、自检。当前项目规模小，暂不拆分为多个框架或引入依赖。
+`src/main.m` 包含目录映射、进程参数解析、主进程扫描、存储路径校验、AppKit 窗口、启动与 PID 激活、自检。`src/Projects.h` / `src/Projects.m` 包含项目清单与合成测试，由同一 clang 命令编译；不引入框架封装或第三方依赖。
 
 - `ProfilePath`：固定编号到目录的映射。
 - `CodeConfigPath`：02～10 的 Claude Code 配置目录，启动时作为 `CLAUDE_CONFIG_DIR` 传入；01 返回 nil，沿用 `~/.claude`。
@@ -11,7 +11,7 @@
 - `LoginBlocker` / `openingBlocker:expectedPID:`：登录准入、检查完成后的进程与保护状态复核；`checking` 集合按账号防止检查期间重复操作。
 - `configuredApps`：仅保留本次启动器返回的、启动时间与主程序/账号参数已核对的新进程对象。它证明已指定配置，不证明 Code 实际写入，不能持久化 PID 后冒充已验证状态。
 - `Launcher`：界面、启动状态与单实例管理。
-- `activatePID:account:`：校验 PID 后激活、尝试恢复窗口。
+- `activatePID:account:prepare:`：校验 PID 后激活、尝试恢复窗口；可选项目交接在身份确认后执行。
 - `SelfTest`：合成数据测试，不读取真实凭据。
 
 ## 构建
@@ -30,7 +30,17 @@
 
 隔离加固自检增加登录准入、检查中删除拦截、保护状态变化、原 PID 退出/替换、保守 Code 状态、并行后台检查的主线程回调，以及深层 Code 存储链接拒绝。并发测试只检查随机合成目录，失败不会污染另一个合成账号的结果；不创建真实账号，不读写登录数据。
 
-先在独立目录验证：`SIGN_IDENTITY="ClaudeLauncher Local Signing" /bin/zsh scripts/build.sh build/isolation-hardening-check`。需要更新日常 build/ 时，先提醒用户退出并重开启动器才使用新版，再执行同一签名命令且不传输出目录。本轮按用户限定不修改构建脚本，版本号仍为 1.6 / build 7，以分支和提交区分。
+本轮按用户要求执行 `SIGN_IDENTITY="ClaudeLauncher Local Signing" /bin/zsh scripts/build.sh`，版本号仍为 1.7.0 / build 8，以分支和提交区分。重建前提醒用户；build/ 的变化不会替换正在运行的进程，也不会更新 /Applications 中的日常版本。本轮不打包、不安装、不发布。
+
+## 项目清单实现与验证
+
+- `ProjectStore` 只管理启动器自身的 JSON：`load`、`save:error:`、`normalizeDirectory:error:`、`statusForPath:`、`containsDirectory:`。格式、上限与取舍见 SPEC“项目清单”。最多 1000 条，文件最多 1 MiB，名称／分组最多 200 字。
+- 写入使用同目录 0600 独占临时文件，写完并 fsync 后 rename 原子替换；失败不提交内存模型。读取前检查各级目录，文件以 O_NOFOLLOW 打开并 fstat 拒绝非本人所有、链接或开放权限的文件。已有不安全文件不 chmod、不读取内容。
+- 损坏内容以唯一名字改名保留，恢复失败或未知版本使存储只读；绝不把清单里的路径当成要删除的目录。添加只用 NSOpenPanel 和元数据检查，状态检查不递归读取项目。
+- `selectAccount:` 委托给 `selectAccount:prepare:`，普通账号操作传 nil；项目入口传一个准备回调，经原有后台检查、PID／保护复核后执行。新建账号的“进入登录保护”也传递同一回调。回调再次核对项目仍存在且目录可用，持久化 lastAccount，再复制路径、显示 Finder，随后由原流程激活／启动账号。lastAccount 是已请求操作，不是加载成功凭证。
+- 编辑对话框期间后台账号检查可能完成；保存编辑时只更新名称／分组，保留最新 lastAccount。移除按稳定 UUID 定位，避免后台状态更新导致移除失效。
+- `TestProjects` 集成进 `--self-test`：仅在当前工作目录的随机 `.claude-project-tests-*` 中生成假主目录、假账号／配置目录与假应用包；覆盖路径、别名、重复、权限、JSON 往返、编辑排序与账号记录、损坏保留、未知版本保留、链接清单拒绝和移除不删文件。测试结束清理。chmod 仅用于随机合成目录的无权限用例，不修改真实账号或系统权限。
+- GUI 手工验收：添加／取消、主目录确认／取消、重名与重复目录、编辑排序、移除后文件仍在；正常／缺失／无权限目录；在已有账号间选择、默认上次编号、保护拒绝、后台检查失败、取消创建；确认失败分支不改变剪贴板或打开 Finder。保存工作后仅用少量实例，不测试真实账号删除或登出。
 
 ## GUI 验收
 
@@ -61,7 +71,17 @@
 
 ## 界面截图
 
-`ClaudeLauncher --snapshot <输出.png> [页码]` 在后台渲染窗口到 PNG，不占单实例锁、不启动 Claude。页码：0 实例管理、1 账号管理、2 日志记录、3 系统设置。从终端运行时辅助功能状态按终端判断，可能显示未授权。插画位于 `resources/ui/`，构建时复制进应用。
+`ClaudeLauncher --snapshot <输出.png> [页码]` 在后台渲染窗口到 PNG，不占单实例锁、不启动 Claude。页码：0 实例管理、1 账号管理、2 项目管理、3 日志记录、4 系统设置。从终端运行时辅助功能状态按终端判断，可能显示未授权。插画位于 `resources/ui/`，构建时复制进应用。
+
+项目截图不读取／写入真实清单，默认空表；加 `--projects-demo` 使用内存合成的三行（正常、目录缺失、无权限，含长名称与路径）：
+
+```sh
+"build/Claude 启动器.app/Contents/MacOS/ClaudeLauncher" --snapshot build/projects-empty.png 2
+"build/Claude 启动器.app/Contents/MacOS/ClaudeLauncher" --snapshot build/projects-demo.png 2 --projects-demo
+arch -x86_64 "build/Claude 启动器.app/Contents/MacOS/ClaudeLauncher" --self-test
+```
+
+离屏截图只核对布局与文案，不替代 NSOpenPanel、菜单、剪贴板、Finder 或真实账号激活的 GUI 测试。
 
 ## DMG
 

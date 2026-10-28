@@ -8,6 +8,7 @@
 #import <sys/stat.h>
 #import <Security/Security.h>
 #import <CommonCrypto/CommonDigest.h>
+#import "Projects.h"
 
 static NSString * const BundleID = @"local.claude.profile-launcher";
 static NSString * const WakeNotification = @"local.claude.profile-launcher.show";
@@ -523,6 +524,12 @@ static const unsigned CardFill = 0xFFFCF7;
 @property NSView *rowsView;
 @property NSArray<NSTextField *> *stats;
 @property NSTextField *tableFooter;
+@property ProjectStore *projectStore;
+@property NSView *projectRowsView;
+@property NSTextField *projectFooter, *projectFeedback;
+@property NSButton *addProjectButton;
+@property NSArray<NSDictionary *> *snapshotProjects;
+@property BOOL snapshotMode;
 @property BOOL updating;
 @property BOOL headless;         // --update-test: no dialogs, accept the offered update, print results.
 @property BOOL skipSelfHosted;
@@ -570,7 +577,10 @@ static const unsigned CardFill = 0xFFFCF7;
     [NSDistributedNotificationCenter.defaultCenter addObserver:self selector:@selector(show:) name:WakeNotification object:nil];
     NSInteger savedLogin = [NSUserDefaults.standardUserDefaults integerForKey:@"loginProtectionAccount"];
     self.loginAccount = savedLogin >= 1 && savedLogin <= 10 ? savedLogin : 0;
+    self.projectStore = [[ProjectStore alloc] initWithDirectory:support home:NSHomeDirectory() applicationPaths:@[NSBundle.mainBundle.bundlePath,@"/Applications/Claude 启动器.app",[NSHomeDirectory() stringByAppendingPathComponent:@"Applications/Claude 启动器.app"]]];
+    [self.projectStore load];
     [self makeWindow]; [self refresh]; [self show:nil];
+    if (self.projectStore.notice) [self alert:@"项目清单提示" detail:self.projectStore.notice];
     [self finishPendingUpdate];
     NSDate *lastCheck = [NSUserDefaults.standardUserDefaults objectForKey:@"lastUpdateCheck"];
     if (![lastCheck isKindOfClass:NSDate.class] || -lastCheck.timeIntervalSinceNow > 24*3600)
@@ -681,6 +691,197 @@ static const unsigned CardFill = 0xFFFCF7;
     NSTextField *note = Text(@"登录信息由各实例独立管理", NSMakeRect(500,667,248,18), [NSFont systemFontOfSize:12], muted);
     note.alignment = NSTextAlignmentRight; [page addSubview:note];
     return page;
+}
+- (NSArray<NSDictionary *> *)projectRecords { return self.snapshotProjects ?: self.projectStore.projects ?: @[]; }
+- (void)projectNotice:(NSString *)text {
+    self.projectFeedback.stringValue = text; self.projectFeedback.toolTip = text;
+}
+- (NSView *)projectsPage:(NSRect)frame {
+    Canvas *page = [self pageTitled:@"项目管理" subtitle:@"所有账号共用一份本机项目入口；各自的登录与会话保持独立。" frame:frame];
+    page.paint = ^(NSRect bounds) {
+        DrawPanel(NSMakeRect(36,140,736,72),14,0.86);
+        DrawPanel(NSMakeRect(36,274,736,366),16,0.86);
+        [Hex(0xEFE7DC) setFill]; NSRectFill(NSMakeRect(37,318,734,1)); NSRectFill(NSMakeRect(37,600,734,1));
+        NSDictionary *head = @{NSFontAttributeName:[NSFont systemFontOfSize:12 weight:NSFontWeightSemibold],NSForegroundColorAttributeName:Hex(0x7A6F64)};
+        for (NSArray *column in @[@[@"名称",@18],@[@"分组",@140],@[@"路径",@224],@[@"状态",@442],@[@"上次账号",@508],@[@"操作",@610]])
+            [column[0] drawAtPoint:NSMakePoint(36+[column[1] doubleValue],289) withAttributes:head];
+    };
+    [page addSubview:Text(@"共享目录中的代码、CLAUDE.md、项目设置与 MCP 配置会互相影响。",NSMakeRect(54,154,694,20),[NSFont systemFontOfSize:13 weight:NSFontWeightMedium],Hex(0x795539))];
+    [page addSubview:Text(@"同一项目请轮流使用；启动器无法检测同时编辑，不复制、同步或合并文件。",NSMakeRect(54,182,694,18),[NSFont systemFontOfSize:12],Hex(0x6E655C))];
+    self.addProjectButton = [self toolButton:@"添加目录" symbol:@"folder.badge.plus" frame:NSMakeRect(640,56,132,44) action:@selector(addProject:)];
+    [page addSubview:self.addProjectButton];
+    [page addSubview:Text(@"项目仅保存在本机 · 移除记录不会删除文件",NSMakeRect(38,238,470,20),[NSFont systemFontOfSize:13],Hex(0x6E655C))];
+    [page addSubview:[self toolButton:@"刷新状态" symbol:@"arrow.clockwise" frame:NSMakeRect(660,228,112,38) action:@selector(refreshProjects:)]];
+    NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(37,319,734,281)];
+    scroll.drawsBackground = NO; scroll.contentView.drawsBackground = NO;
+    scroll.hasVerticalScroller = YES; scroll.autohidesScrollers = YES; scroll.scrollerStyle = NSScrollerStyleOverlay;
+    self.projectRowsView = [[Canvas alloc] initWithFrame:NSMakeRect(0,0,734,281)]; scroll.documentView = self.projectRowsView;
+    [page addSubview:scroll];
+    self.projectFooter = Text(@"",NSMakeRect(54,612,690,18),[NSFont systemFontOfSize:12],Hex(0x6E655C)); [page addSubview:self.projectFooter];
+    self.projectFeedback = Text(@"选择账号后会复制路径并显示 Finder，请在 Claude 中选择此文件夹。",NSMakeRect(38,656,734,42),[NSFont systemFontOfSize:12],Hex(0x795539));
+    self.projectFeedback.maximumNumberOfLines = 2; [page addSubview:self.projectFeedback];
+    [self refreshProjects:nil];
+    if (self.projectStore.notice) [self projectNotice:self.projectStore.notice];
+    return page;
+}
+- (void)refreshProjects:(id)sender {
+    for (NSView *view in self.projectRowsView.subviews.copy) [view removeFromSuperview];
+    NSArray *projects = [self projectRecords];
+    self.addProjectButton.enabled = self.snapshotMode || self.projectStore.writable;
+    [self.projectRowsView setFrameSize:NSMakeSize(734,MAX(281,projects.count*64))];
+    if (!projects.count) {
+        [self.projectRowsView addSubview:Text(@"还没有项目",NSMakeRect(270,86,200,28),[NSFont systemFontOfSize:20 weight:NSFontWeightMedium],Hex(0x6E655C))];
+        [self.projectRowsView addSubview:Text(@"添加一个已有文件夹，所有账号都可从这里找到它。",NSMakeRect(156,124,440,22),[NSFont systemFontOfSize:13],Hex(0x8A7F74))];
+    }
+    [projects enumerateObjectsUsingBlock:^(NSDictionary *project, NSUInteger index, BOOL *stop) {
+        Canvas *row = [[Canvas alloc] initWithFrame:NSMakeRect(0,index*64,734,64)];
+        row.paint = ^(NSRect bounds) { [Hex(0xEFE7DC) setFill]; NSRectFill(NSMakeRect(0,63,734,1)); };
+        NSString *path = project[@"path"];
+        NSString *status = self.snapshotProjects ? project[@"previewStatus"] : [self.projectStore statusForPath:path];
+        NSInteger last = [project[@"lastAccount"] integerValue];
+        NSArray *values = @[project[@"name"], [project[@"group"] length] ? project[@"group"] : @"未分组",path,status,last ? [NSString stringWithFormat:@"账号 %02ld",(long)last] : @"未使用"];
+        CGFloat xs[] = {18,140,224,442,508}, widths[] = {112,74,204,58,88};
+        for (NSUInteger i = 0; i < values.count; i++) {
+            NSColor *color = i == 3 ? ([status isEqual:@"正常"] ? Hex(0x3C8A68) : Hex(0xB46A45)) : Hex(0x6E655C);
+            NSTextField *field = Text(values[i],NSMakeRect(xs[i],22,widths[i],20),[NSFont systemFontOfSize:i == 0 ? 13 : 12],color);
+            field.lineBreakMode = i == 2 ? NSLineBreakByTruncatingMiddle : NSLineBreakByTruncatingTail;
+            field.toolTip = values[i]; field.accessibilityLabel = values[i]; [row addSubview:field];
+        }
+        ActionButton *openProject = [self toolButton:@"打开" symbol:nil frame:NSMakeRect(608,16,62,32) action:@selector(openProject:)];
+        openProject.fontSize = 12; openProject.tag = (NSInteger)index;
+        openProject.enabled = (self.snapshotMode || self.projectStore.writable) && [status isEqual:@"正常"];
+        openProject.accessibilityLabel = [@"选择账号打开项目：" stringByAppendingString:project[@"name"]];
+        [row addSubview:openProject];
+        NSButton *more = [NSButton buttonWithTitle:@"" image:[NSImage imageWithSystemSymbolName:@"ellipsis" accessibilityDescription:@"项目操作"] target:self action:@selector(projectMenu:)];
+        more.frame = NSMakeRect(678,16,32,32); more.bezelStyle = NSBezelStyleRounded; more.tag = (NSInteger)index;
+        more.enabled = self.snapshotMode || self.projectStore != nil; more.accessibilityLabel = [@"更多项目操作：" stringByAppendingString:project[@"name"]]; [row addSubview:more];
+        [self.projectRowsView addSubview:row];
+    }];
+    self.projectFooter.stringValue = [NSString stringWithFormat:@"共 %lu 个项目 · 上次账号仅用于默认选择，不绑定项目",(unsigned long)projects.count];
+}
+- (NSDictionary *)projectForSender:(id)sender {
+    NSInteger index = [sender tag]; NSArray *projects = [self projectRecords];
+    return index >= 0 && index < (NSInteger)projects.count ? projects[index] : nil;
+}
+- (BOOL)saveProjects:(NSArray *)projects {
+    NSString *failure = nil;
+    if (![self.projectStore save:projects error:&failure]) { [self alert:@"项目清单未保存" detail:failure]; return NO; }
+    [self refreshProjects:nil]; return YES;
+}
+- (NSDictionary *)editProjectRecord:(NSDictionary *)project {
+    NSAlert *editor = [NSAlert new]; editor.messageText = @"项目名称与分组";
+    editor.informativeText = @"只修改清单中的显示信息，不改目录名称或位置。名称和分组最多 200 字。";
+    [editor addButtonWithTitle:@"保存"]; [editor addButtonWithTitle:@"取消"];
+    Canvas *form = [[Canvas alloc] initWithFrame:NSMakeRect(0,0,360,96)];
+    [form addSubview:Text(@"名称",NSMakeRect(0,8,52,24),[NSFont systemFontOfSize:13],Hex(0x6E655C))];
+    [form addSubview:Text(@"分组",NSMakeRect(0,54,52,24),[NSFont systemFontOfSize:13],Hex(0x6E655C))];
+    NSTextField *name = [[NSTextField alloc] initWithFrame:NSMakeRect(56,4,300,28)]; name.stringValue = project[@"name"]; name.accessibilityLabel = @"项目名称";
+    NSTextField *group = [[NSTextField alloc] initWithFrame:NSMakeRect(56,50,300,28)]; group.stringValue = project[@"group"]; group.placeholderString = @"可留空"; group.accessibilityLabel = @"项目分组";
+    [form addSubview:name]; [form addSubview:group]; editor.accessoryView = form; editor.window.initialFirstResponder = name;
+    if ([editor runModal] != NSAlertFirstButtonReturn) return nil;
+    NSString *title = [name.stringValue stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (!title.length || title.length > 200 || group.stringValue.length > 200) { [self alert:@"名称或分组无效" detail:@"名称不能为空；名称和分组最多 200 字。请重新编辑。"] ; return nil; }
+    NSMutableDictionary *edited = project.mutableCopy; edited[@"name"] = title; edited[@"group"] = [group.stringValue stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet]; return edited;
+}
+- (void)addProject:(id)sender {
+    if (!self.projectStore.writable) return;
+    NSOpenPanel *panel = [NSOpenPanel openPanel]; panel.title = @"添加已有项目目录";
+    panel.canChooseDirectories = YES; panel.canChooseFiles = NO; panel.allowsMultipleSelection = NO; panel.canCreateDirectories = NO; panel.prompt = @"选择目录";
+    if ([panel runModal] != NSModalResponseOK) return;
+    NSString *failure = nil, *path = [self.projectStore normalizeDirectory:panel.URL.path error:&failure];
+    if (!path) { [self alert:@"无法添加项目" detail:failure]; return; }
+    if ([self.projectStore containsDirectory:path]) { [self alert:@"项目已在清单中" detail:@"同一个真实目录只需添加一次，所有账号都可以使用。"] ; return; }
+    if ([path isEqual:@"/"] || [path isEqual:NSHomeDirectory().stringByResolvingSymlinksInPath]) {
+        NSAlert *confirm = [NSAlert new]; confirm.messageText = @"添加整个主目录或根目录？";
+        confirm.informativeText = @"这不是普通项目目录，范围很大。启动器只记录路径；之后交给 Claude 时，请自行确认文件访问范围。";
+        [confirm addButtonWithTitle:@"取消"]; [confirm addButtonWithTitle:@"仍然添加"];
+        if ([confirm runModal] != NSAlertSecondButtonReturn) return;
+    }
+    NSDictionary *record = [self editProjectRecord:@{@"id":NSUUID.UUID.UUIDString,@"name":path.lastPathComponent,@"group":@"",@"path":path,@"lastAccount":@0}];
+    if (!record) return;
+    if (![[self.projectStore statusForPath:path] isEqual:@"正常"]) { [self alert:@"目录状态已变化" detail:@"未添加，请重新选择已有目录。"] ; return; }
+    if ([self saveProjects:[self.projectStore.projects arrayByAddingObject:record]]) [self projectNotice:@"已添加项目入口，没有复制或读取目录中的文件。"];
+}
+- (void)projectMenu:(NSButton *)sender {
+    if (![self projectForSender:sender]) return;
+    NSMenu *menu = [NSMenu new]; menu.autoenablesItems = NO;
+    NSArray *titles = @[@"修改名称与分组…",@"上移",@"下移",@"在 Finder 中显示",@"复制路径",@"从清单移除…"];
+    NSArray *actions = @[NSStringFromSelector(@selector(editProject:)),NSStringFromSelector(@selector(moveProjectUp:)),NSStringFromSelector(@selector(moveProjectDown:)),NSStringFromSelector(@selector(revealProject:)),NSStringFromSelector(@selector(copyProject:)),NSStringFromSelector(@selector(removeProject:))];
+    for (NSUInteger i = 0; i < titles.count; i++) {
+        if (i == 3 || i == 5) [menu addItem:NSMenuItem.separatorItem];
+        NSMenuItem *item = [menu addItemWithTitle:titles[i] action:NSSelectorFromString(actions[i]) keyEquivalent:@""]; item.target = self; item.tag = sender.tag;
+        item.enabled = i == 3 || i == 4 || self.projectStore.writable;
+        if (i == 1 && sender.tag == 0) item.enabled = NO;
+        if (i == 2 && sender.tag+1 == (NSInteger)self.projectStore.projects.count) item.enabled = NO;
+    }
+    [menu popUpMenuPositioningItem:nil atLocation:NSMakePoint(0,NSHeight(sender.bounds)) inView:sender];
+}
+- (void)editProject:(id)sender {
+    NSDictionary *record = [self projectForSender:sender]; if (!record) return;
+    NSDictionary *edited = [self editProjectRecord:record]; if (!edited) return;
+    NSMutableArray *projects = self.projectStore.projects.mutableCopy;
+    NSUInteger index = [projects indexOfObjectPassingTest:^BOOL(NSDictionary *row, NSUInteger i, BOOL *stop) { return [row[@"id"] isEqual:record[@"id"]]; }];
+    if (index == NSNotFound) return;
+    // An account check may have finished while the editor's modal loop was open. Keep its lastAccount.
+    NSMutableDictionary *latest = [projects[index] mutableCopy]; latest[@"name"] = edited[@"name"]; latest[@"group"] = edited[@"group"]; projects[index] = latest;
+    if ([self saveProjects:projects]) [self projectNotice:@"已修改显示信息，实际目录未改动。"];
+}
+- (void)moveProject:(id)sender offset:(NSInteger)offset {
+    NSInteger index = [sender tag], target = index+offset;
+    NSMutableArray *projects = self.projectStore.projects.mutableCopy;
+    if (index < 0 || target < 0 || index >= (NSInteger)projects.count || target >= (NSInteger)projects.count) return;
+    [projects exchangeObjectAtIndex:index withObjectAtIndex:target]; [self saveProjects:projects];
+}
+- (void)moveProjectUp:(id)sender { [self moveProject:sender offset:-1]; }
+- (void)moveProjectDown:(id)sender { [self moveProject:sender offset:1]; }
+- (void)copyProject:(id)sender {
+    NSDictionary *record = [self projectForSender:sender]; if (!record) return;
+    [NSPasteboard.generalPasteboard clearContents]; [NSPasteboard.generalPasteboard setString:record[@"path"] forType:NSPasteboardTypeString];
+    [self projectNotice:@"项目路径已复制。"];
+}
+- (void)revealProject:(id)sender {
+    NSDictionary *record = [self projectForSender:sender]; if (!record) return;
+    if (![[self.projectStore statusForPath:record[@"path"]] isEqual:@"正常"]) { [self refreshProjects:nil]; [self alert:@"无法显示目录" detail:@"目录不存在、已改变或无权限；未创建或替换路径。"] ; return; }
+    [NSWorkspace.sharedWorkspace activateFileViewerSelectingURLs:@[[NSURL fileURLWithPath:record[@"path"]]]];
+}
+- (void)removeProject:(id)sender {
+    NSDictionary *record = [self projectForSender:sender]; if (!record) return;
+    NSAlert *confirm = [NSAlert new]; confirm.messageText = @"从项目清单移除？";
+    confirm.informativeText = [NSString stringWithFormat:@"只移除“%@”的入口，不删除或移动任何文件。",record[@"name"]];
+    [confirm addButtonWithTitle:@"取消"]; [confirm addButtonWithTitle:@"移除记录"];
+    if ([confirm runModal] != NSAlertSecondButtonReturn) return;
+    NSMutableArray *projects = self.projectStore.projects.mutableCopy;
+    NSIndexSet *removed = [projects indexesOfObjectsPassingTest:^BOOL(NSDictionary *row, NSUInteger i, BOOL *stop) { return [row[@"id"] isEqual:record[@"id"]]; }];
+    [projects removeObjectsAtIndexes:removed];
+    if ([self saveProjects:projects]) [self projectNotice:@"记录已移除，项目目录与文件保持原样。"];
+}
+- (void)openProject:(id)sender {
+    NSDictionary *record = [self projectForSender:sender]; if (!record || !self.projectStore.writable) return;
+    if (![[self.projectStore statusForPath:record[@"path"]] isEqual:@"正常"]) { [self refreshProjects:nil]; [self alert:@"项目目录不可用" detail:@"请检查目录是否存在、位置是否改变以及访问权限。"] ; return; }
+    NSAlert *choice = [NSAlert new]; choice.messageText = @"选择打开项目的账号";
+    choice.informativeText = @"通过账号检查后，路径会复制到剪贴板，并在 Finder 中显示。请在 Claude 中选择此文件夹；不会自动加载或同步会话。";
+    NSPopUpButton *accounts = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(0,0,320,30) pullsDown:NO];
+    [self refresh];
+    for (NSInteger n = 1; n <= 10; n++) [accounts addItemWithTitle:[NSString stringWithFormat:@"账号 %02ld · %@",(long)n,self.buttons[n-1].title]];
+    NSInteger last = [record[@"lastAccount"] integerValue]; [accounts selectItemAtIndex:last ? last-1 : 0]; accounts.accessibilityLabel = @"目标账号";
+    choice.accessoryView = accounts; [choice addButtonWithTitle:@"用此账号打开"]; [choice addButtonWithTitle:@"取消"];
+    if ([choice runModal] != NSAlertFirstButtonReturn) return;
+    NSInteger account = accounts.indexOfSelectedItem+1;
+    if (self.starting[@(account)] || [self.checking containsObject:@(account)]) { [self alert:@"账号正在处理中" detail:@"请等待本次检查或启动完成，再打开项目。"] ; return; }
+    NSString *identifier = record[@"id"];
+    [self selectAccount:self.buttons[account-1] prepare:^BOOL{
+        NSMutableArray *projects = self.projectStore.projects.mutableCopy;
+        NSUInteger index = [projects indexOfObjectPassingTest:^BOOL(NSDictionary *row, NSUInteger i, BOOL *stop) { return [row[@"id"] isEqual:identifier]; }];
+        if (index == NSNotFound || ![[self.projectStore statusForPath:projects[index][@"path"]] isEqual:@"正常"]) {
+            [self alert:@"项目状态已变化" detail:@"记录已移除或目录不可访问，未交接项目。"] ; [self refreshProjects:nil]; return NO;
+        }
+        NSMutableDictionary *updated = [projects[index] mutableCopy]; updated[@"lastAccount"] = @(account); projects[index] = updated;
+        if (![self saveProjects:projects]) return NO;
+        [NSPasteboard.generalPasteboard clearContents]; [NSPasteboard.generalPasteboard setString:updated[@"path"] forType:NSPasteboardTypeString];
+        [NSWorkspace.sharedWorkspace activateFileViewerSelectingURLs:@[[NSURL fileURLWithPath:updated[@"path"]]]];
+        [self projectNotice:[NSString stringWithFormat:@"已为账号 %02ld 复制路径并显示 Finder。请在 Claude 中选择此文件夹。",(long)account]];
+        return YES;
+    }];
 }
 - (NSView *)logsPage:(NSRect)frame {
     Canvas *page = [self pageTitled:@"日志记录" subtitle:@"查看实例启动、关闭与异常信息，便于追踪运行情况和排查问题。" frame:frame];
@@ -958,7 +1159,7 @@ static const unsigned CardFill = 0xFFFCF7;
     NSTextField *edition = Text(@"", NSMakeRect(101,124,170,14), [NSFont systemFontOfSize:9], muted);
     edition.attributedStringValue = [[NSAttributedString alloc] initWithString:[NSString stringWithFormat:@"DESKTOP · V%@",[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"DEV"] attributes:@{NSKernAttributeName:@2,NSFontAttributeName:[NSFont systemFontOfSize:9],NSForegroundColorAttributeName:muted}];
     [sidebar addSubview:edition];
-    NSArray *nav = @[@[@"实例管理",@"briefcase"],@[@"账号管理",@"person.2"],@[@"日志记录",@"doc.text"],@[@"系统设置",@"gearshape"]];
+    NSArray *nav = @[@[@"实例管理",@"briefcase"],@[@"账号管理",@"person.2"],@[@"项目管理",@"folder"],@[@"日志记录",@"doc.text"],@[@"系统设置",@"gearshape"]];
     NSMutableArray *items = [NSMutableArray array];
     for (NSUInteger i = 0; i < nav.count; i++) { NSView *item = [self navItem:nav[i][0] symbol:nav[i][1] index:i]; [sidebar addSubview:item]; [items addObject:item]; }
     self.navItems = items;
@@ -1010,10 +1211,11 @@ static const unsigned CardFill = 0xFFFCF7;
     [instances addSubview:self.endLoginButton];
 
     NSView *accounts = [self accountsPage:main.bounds];
+    NSView *projects = [self projectsPage:main.bounds];
     NSView *logs = [self logsPage:main.bounds];
     NSView *settings = [self settingsPage:main.bounds];
-    for (NSView *page in @[accounts,logs,settings]) [main addSubview:page];
-    self.pages = @[instances,accounts,logs,settings];
+    for (NSView *page in @[accounts,projects,logs,settings]) [main addSubview:page];
+    self.pages = @[instances,accounts,projects,logs,settings];
     [self addLog:@"启动器已完成初始化"];
     self.message.accessibilityIdentifier = @"launcher-feedback";
     [self showPage:self.page];
@@ -1112,7 +1314,9 @@ static const unsigned CardFill = 0xFFFCF7;
     self.tableFooter.stringValue = [NSString stringWithFormat:@"共 %lu 个账号 · 选中 0 项",(unsigned long)shown];
 }
 - (void)showPage:(NSInteger)page {
+    if (page < 0 || page >= (NSInteger)self.pages.count) page = 0;
     self.page = page;
+    if (page == 2) [self refreshProjects:nil];
     for (NSUInteger i = 0; i < self.pages.count; i++) self.pages[i].hidden = (NSInteger)i != page;
     self.createButton.hidden = page != 0;
     if (page != 0) self.emptyHint.hidden = YES;
@@ -1250,13 +1454,19 @@ static const unsigned CardFill = 0xFFFCF7;
     [self protectAndOpen:account];
 }
 - (void)protectAndOpen:(NSInteger)account {
+    [self protectAndOpen:account prepare:nil];
+}
+- (void)protectAndOpen:(NSInteger)account prepare:(BOOL (^)(void))prepare {
     NSString *failure = [self loginBlocker:account];
     if (failure) { [self alert:@"状态已变化，未进入保护" detail:failure]; return; }
     self.loginAccount = account;
     [NSUserDefaults.standardUserDefaults setInteger:account forKey:@"loginProtectionAccount"];
-    [self selectAccount:self.buttons[account-1]];
+    [self selectAccount:self.buttons[account-1] prepare:prepare];
 }
 - (void)selectAccount:(NSButton *)sender {
+    [self selectAccount:sender prepare:nil];
+}
+- (void)selectAccount:(NSButton *)sender prepare:(BOOL (^)(void))prepare {
     NSNumber *key = @(sender.tag);
     if (sender.tag < 1 || sender.tag > 10 || self.starting[key] || [self.checking containsObject:key]) return;
     [self refresh];
@@ -1273,15 +1483,15 @@ static const unsigned CardFill = 0xFFFCF7;
         NSModalResponse response = [choice runModal];
         [self.checking removeObject:key];
         [self refresh];
-        if (response == NSAlertSecondButtonReturn) { [self protectAndOpen:account]; return; }
+        if (response == NSAlertSecondButtonReturn) { [self protectAndOpen:account prepare:prepare]; return; }
         if (response != NSAlertFirstButtonReturn) return;
         failure = [self openingBlocker:account expectedPID:0];
         if (failure || self.processes[key].count) { [self alert:@"状态已变化，未创建" detail:failure ?: @"该账号已在运行，请重新点击。"]; return; }
     }
     pid_t expectedPID = self.processes[key].count == 1 ? [self.processes[key].firstObject intValue] : 0;
-    [self checkAccount:account completion:^{ [self openCheckedAccount:account expectedPID:expectedPID create:create]; }];
+    [self checkAccount:account completion:^{ [self openCheckedAccount:account expectedPID:expectedPID create:create prepare:prepare]; }];
 }
-- (void)openCheckedAccount:(NSInteger)account expectedPID:(pid_t)expectedPID create:(BOOL)create {
+- (void)openCheckedAccount:(NSInteger)account expectedPID:(pid_t)expectedPID create:(BOOL)create prepare:(BOOL (^)(void))prepare {
     NSNumber *key = @(account);
     [self refresh]; // The background check may outlive a process or a login-protection change.
     NSString *failure = [self openingBlocker:account expectedPID:expectedPID];
@@ -1290,7 +1500,7 @@ static const unsigned CardFill = 0xFFFCF7;
     if (storageFailure) { [self alert:@"账号路径已变化" detail:storageFailure]; return; }
     NSArray *pids = self.processes[key];
     [self.errors removeObjectForKey:key];
-    if (pids.count == 1) { [self activatePID:[pids.firstObject intValue] account:account]; return; }
+    if (pids.count == 1) { [self activatePID:[pids.firstObject intValue] account:account prepare:prepare]; return; }
     NSString *bundlePath = nil;
     for (NSString *path in @[@"/Applications/Claude.app", [NSHomeDirectory() stringByAppendingPathComponent:@"Applications/Claude.app"]]) {
         if ([NSFileManager.defaultManager isExecutableFileAtPath:[path stringByAppendingPathComponent:@"Contents/MacOS/Claude"]]) { bundlePath = path; break; }
@@ -1315,6 +1525,7 @@ static const unsigned CardFill = 0xFFFCF7;
     if ([self openingBlocker:account expectedPID:0] || self.processes[key].count) {
         self.message.stringValue = @"进程或登录保护状态已变化，未启动新实例，请重试。"; return;
     }
+    if (prepare && !prepare()) return;
     self.starting[key] = [NSDate date]; [self refresh];
     self.message.stringValue = [NSString stringWithFormat:@"正在启动账号 %02ld…",(long)account];
     NSWorkspaceOpenConfiguration *config = [NSWorkspaceOpenConfiguration configuration];
@@ -1337,7 +1548,7 @@ static const unsigned CardFill = 0xFFFCF7;
         });
     }];
 }
-- (void)activatePID:(pid_t)pid account:(NSInteger)account {
+- (void)activatePID:(pid_t)pid account:(NSInteger)account prepare:(BOOL (^)(void))prepare {
     // Revalidate the identity immediately before activating; never fall back to a bundle-wide open.
     NSArray *args = Arguments(pid); char path[PROC_PIDPATHINFO_MAXSIZE] = {0};
     if (!args || AccountForArguments(args) != account || proc_pidpath(pid,path,sizeof(path)) <= 0 || !IsMainExecutable(@(path))) {
@@ -1345,6 +1556,7 @@ static const unsigned CardFill = 0xFFFCF7;
     }
     NSRunningApplication *app = [NSRunningApplication runningApplicationWithProcessIdentifier:pid];
     if (!app || app.terminated) { [self alert:@"实例已退出" detail:@"请再次点击启动。"] ; return; }
+    if (prepare && !prepare()) return;
     [app unhide];
     if (@available(macOS 14.0, *)) {
         [NSApp yieldActivationToApplication:app];
@@ -1391,6 +1603,7 @@ static const unsigned CardFill = 0xFFFCF7;
 
 static int SelfTest(void) {
     @autoreleasepool {
+        TestProjects();
         NSCAssert(AccountForArguments(@[@"Claude"]) == 1, @"default");
         for (NSInteger n=1;n<=10;n++) {
             NSCAssert(AccountForArguments(@[@"Claude",[@"--user-data-dir=" stringByAppendingString:ProfilePath(n)]]) == n,@"equals");
@@ -1556,7 +1769,13 @@ int main(int argc, const char *argv[]) {
             // Development aid: render the window offscreen to PNG without taking the instance lock or launching Claude.
             [NSApplication sharedApplication];
             Launcher *launcher = [Launcher new];
+            launcher.snapshotMode = YES;
             if (argc > 3) launcher.page = atoi(argv[3]);
+            // Purely visual fixtures: do not load or write the user's project list.
+            if (argc > 4 && strcmp(argv[4],"--projects-demo") == 0) launcher.snapshotProjects = @[
+                @{@"name":@"网站项目",@"group":@"工作",@"path":@"/Users/example/Projects/Website",@"lastAccount":@2,@"previewStatus":@"正常"},
+                @{@"name":@"较长的项目名称用于检查表格截断",@"group":@"个人学习资料",@"path":@"/Users/example/Documents/一个很长的目录名称/研究项目/Notes",@"lastAccount":@1,@"previewStatus":@"不存在"},
+                @{@"name":@"归档资料",@"group":@"",@"path":@"/Volumes/Archive/Research",@"lastAccount":@0,@"previewStatus":@"无权限"}];
             [launcher makeWindow]; [launcher refresh];
             NSView *view = launcher.window.contentView; [view layoutSubtreeIfNeeded];
             NSBitmapImageRep *bitmap = [view bitmapImageRepForCachingDisplayInRect:view.bounds];
