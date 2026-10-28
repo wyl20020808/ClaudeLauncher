@@ -57,7 +57,7 @@ SIGN_IDENTITY="ClaudeLauncher Local Signing" /bin/zsh scripts/dmg.sh
 
 - **未经 Apple 公证。** 当前用自签名证书签名，客户首次打开会被系统拦截（“无法验证开发者”）。客户需要在 Finder 中右键应用选「打开」，或到「系统设置 → 隐私与安全性」点「仍要打开」。正式分发应加入 Apple Developer Program，用 Developer ID 证书签名，再经 `notarytool` 公证并 `stapler` 装订，客户即可直接打开。
 - **授权在客户机器上重新授予。** 恢复最小化窗口需要客户自己在「隐私与安全性 → 辅助功能」里允许本应用。
-- **图标与名称。** 应用图标在构建时复制自本机官方 Claude.app，名称含“Claude”。对外分发前请自行确认商标与图标的使用许可，必要时换成自有图标和名称。
+- **图标与名称。** 应用图标为用户自有图标（resources/icon/），不再复制官方 Claude 图标；名称仍含“Claude”。对外分发前请自行确认商标与图标的使用许可，必要时换成自有图标和名称。
 - 本机安装位置为 `/Applications/Claude 启动器.app`。重新构建不会自动更新已安装版本，需重新生成 DMG 安装（证书不变时辅助功能授权保留）。
 
 ### Windows

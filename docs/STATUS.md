@@ -2,6 +2,14 @@
 
 整理日期：2026-10-28。源码与本机日常 build/：1.6 / build 7（未发布）；历史交付：1.5 / build 6。
 
+## 项目管理与菜单栏合并验证（2026-10-28）
+
+- 按用户要求在 `feature/projects` 先合并 `origin/dev`（`001829f`）。解决 build.sh、main.m 启动初始化、STATUS 和使用说明的冲突：保留 Projects.m 编译、自有 AppIcon／菜单栏图标、构建前清空输出应用、菜单栏初始化以及项目清单损坏提示；双方历史记录保留。
+- 独立验证构建：`SIGN_IDENTITY="ClaudeLauncher Local Signing" /bin/zsh scripts/build.sh build/merge-projects-check`。编译、签名及 Info.plist 校验、arm64／x86_64 五组自检通过；证书要求保持不变，版本仍为 1.7.0 / build 8。没有重建顶层 build/ 中可能正在运行的应用，也没有替换 /Applications。
+- 构建内 AppIcon.icns、menubar.png 与 resources/icon/ 源文件哈希一致，不含旧 Claude.icns。`build/merge-projects-check/projects.png` 离屏截图已查看，新 Logo、五项导航及项目表格正常。
+- 相对 origin/dev 没有 Windows 文件变更；只纳入远端既有 Windows 更新。合成测试目录已清理。真实菜单栏点击、项目入口与 Finder／剪贴板／账号激活 GUI：**未验证**；未启动或退出真实 Claude，未操作登录数据。
+- 本轮仅合并本地 dev，不推送、不打包、不发布。
+
 ## macOS 项目管理第一版（2026-10-28，feature/projects）
 
 本节为当前开发状态；下方各轮记录及页首旧版汇总保留历史结论，不代表本轮重新验收。按用户要求先执行 `git pull origin dev`；远端已从用户提到的 `8952a13` 前进到 `604fe55`，从更新后的 dev 创建 `feature/projects`。先新增 SPEC“项目清单”，再实现。只修改 macOS 源码、构建脚本与文档，Windows 不动；版本仍为 1.7.0 / build 8，不打包、不发布、不安装到 /Applications。
@@ -33,6 +41,14 @@
 - 重开图形应用后的清单恢复：**未验证**（独立存储对象读写往返已通过）。真实系统隐私拒绝提示、断开的网络卷及长期使用：**未验证**。
 - 本轮未启动、退出、登出或删除真实 Claude 实例，未读凭据、进程环境或真实项目内容，未创建真实 projects.json；仅重建 build/，日常 /Applications 版本未替换。
 - 当前功能没有待用户决定的阻塞项。后续 GUI 验收需正常退出旧启动器，再打开 build/ 中的开发版；不需要退出已运行的 Claude。Windows 项目管理留待后续按 SPEC 实现。
+
+## 菜单栏常驻图标（2026-10-28，feature/menubar）
+
+- SPEC 新增“常驻图标”（macOS 菜单栏、Windows 托盘，两端同一菜单）。
+- macOS：NSStatusItem，占位图（SF Symbol，单色模板），菜单每次打开重新扫描：显示窗口、本机账号（与主按钮同一检查流程）、检查更新、退出启动器。保留程序坞图标。
+- 构建与自检通过；新构建已运行。菜单栏图标是否可见、菜单点击：**未验证**（无截屏与界面操作权限，本机 macOS 27 的窗口列表中看不到状态栏窗口，需用户目视确认）。
+- 图标：用户提供自有图标（源图背景已透明，无需抠图）。生成 AppIcon.icns（按 macOS 图标网格留白）、菜单栏单色模板图 menubar.png（36px，线条版：三层窗口 + 星芒）、Windows 用 icon_full_1024.png（无留白）；清除源图主体外的零散像素。构建改用自有图标，不再复制官方 Claude 图标，并在构建前清空输出应用。离屏截图确认侧栏 Logo 已更换。
+- 待办：Windows 托盘与 .ico 由 Windows 端用 resources/icon/icon_full_1024.png 生成。
 
 ## Windows 1.7.1 发布（2026-10-28，windows-v1.7.1）
 

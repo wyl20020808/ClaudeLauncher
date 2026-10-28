@@ -14,8 +14,8 @@ using System.Text.RegularExpressions;
 using System.Threading;
 using System.Web.Script.Serialization;
 
-[assembly: AssemblyVersion("1.7.1.0")]
-[assembly: AssemblyFileVersion("1.7.1.0")]
+[assembly: AssemblyVersion("1.7.2.0")]
+[assembly: AssemblyFileVersion("1.7.2.0")]
 // csc 直接编译时没有目标框架声明，运行时会退回旧路径规则（拒绝超过 260 字符的路径）；Claude 的缓存目录常超过此长度。
 [assembly: System.Runtime.Versioning.TargetFramework(".NETFramework,Version=v4.8", FrameworkDisplayName = ".NET Framework 4.8")]
 namespace ClaudeLauncher {
@@ -32,8 +32,8 @@ namespace ClaudeLauncher {
     public sealed class UpdateSource { public string Name, Base; public bool GitHub; }
 
     public static class Updates {
-        public const string Version = "1.7.1.0";
-        public const string DisplayVersion = "1.7.1";
+        public const string Version = "1.7.2.0";
+        public const string DisplayVersion = "1.7.2";
         public const string BaseUrl = "https://www.u4139693.nyat.app:53569/claude-launcher/";
         public const string GitHubBase = "https://github.com/wyl20020808/ClaudeLauncher/releases/latest/download/";
         public const string ReleasesPage = "https://github.com/wyl20020808/ClaudeLauncher/releases";
@@ -96,7 +96,9 @@ namespace ClaudeLauncher {
             if (new FileInfo(path).Length != size || Hash(path) != sha256) throw new IOException("安装包大小或 SHA-256 不匹配，已拒绝。");
         }
 
-        static void Fetch(Uri uri, bool github, long maximum, int seconds, Stream output) {
+        static void Fetch(Uri uri, bool github, long maximum, int seconds, Stream output) { Fetch(uri, github, maximum, seconds, output, null, null); }
+        // progress 回报已下载字节数（在下载线程调用）；cancelled 返回 true 时中止并抛出 OperationCanceledException。
+        static void Fetch(Uri uri, bool github, long maximum, int seconds, Stream output, Action<long> progress, Func<bool> cancelled) {
             if (uri.Scheme != Uri.UriSchemeHttps) throw new IOException("更新地址必须使用 HTTPS。");
             ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12;
             var time = Stopwatch.StartNew();
@@ -126,10 +128,12 @@ namespace ClaudeLauncher {
                     using (var stream = response.GetResponseStream()) {
                         byte[] buffer = new byte[65536]; int count; long total = 0;
                         while ((count = stream.Read(buffer, 0, buffer.Length)) > 0) {
+                            if (cancelled != null && cancelled()) throw new OperationCanceledException("已取消更新。");
                             total += count;
                             if (total > maximum) throw new IOException("下载内容超出上限。");
                             if (time.Elapsed.TotalSeconds > seconds) throw new IOException("下载超时。");
                             output.Write(buffer, 0, count);
+                            if (progress != null) progress(total);
                         }
                     }
                     return;
@@ -162,12 +166,13 @@ namespace ClaudeLauncher {
             catch (Exception error) { Diagnostics.Error("update_mark_error", error); }
         }
         // 下载到本用户更新缓存；大小或哈希不符时删除并抛出，由调用方换下一个来源。
-        public static string Download(Release r, UpdateSource source) {
+        public static string Download(Release r, UpdateSource source) { return Download(r, source, null, null); }
+        public static string Download(Release r, UpdateSource source, Action<long> progress, Func<bool> cancelled) {
             Verify(new JavaScriptSerializer().Serialize(r), PublicKey());
             string directory = Path.Combine(Cache, Guid.NewGuid().ToString("N")); Directory.CreateDirectory(directory);
             string path = Path.Combine(directory, r.file);
             try {
-                using (var file = File.Create(path)) Fetch(new Uri(source.Base + Uri.EscapeDataString(r.file)), source.GitHub, r.size, 300, file);
+                using (var file = File.Create(path)) Fetch(new Uri(source.Base + Uri.EscapeDataString(r.file)), source.GitHub, r.size, 300, file, progress, cancelled);
                 VerifyFile(path, r.size, r.sha256);
             } catch {
                 try { File.Delete(path); Directory.Delete(directory); } catch (Exception cleanup) { Diagnostics.Error("update_cleanup_error", cleanup); }
@@ -204,13 +209,15 @@ namespace ClaudeLauncher {
             if (candidate == null) return "新版安装包没有签名，而当前程序已签名，已拒绝更新。";
             return String.Equals(current, candidate, StringComparison.OrdinalIgnoreCase) ? null : "新版安装包的签名者与当前程序不一致，已拒绝更新。";
         }
-        // 运行前再次核对哈希与签名者；Setup 静默安装，完成后由 Setup 重新打开启动器。
+        // Setup 只显示进度窗口（不显示向导页、不弹确认框），完成后由 Setup 重新打开启动器。
+        public const string SetupArguments = "/SILENT /SUPPRESSMSGBOXES /NORESTART /RELAUNCH=1";
+        // 运行前再次核对哈希与签名者。
         public static void StartSetup(string setup, Release r) {
             VerifyFile(setup, r.size, r.sha256);
             string problem = SignerProblem(Signer(Assembly.GetExecutingAssembly().Location), Signer(setup));
             if (problem != null) throw new IOException(problem);
             Diagnostics.Write("update_setup_start", "version=" + r.version);
-            Process.Start(new ProcessStartInfo(setup, "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /RELAUNCH=1") { UseShellExecute = false });
+            Process.Start(new ProcessStartInfo(setup, SetupArguments) { UseShellExecute = false });
         }
 
         // ---- 1.2.0 兼容：旧清单与单 exe 原地替换 ----

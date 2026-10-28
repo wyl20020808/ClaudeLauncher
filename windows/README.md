@@ -62,10 +62,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup.ps1
 - 先卸载再安装（SPEC）：用固定 AppId 查当前用户的卸载项；已安装时提示“检测到已安装 x.y.z，将先卸载再安装新版”。随后按 PID 核对、对旧安装目录中运行的启动器窗口发送正常关闭（WM_CLOSE，不结束进程，不涉及 Claude），等待退出；再静默运行旧版卸载程序，等卸载项和旧卸载程序都消失后才安装新版。启动器无法正常关闭（如删除未完成）或旧版卸载失败、超时，都中止安装并提示原因。
 - 卸载只删除安装的 `ClaudeLauncher.exe`、卸载程序以及自建更新在安装目录内留下的 `.previous-*`、`.new-*`、`.failed-*` 文件。**不删除任何账号数据目录**（`%APPDATA%\Claude-*`、`%LOCALAPPDATA%\Claude-Data`、商店版 `Packages\Claude_*`），也不删除启动器日志、登录保护和删除状态目录 `%LOCALAPPDATA%\Claude-MultiLauncher`。
 - 升级覆盖安装时，Inno Setup 只会请求关闭占用本程序文件的进程（启动器本身），不涉及 Claude。
-- 版本号 1.7.1（程序集 1.7.1.0，见 `src/Updates.cs`）；与 macOS 各自递增，不要求一致。
-- 安装向导使用 Inno Setup 默认英文界面（Inno 6.7.3 未内置简体中文向导文件），程序名、快捷方式为中文。
+- 版本号 1.7.2（程序集 1.7.2.0，见 `src/Updates.cs`）；与 macOS 各自递增，不要求一致。
+- 安装向导为简体中文：`installer/ChineseSimplified.isl` 取自 Inno Setup 官方源码 `Files/Languages/ChineseSimplified.isl`（6.5.0+；6.7.3 安装包未自带）。
 - **代码签名：未签名。** 本机没有代码签名证书，安装程序和 `ClaudeLauncher.exe` 都没有 Authenticode 签名。客户首次运行会看到 SmartScreen“Windows 已保护你的电脑”，需点“更多信息 → 仍要运行”；部分杀毒软件可能更谨慎。需要正式证书（OV/EV）后在打包时对 exe 和 setup.exe 签名，此项待用户决定。
-- 静默安装参数 `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /RELAUNCH=1`：`/RELAUNCH=1` 仅在静默模式下让 Setup 装好后重新打开启动器。
+- 应用内更新运行 Setup 的参数 `/SILENT /SUPPRESSMSGBOXES /NORESTART /RELAUNCH=1`：只显示中文进度窗口（“正在卸载旧版… / 正在安装”），不显示向导页和确认框；`/RELAUNCH=1` 仅在静默模式下让 Setup 装好后重新打开启动器。1.7.1 及更早版本用 `/VERYSILENT`，不显示任何窗口。
 
 ## 应用内更新（SPEC 更新与安装）
 
@@ -75,7 +75,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup.ps1
 - 网络：只走 HTTPS（TLS 1.2）；不自动跳转，自建服务出现任何跳转即拒绝，GitHub 只允许跳到 `github.com`、`objects.githubusercontent.com`、`release-assets.githubusercontent.com`（HTTPS、默认端口），最多 5 跳；每次请求 15 秒超时，清单 30 秒、安装包 300 秒总时限，并按清单 `size` 限制下载字节数。
 - 只升级不降级；系统低于 `minimumOS` 时只提示不安装。下载到 `%LOCALAPPDATA%\Claude-MultiLauncher\updates\<随机>\`，大小或 SHA-256 不符即删除并换下一个来源。
 - 运行前再次核对哈希，并比对 Authenticode 签名者：当前程序已签名时，Setup 必须由同一证书签名且签名有效。**当前程序与 Setup 都没有签名，无法比对签名者，只依赖清单签名与 SHA-256**（SPEC【Windows 差异】）。
-- 通过后静默运行 Setup，启动器随即关闭；Setup 先卸载旧版、安装新版，再重新打开启动器。不退出、不结束任何 Claude。
+- 进度窗口（1.7.2 起）：确认“立即更新”后显示“下载 → 校验 → 安装”三步；下载有真实进度（MB 与百分比、当前来源），可取消（取消即删除临时文件，不做任何改动），关闭窗口视为取消；来源失败时窗口内自动切换到下一个来源；校验时为不定进度；校验通过后提示“启动器即将关闭…完成后会自动重新打开”，2 秒后启动器关闭，Setup 接着显示中文安装进度。不退出、不结束任何 Claude。
 - 1.2.0 兼容：程序保留 `--apply-update`（旧清单 `latest.json` + 单个 exe 原地替换），供仍在 1.2.0 的客户端升级到 1.7.0 单 exe。
 
 ## 发布（发布机）

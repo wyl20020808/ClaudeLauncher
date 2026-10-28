@@ -5,11 +5,9 @@ OUT="${1:-build}"
 mkdir -p "$OUT"
 OUT="${OUT:A}"
 APP="$OUT/Claude 启动器.app"
-CLAUDE=/Applications/Claude.app
-[[ -d "$CLAUDE" ]] || CLAUDE="$HOME/Applications/Claude.app"
-[[ -d "$CLAUDE" ]] || { print -u2 '未找到官方 Claude.app'; exit 1; }
-ICON=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "$CLAUDE/Contents/Info.plist")
-[[ "$ICON" == *.icns ]] || ICON="$ICON.icns"
+# 每次从空目录生成，避免旧资源（如以前复制的官方图标）残留；拒绝直接写入“应用程序”文件夹。
+[[ "$APP" != /Applications/* ]] || { print -u2 "不要直接构建到 /Applications，请用 DMG 安装"; exit 1; }
+rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 BUILD_SDK="${SDKROOT:-}"
 if [[ -z "$BUILD_SDK" ]]; then
@@ -20,7 +18,7 @@ if [[ -z "$BUILD_SDK" ]]; then
     fi
 fi
 xcrun clang -isysroot "$BUILD_SDK" -arch arm64 -arch x86_64 -fobjc-arc -Wall -Wextra -Wno-unused-parameter -mmacosx-version-min=12.0 -framework Cocoa -framework ApplicationServices -framework Security src/main.m src/Projects.m -o "$APP/Contents/MacOS/ClaudeLauncher"
-cp "$CLAUDE/Contents/Resources/$ICON" "$APP/Contents/Resources/Claude.icns"
+cp resources/icon/AppIcon.icns resources/icon/menubar.png "$APP/Contents/Resources/"
 cp resources/ui/*.webp resources/update-helper.sh windows/assets/update-public-key.xml "$APP/Contents/Resources/"
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -33,7 +31,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleVersion</key><string>8</string>
 <key>CFBundleShortVersionString</key><string>1.7.0</string>
-<key>CFBundleIconFile</key><string>Claude.icns</string>
+<key>CFBundleIconFile</key><string>AppIcon.icns</string>
 <key>LSMinimumSystemVersion</key><string>12.0</string>
 <key>NSHighResolutionCapable</key><true/>
 <key>NSPrincipalClass</key><string>NSApplication</string>
