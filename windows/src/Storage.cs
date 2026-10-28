@@ -281,7 +281,10 @@ namespace ClaudeLauncher {
                 Rejects(() => Updates.Verify(sign(oldName), key, "macos"), "旧的中文 DMG 文件名必须拒绝");
             }
             Check(Updates.Compare("1.10.0", "1.9.9") > 0 && Updates.Compare("1.7.0", "1.7") == 0 && Updates.Compare("1.6.9", "1.7.0") < 0, "版本比较错误");
-            Check(!Updates.IsNewer(new Release { version = Updates.DisplayVersion }) && !Updates.IsNewer(new Release { version = "1.6.0" }) && Updates.IsNewer(new Release { version = "1.7.1" }), "只升级、不降级");
+            // 相对当前版本构造“更高/更低”，版本号递增后无需改测试。
+            int[] current = Updates.DisplayVersion.Split('.').Select(Int32.Parse).ToArray();
+            string higher = current[0] + "." + current[1] + "." + (current[2] + 1);
+            Check(!Updates.IsNewer(new Release { version = Updates.DisplayVersion }) && !Updates.IsNewer(new Release { version = "1.6.0" }) && Updates.IsNewer(new Release { version = higher }), "只升级、不降级");
             Check(Updates.OsSupported("10.0.19041", new Version(10, 0, 26200)) && !Updates.OsSupported("10.0.19041", new Version(10, 0, 18363)), "系统版本比较错误");
             Check(Updates.RedirectAllowed(new Uri("https://objects.githubusercontent.com/x"), true) && Updates.RedirectAllowed(new Uri("https://release-assets.githubusercontent.com/x"), true) && Updates.RedirectAllowed(new Uri("https://github.com/x"), true), "GitHub 下载域名应允许");
             Check(!Updates.RedirectAllowed(new Uri("https://evil.example/x"), true) && !Updates.RedirectAllowed(new Uri("http://github.com/x"), true) &&

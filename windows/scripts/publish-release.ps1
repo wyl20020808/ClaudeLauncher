@@ -1,14 +1,16 @@
 ﻿param(
-    [Parameter(Mandatory = $true)][long]$MacSize,        # macOS 端 dmg.sh 给出的 size
-    [Parameter(Mandatory = $true)][string]$MacSha256,    # macOS 端 dmg.sh 给出的 sha256
+    [long]$MacSize = 0,                                  # 同时发布 macOS 时：dmg.sh 给出的 size
+    [string]$MacSha256 = '',                             # 同时发布 macOS 时：dmg.sh 给出的 sha256
     [string]$MacDmg = '',                                # 本地 DMG；为空时从草稿 Release 下载
     [string]$KeyFile = (Join-Path $env:LOCALAPPDATA 'ClaudeLauncher-Publisher/signing-key.dpapi'),
     [string]$PublicDirectory = (Join-Path (Split-Path $PSScriptRoot -Parent) 'updates/public'),
     [string]$Repository = 'wyl20020808/ClaudeLauncher',
     [switch]$DryRun                                      # 只构建、签名、本地校验，不上传；允许测试密钥
 )
-# SPEC 更新与安装 · 发布流程：构建 Setup → 取得并核对 macOS DMG → 签名两份清单（及 1.2.0 兼容清单）→
-# 上传 GitHub 草稿 → 切换自建服务清单 → 草稿转正式 → 两个来源各下载一次验签核对。
+# SPEC 更新与安装 · 发布流程。两种方式：
+# - 两端同时发布（给出 -MacSize/-MacSha256）：标签 v<版本>，macOS 先把 DMG 传到同名草稿 Release。
+# - 只发布 Windows（不给 macOS 参数）：标签 windows-v<版本>，从当前最新 Release 取出 latest-macos.json 与对应 DMG，
+#   验签核对后一并放进新 Release，保证 GitHub latest/download 回退对 macOS 仍然有效；自建服务的 macOS 清单不动。
 # 任一步失败都不留下半成品：正式发布之后的失败会恢复自建清单并把 Release 改回草稿。私钥只在内存中使用，不落盘、不输出。
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Security
@@ -26,8 +28,10 @@ function Invoke-Gh {
 }
 function Write-Utf8([string]$path, [string]$text) { [IO.File]::WriteAllText($path, $text, (New-Object Text.UTF8Encoding($false))) }
 
+$joint = $MacSize -gt 0 -or $MacSha256 -or $MacDmg
+if ($joint -and ($MacSize -le 0 -or $MacSha256 -notmatch '^[a-f0-9]{64}$')) { throw 'Joint release needs -MacSize and a 64-character lowercase -MacSha256.' }
+if (-not $ghExe) { throw 'GitHub CLI (gh) not found.' }
 if (-not $DryRun) {
-    if (-not $ghExe) { throw 'GitHub CLI (gh) not found.' }
     & $ghExe auth status *> $null
     if ($LASTEXITCODE -ne 0) { throw 'gh is not logged in. Run: gh auth login' }
 }
@@ -38,7 +42,6 @@ if (-not $PSBoundParameters.ContainsKey('KeyFile') -and -not (Test-Path -Literal
     if ($redirected) { $KeyFile = $redirected; Write-Output ('Using signing key from Codex package cache: ' + $KeyFile) }
 }
 if (-not (Test-Path -LiteralPath $KeyFile)) { throw ('Signing key not found: ' + $KeyFile + '. Restore the DPAPI key on the publishing account first; do not generate a new one.') }
-if ($MacSha256 -notmatch '^[a-f0-9]{64}$') { throw 'MacSha256 must be 64 lowercase hex characters.' }
 
 Step 'Build Windows Setup (tests and self-test included)'
 & (Join-Path $PSScriptRoot 'setup.ps1') | Out-Null
@@ -46,27 +49,48 @@ $exe = Join-Path $projectRoot 'artifacts/bin/ClaudeLauncher.exe'
 [Reflection.Assembly]::LoadFile([IO.Path]::GetFullPath($exe)) | Out-Null
 $version = [ClaudeLauncher.Updates]::DisplayVersion
 $assemblyVersion = [ClaudeLauncher.Updates]::Version
-$tag = 'v' + $version
+$tag = if ($joint) { 'v' + $version } else { 'windows-v' + $version }
 $setupName = [ClaudeLauncher.Updates]::FileName('windows', $version)
-$dmgName = [ClaudeLauncher.Updates]::FileName('macos', $version)
 $setup = Join-Path $projectRoot ('artifacts/setup/' + $setupName)
 if (-not (Test-Path -LiteralPath $setup)) { throw ('Setup not found: ' + $setup) }
+$commit = (& git -C $projectRoot rev-parse HEAD).Trim()
+if (-not $DryRun -and -not (& git -C $projectRoot branch -r --contains $commit)) { throw ('Commit ' + $commit + ' is not pushed. Push it before publishing.') }
 $staging = Join-Path $projectRoot ('artifacts/release/' + $version + '-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
 [IO.Directory]::CreateDirectory($staging) | Out-Null
 Copy-Item -LiteralPath $setup -Destination (Join-Path $staging $setupName)
 $legacyName = 'ClaudeLauncher-' + $assemblyVersion + '.exe'
 Copy-Item -LiteralPath $exe -Destination (Join-Path $staging $legacyName)
+$manifests = @{}
 
-Step ('Obtain macOS DMG ' + $dmgName)
-if (-not $DryRun) {
-    $draft = (& $ghExe release view $tag --repo $Repository --json isDraft | ConvertFrom-Json)
-    if ($LASTEXITCODE -ne 0 -or -not $draft) { throw ('Release ' + $tag + ' not found. macOS must upload the DMG to a draft release first.') }
-    if (-not $draft.isDraft) { throw ('Release ' + $tag + ' is already published. Increase the version instead of republishing.') }
+if ($joint) {
+    $dmgName = [ClaudeLauncher.Updates]::FileName('macos', $version)
+    Step ('Obtain macOS DMG ' + $dmgName + ' from draft ' + $tag)
+    if (-not $DryRun) {
+        $draft = (& $ghExe release view $tag --repo $Repository --json isDraft | ConvertFrom-Json)
+        if ($LASTEXITCODE -ne 0 -or -not $draft) { throw ('Release ' + $tag + ' not found. macOS must upload the DMG to a draft release first.') }
+        if (-not $draft.isDraft) { throw ('Release ' + $tag + ' is already published. Increase the version instead of republishing.') }
+    }
+    if ($MacDmg) { Copy-Item -LiteralPath $MacDmg -Destination (Join-Path $staging $dmgName) }
+    else { Invoke-Gh release download $tag --repo $Repository --pattern $dmgName --dir $staging }
+    if ((Get-Item -LiteralPath (Join-Path $staging $dmgName)).Length -ne $MacSize -or [ClaudeLauncher.Updates]::Hash((Join-Path $staging $dmgName)) -ne $MacSha256) { throw 'macOS DMG size or SHA-256 does not match the values given by macOS.' }
+} else {
+    Step 'Windows-only release: carry the current macOS manifest and DMG from the latest release'
+    # PowerShell 5.1 在 Stop 模式下会把原生命令的 stderr 当作异常；这里“不存在”是预期结果，临时放宽。
+    $ErrorActionPreference = 'Continue'
+    & $ghExe release view $tag --repo $Repository --json tagName *> $null
+    $exists = $LASTEXITCODE -eq 0
+    $ErrorActionPreference = 'Stop'
+    if ($exists) { throw ('Release ' + $tag + ' already exists. Increase the version instead of republishing.') }
+    $latestTag = (& $ghExe release view --repo $Repository --json tagName | ConvertFrom-Json).tagName
+    if ($LASTEXITCODE -ne 0 -or -not $latestTag) { throw 'Cannot find the latest published release to carry macOS files from.' }
+    Invoke-Gh release download $latestTag --repo $Repository --pattern 'latest-macos.json' --dir $staging
+    $macRelease = [ClaudeLauncher.Updates]::Verify([IO.File]::ReadAllText((Join-Path $staging 'latest-macos.json')), [ClaudeLauncher.Updates]::PublicKey(), 'macos')
+    $dmgName = $macRelease.file
+    Invoke-Gh release download $latestTag --repo $Repository --pattern $dmgName --dir $staging
+    if ((Get-Item -LiteralPath (Join-Path $staging $dmgName)).Length -ne $macRelease.size -or [ClaudeLauncher.Updates]::Hash((Join-Path $staging $dmgName)) -ne $macRelease.sha256) { throw ('macOS DMG in ' + $latestTag + ' does not match its manifest.') }
+    $manifests['latest-macos.json'] = $macRelease
+    Write-Output ('  carried macOS ' + $macRelease.version + ' from ' + $latestTag)
 }
-if ($MacDmg) { Copy-Item -LiteralPath $MacDmg -Destination (Join-Path $staging $dmgName) }
-else { Invoke-Gh release download $tag --repo $Repository --pattern $dmgName --dir $staging }
-$dmg = Join-Path $staging $dmgName
-if ((Get-Item -LiteralPath $dmg).Length -ne $MacSize -or [ClaudeLauncher.Updates]::Hash($dmg) -ne $MacSha256) { throw 'macOS DMG size or SHA-256 does not match the values given by macOS.' }
 
 Step 'Sign manifests (key stays in memory)'
 $rsa = New-Object Security.Cryptography.RSACryptoServiceProvider
@@ -83,8 +107,9 @@ try {
     }
     $sha256 = [Security.Cryptography.CryptoConfig]::MapNameToOID('SHA256')
     $serializer = New-Object Web.Script.Serialization.JavaScriptSerializer
-    $manifests = @{}
-    foreach ($entry in @(@('windows', $setupName, '10.0.19041'), @('macos', $dmgName, '12.0'))) {
+    $entries = @(, @('windows', $setupName, '10.0.19041'))
+    if ($joint) { $entries += , @('macos', $dmgName, '12.0') }
+    foreach ($entry in $entries) {
         $file = Join-Path $staging $entry[1]
         $release = New-Object ClaudeLauncher.Release
         $release.platform = $entry[0]; $release.version = $version; $release.file = $entry[1]
@@ -96,7 +121,7 @@ try {
         Write-Utf8 (Join-Path $staging $name) $json
         $manifests[$name] = $release
     }
-    # 1.2.0 客户端：旧格式清单指向 1.7 的单个 exe，由其 --apply-update 原地替换。
+    # 1.2.0 客户端：旧格式清单指向本版的单个 exe，由其 --apply-update 原地替换。
     $legacy = New-Object ClaudeLauncher.LegacyRelease
     $legacy.version = $assemblyVersion; $legacy.file = $legacyName
     $legacy.size = (Get-Item -LiteralPath (Join-Path $staging $legacyName)).Length; $legacy.sha256 = [ClaudeLauncher.Updates]::Hash((Join-Path $staging $legacyName))
@@ -109,7 +134,7 @@ try {
     if ($private) { [Array]::Clear($private, 0, $private.Length) }
 }
 if ($DryRun) {
-    Step ('Dry run complete. Signed and verified locally; nothing uploaded. Staging: ' + $staging)
+    Step ('Dry run complete (' + $tag + '). Signed and verified locally; nothing uploaded. Staging: ' + $staging)
     Get-ChildItem -LiteralPath $staging | ForEach-Object { Write-Output ('  ' + $_.Name + '  ' + $_.Length + ' bytes') }
     return
 }
@@ -124,14 +149,22 @@ foreach ($name in @($setupName, $dmgName, $legacyName)) {
     } else { Copy-Item -LiteralPath $source -Destination $destination }
 }
 
-Step ('Upload Setup and manifests to draft ' + $tag)
-Invoke-Gh release upload $tag (Join-Path $staging $setupName) (Join-Path $staging 'latest-windows.json') (Join-Path $staging 'latest-macos.json') --repo $Repository --clobber
+$assets = @((Join-Path $staging $setupName), (Join-Path $staging 'latest-windows.json'), (Join-Path $staging 'latest-macos.json'))
+if ($joint) {
+    Step ('Upload Setup and manifests to draft ' + $tag)
+    Invoke-Gh release upload $tag @assets --repo $Repository --clobber
+} else {
+    Step ('Create draft ' + $tag + ' at ' + $commit + ' with Windows files and the carried macOS files')
+    Invoke-Gh release create $tag @assets (Join-Path $staging $dmgName) --repo $Repository --draft --target $commit --title ('Windows ' + $version) --notes ('Windows ' + $version + '. macOS files carried from the previous release so GitHub fallback keeps working on both platforms.')
+}
 
 $switched = @()
 $published = $false
 try {
     Step 'Switch self-hosted manifests'
-    foreach ($name in @('latest-windows.json', 'latest-macos.json', 'latest.json')) {
+    $names = @('latest-windows.json', 'latest.json')
+    if ($joint) { $names += 'latest-macos.json' }
+    foreach ($name in $names) {
         $target = Join-Path $PublicDirectory $name
         $pending = $target + '.pending'
         Copy-Item -LiteralPath (Join-Path $staging $name) -Destination $pending -Force
@@ -153,14 +186,16 @@ try {
             Invoke-WebRequest -UseBasicParsing -Uri ($source[1] + $name) -OutFile $download -MaximumRedirection $source[2] -TimeoutSec 60
             $remote = [ClaudeLauncher.Updates]::Verify([IO.File]::ReadAllText($download), [ClaudeLauncher.Updates]::PublicKey(), $platform)
             $expected = $manifests[$name]
-            if ($remote.version -ne $expected.version -or $remote.sha256 -ne $expected.sha256 -or $remote.size -ne $expected.size) { throw ($source[0] + ' serves a different ' + $name) }
+            # 只发布 Windows 时，自建服务的 macOS 清单保持原样，只要求验签通过且不低于随附版本。
+            $sameAsExpected = $remote.version -eq $expected.version -and $remote.sha256 -eq $expected.sha256 -and $remote.size -eq $expected.size
+            if (-not $sameAsExpected -and -not (-not $joint -and $platform -eq 'macos' -and $source[0] -eq 'self-hosted' -and [ClaudeLauncher.Updates]::Compare($remote.version, $expected.version) -ge 0)) { throw ($source[0] + ' serves a different ' + $name) }
             $package = Join-Path $staging ('check-' + $source[0] + '-' + $platform + '.bin')
             Invoke-WebRequest -UseBasicParsing -Uri ($source[1] + [Uri]::EscapeDataString($remote.file)) -OutFile $package -MaximumRedirection $source[2] -TimeoutSec 600
             if ((Get-Item -LiteralPath $package).Length -ne $remote.size -or [ClaudeLauncher.Updates]::Hash($package) -ne $remote.sha256) { throw ($source[0] + ' package does not match ' + $name) }
-            Write-Output ('  ' + $source[0] + ' ' + $platform + ': OK')
+            Write-Output ('  ' + $source[0] + ' ' + $platform + ' ' + $remote.version + ': OK')
         }
     }
-    Step ('Published ' + $version + '. Staging kept at ' + $staging)
+    Step ('Published ' + $tag + '. Staging kept at ' + $staging)
 } catch {
     $failure = $_
     Write-Output ('FAILED: ' + $failure + ' -- rolling back.')

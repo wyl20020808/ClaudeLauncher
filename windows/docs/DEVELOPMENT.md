@@ -37,11 +37,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File updates/start-server.ps1
 
 ## 发版流程
 
-1. 两端统一版本：修改 `src/Updates.cs` 的 AssemblyVersion、AssemblyFileVersion、`Version`（x.y.z.0）与 `DisplayVersion`（x.y.z）；更新说明。
+1. 递增版本（两端各自递增）：修改 `src/Updates.cs` 的 AssemblyVersion、AssemblyFileVersion、`Version`（x.y.z.0）与 `DisplayVersion`（x.y.z）；更新说明。
 2. 构建并运行与改动相符的检查（`build.ps1`、`--self-test`；改动 `--apply-update` 时再跑 `test-install.ps1`）。
 3. 在开发机做界面及真实账号的小范围验证，记录未验证边界。
-4. macOS 端把 DMG 上传到草稿 Release `v<版本>` 并给出 size、sha256。
-5. 获得该次发布授权后运行 `scripts/publish-release.ps1 -MacSize … -MacSha256 …`（详见 `updates/维护说明.md`）；可先加 `-DryRun` 演练。
+4. 两端同时发布时，macOS 端把 DMG 上传到草稿 Release `v<版本>` 并给出 size、sha256；只发布 Windows 时跳过。
+5. 获得该次发布授权后运行 `scripts/publish-release.ps1`（两端同时发布时加 `-MacSize … -MacSha256 …`）（详见 `updates/维护说明.md`）；可先加 `-DryRun` 演练。
 6. 脚本最后会从自建服务和 GitHub 各下载一次验签核对；之后可再用客户端“检查更新”确认。
 
 更新服务器保留在 `updates/`，避免破坏当前隧道和运行服务。不要把 `updates/public/` 当开发输出目录；普通构建不能改写这里的已签名文件。
