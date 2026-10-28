@@ -8,6 +8,8 @@ import threading
 import time
 from urllib.parse import unquote, urlsplit
 
+import sync
+
 ROOT = Path(__file__).resolve().parent
 PUBLIC = ROOT / 'public'
 # 严格白名单：新协议清单与安装包，以及 1.2.0 客户端仍在使用的 latest.json 与单 exe。
@@ -98,6 +100,8 @@ class Server(http.server.ThreadingHTTPServer):
 if __name__ == '__main__':
     try:
         with Server(('127.0.0.1', 8080), Handler) as server:
+            # 定时从 GitHub 最新 Release 同步已签名的清单与安装包，任一端在 GitHub 发布后自建服务自动跟上。
+            threading.Thread(target=sync.run_forever, daemon=True).start()
             (ROOT / 'server-state.json').write_text(json.dumps({'pid': os.getpid(), 'port': 8080, 'started': time.time()}), encoding='utf-8')
             server.serve_forever()
     except Exception as error:
