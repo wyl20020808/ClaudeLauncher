@@ -30,6 +30,7 @@ namespace ClaudeLauncher {
         public long size;
     }
     public sealed class UpdateSource { public string Name, Base; public bool GitHub; }
+    public sealed class SourceCheck { public UpdateSource Source; public Release Release; public string Failure; }
 
     public static class Updates {
         public const string Version = "1.7.2.0";
@@ -153,6 +154,23 @@ namespace ClaudeLauncher {
                 Diagnostics.Write("update_check", "source=" + source.Name + "; available=" + release.version);
                 return release;
             }
+        }
+        // SPEC 来源与回退·取较高版本：同时向所有来源取清单，各自验签；失败原因记在 Failure。
+        public static SourceCheck[] CheckAll(UpdateSource[] sources) {
+            var tasks = sources.Select(source => System.Threading.Tasks.Task.Run(() => {
+                var check = new SourceCheck { Source = source };
+                try { check.Release = CheckSource(source); } catch (Exception error) { check.Failure = error.Message; }
+                return check;
+            })).ToArray();
+            System.Threading.Tasks.Task.WaitAll(tasks);
+            return tasks.Select(t => t.Result).ToArray();
+        }
+        // 在验签通过的清单中取版本最高者；同版本按来源顺序（自建优先）排列，供下载失败时换下一个。空数组表示全部来源失败。
+        public static SourceCheck[] Candidates(SourceCheck[] checks) {
+            var valid = checks.Where(c => c.Release != null).ToArray();
+            if (valid.Length == 0) return valid;
+            string best = valid.Select(c => c.Release.version).Aggregate((a, b) => Compare(a, b) >= 0 ? a : b);
+            return valid.Where(c => Compare(c.Release.version, best) == 0).ToArray();
         }
         // 启动后自动检查：距上次成功检查超过 24 小时才进行。
         public static bool CheckDue() {

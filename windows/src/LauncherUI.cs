@@ -941,7 +941,7 @@ namespace ClaudeLauncher {
 
         // 更新进度窗口：下载（真实进度）→ 校验 → 安装三步；下载期间可取消，关闭窗口视为取消。
         internal sealed class UpdateProgress {
-            public Window Window; public TextBlock Status, Detail; public ProgressBar Bar; public Button Cancel;
+            public Window Window; public TextBlock Source, Status, Detail; public ProgressBar Bar; public Button Cancel;
             public TextBlock[] Steps; public volatile bool Cancelled; public bool Finished;
         }
         internal UpdateProgress BuildUpdateProgress(string version) {
@@ -950,7 +950,9 @@ namespace ClaudeLauncher {
             dialog.Width = 460;
             var panel = (StackPanel)((ScrollViewer)dialog.Content).Content;
             panel.Children.Add(new TextBlock { Text = "正在更新到 " + version, FontSize = 18, FontWeight = FontWeights.SemiBold });
-            panel.Children.Add(new TextBlock { Text = "当前版本 " + Updates.DisplayVersion + " · Claude 实例和账号数据不受影响", FontSize = 12, Foreground = B(Muted), Margin = new Thickness(0, 6, 0, 16) });
+            panel.Children.Add(new TextBlock { Text = "当前版本 " + Updates.DisplayVersion + " · Claude 实例和账号数据不受影响", FontSize = 12, Foreground = B(Muted), Margin = new Thickness(0, 6, 0, 4) });
+            progress.Source = new TextBlock { Text = " ", FontSize = 12, Foreground = B(Muted), Margin = new Thickness(0, 0, 0, 16) };
+            panel.Children.Add(progress.Source);
             var steps = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 14) };
             string[] names = { "1  下载", "2  校验", "3  安装" };
             progress.Steps = new TextBlock[names.Length];
@@ -991,7 +993,7 @@ namespace ClaudeLauncher {
             if (progress == null || progress.Finished) return;
             progress.Finished = true; progress.Window.Close();
         }
-        // SPEC 更新与安装：自建服务 → GitHub Releases；清单或下载失败换下一个来源，都失败时提供“前往 GitHub 下载”。
+        // SPEC 更新与安装：同时查自建服务与 GitHub，取较高版本；同版本自建优先，下载失败换同版本的下一个来源，都失败时提供“前往 GitHub 下载”。
         async Task CheckUpdate(bool manual) {
             if (updating || closed) return;
             if (manual && (deleting || pending.Count > 0 || checking.Count > 0)) { Message("请先等待当前操作完成。", true); return; }
@@ -1002,30 +1004,34 @@ namespace ClaudeLauncher {
             bool accepted = false;
             UpdateProgress progress = null;
             try {
-                foreach (UpdateSource source in Updates.Sources()) {
-                    Release release;
-                    if (progress != null) { SetUpdateStep(progress, 0); progress.Bar.IsIndeterminate = true; progress.Status.Text = "正在从" + source.Name + "获取更新信息…"; progress.Detail.Text = " "; }
-                    try { release = await Task.Run(() => Updates.CheckSource(source)); }
-                    catch (Exception error) { failures.Add(source.Name + "：" + error.Message); continue; }
-                    if (closed) return;
+                // 同时取所有来源的清单，取验签通过的最高版本；某个来源落后或失败不再挡住其他来源的新版本。
+                SourceCheck[] checks = await Task.Run(() => Updates.CheckAll(Updates.Sources()));
+                if (closed) return;
+                foreach (SourceCheck check in checks) if (check.Failure != null) failures.Add(check.Source.Name + "：" + check.Failure);
+                SourceCheck[] candidates = Updates.Candidates(checks);
+                if (candidates.Length > 0) {
                     Updates.MarkChecked();
-                    if (!Updates.IsNewer(release)) { if (manual) Alert("已是最新版本", "当前版本 " + Updates.DisplayVersion + "。"); return; }
-                    if (!Updates.OsSupported(release.minimumOS, Environment.OSVersion.Version)) {
-                        if (manual) Alert("新版本需要更高的系统版本", release.version + " 需要 Windows " + release.minimumOS + " 及以上。");
+                    Release latest = candidates[0].Release;
+                    Diagnostics.Write("update_select", "version=" + latest.version + "; sources=" + String.Join(",", candidates.Select(c => c.Source.Name)));
+                    if (!Updates.IsNewer(latest)) { if (manual) Alert("已是最新版本", "当前版本 " + Updates.DisplayVersion + "。"); return; }
+                    if (!Updates.OsSupported(latest.minimumOS, Environment.OSVersion.Version)) {
+                        if (manual) Alert("新版本需要更高的系统版本", latest.version + " 需要 Windows " + latest.minimumOS + " 及以上。");
                         return;
                     }
-                    if (!accepted) {
-                        if (deleting || pending.Count > 0 || checking.Count > 0) { Message("发现新版本 " + release.version + "，当前操作完成后可在系统设置中更新。", false); return; }
-                        if (Ask("发现新版本 " + release.version, "当前版本 " + Updates.DisplayVersion + "。更新会先校验安装包，再关闭启动器、卸载旧版并安装新版，完成后重新打开；Claude 实例和账号数据不受影响。",
-                            new[] { "稍后", "立即更新" }, 0, 1) != 1) return;
-                        accepted = true;
-                        progress = BuildUpdateProgress(release.version);
-                        progress.Window.Owner = window;
-                        window.IsEnabled = false;
-                        progress.Window.Show();
-                    }
+                    if (deleting || pending.Count > 0 || checking.Count > 0) { Message("发现新版本 " + latest.version + "，当前操作完成后可在系统设置中更新。", false); return; }
+                    if (Ask("发现新版本 " + latest.version, "当前版本 " + Updates.DisplayVersion + "。更新会先校验安装包，再关闭启动器、卸载旧版并安装新版，完成后重新打开；Claude 实例和账号数据不受影响。",
+                        new[] { "稍后", "立即更新" }, 0, 1) != 1) return;
+                    accepted = true;
+                    progress = BuildUpdateProgress(latest.version);
+                    progress.Window.Owner = window;
+                    window.IsEnabled = false;
+                    progress.Window.Show();
+                }
+                foreach (SourceCheck candidate in candidates) {
+                    UpdateSource source = candidate.Source; Release release = candidate.Release;
                     SetUpdateStep(progress, 0);
                     progress.Bar.IsIndeterminate = false; progress.Bar.Value = 0;
+                    progress.Source.Text = "来源：" + source.Name;
                     progress.Status.Text = "正在从" + source.Name + "下载 " + release.file + "…";
                     progress.Detail.Text = "0.0 MB / " + Megabytes(release.size);
                     Message(progress.Status.Text, false);
