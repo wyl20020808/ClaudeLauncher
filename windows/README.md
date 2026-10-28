@@ -1,6 +1,6 @@
 # Windows 版
 
-按 [跨平台行为规格](../docs/SPEC.md) 原生实现，不与 macOS 共享代码。由此前独立维护的 Windows 启动器（发布版 1.2.0）整合而来，2026-10-28 对齐 macOS 1.6（feature/windows-sync）。本目录是开发版，未发布，也未替换客户包。
+按 [跨平台行为规格](../docs/SPEC.md) 原生实现，不与 macOS 共享代码。由此前独立维护的 Windows 启动器（发布版 1.2.0）整合而来，2026-10-28 对齐 macOS 1.6，随后升级到 1.7.0 并实现新的更新协议（feature/windows-sync）。本目录是开发版，未发布，也未替换客户包。
 
 ## 技术栈
 
@@ -43,9 +43,10 @@ artifacts\bin\ClaudeLauncher.exe --self-test | Write-Output
 - 保守 Code 状态（默认 / 待启动 / 未确认 / 已指定，含 PID 变化、早于请求、重复主进程）；
 - 删除准入（01、运行中、启动或检查中、登录保护中均拒绝）；
 - 登录保护准入（其他账号、未管理实例、目标重复主进程、其他账号进行中均拒绝）、保护期间只能打开目标、持久化与清除；
-- 检查期间原 PID 退出或被替换时不自动重启、不切换。
+- 检查期间原 PID 退出或被替换时不自动重启、不切换；
+- 更新协议（一次性 RSA-3072 测试密钥）：`latest-windows.json` 验签与签名原文格式、篡改哈希/大小拒绝、其他密钥拒绝、平台/文件名/版本格式/大小上限/哈希格式/minimumOS 不符拒绝（即使签名正确）、非 Base64 签名与超大清单拒绝、`latest-macos.json` 验签；版本比较只升不降；系统版本比较；跳转白名单（GitHub 三个下载域名允许，其他域名、HTTP、非默认端口、相似域名拒绝，自建服务任何跳转拒绝）；来源顺序；Authenticode 签名者规则与未签名文件识别；内置公钥为 RSA-3072。
 
-更新安装逻辑改动后，另运行 `scripts/test-install.ps1`。
+1.2.0 兼容的 `--apply-update` 原地替换改动后，另运行 `scripts/test-install.ps1`。
 
 ## 安装包（Setup）
 
@@ -55,16 +56,31 @@ artifacts\bin\ClaudeLauncher.exe --self-test | Write-Output
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup.ps1
 ```
 
-先执行 `build.ps1`（含自动检查与自检），再调用 Inno Setup 6（`ISCC.exe`，可用 `winget install JRSoftware.InnoSetup --scope user` 安装）生成 `artifacts/setup/ClaudeLauncherSetup-1.6.0.exe`（SPEC 文件名）。产物不提交到 Git。
+先执行 `build.ps1`（含自动检查与自检），再调用 Inno Setup 6（`ISCC.exe`，可用 `winget install JRSoftware.InnoSetup --scope user` 安装）生成 `artifacts/setup/ClaudeLauncherSetup-1.7.0.exe`（SPEC 文件名）。要求 Windows 10.0.19041 及以上（与清单 `minimumOS` 一致）。产物不提交到 Git。
 
 - 按当前用户安装到 `%LOCALAPPDATA%\Programs\Claude 多开启动器`，不需要管理员权限；创建开始菜单快捷方式，桌面快捷方式可选；“应用和功能”中可卸载。
 - 先卸载再安装（SPEC）：用固定 AppId 查当前用户的卸载项；已安装时提示“检测到已安装 x.y.z，将先卸载再安装新版”。随后按 PID 核对、对旧安装目录中运行的启动器窗口发送正常关闭（WM_CLOSE，不结束进程，不涉及 Claude），等待退出；再静默运行旧版卸载程序，等卸载项和旧卸载程序都消失后才安装新版。启动器无法正常关闭（如删除未完成）或旧版卸载失败、超时，都中止安装并提示原因。
 - 卸载只删除安装的 `ClaudeLauncher.exe`、卸载程序以及自建更新在安装目录内留下的 `.previous-*`、`.new-*`、`.failed-*` 文件。**不删除任何账号数据目录**（`%APPDATA%\Claude-*`、`%LOCALAPPDATA%\Claude-Data`、商店版 `Packages\Claude_*`），也不删除启动器日志、登录保护和删除状态目录 `%LOCALAPPDATA%\Claude-MultiLauncher`。
 - 升级覆盖安装时，Inno Setup 只会请求关闭占用本程序文件的进程（启动器本身），不涉及 Claude。
-- 版本号与 macOS 一致：1.6.0（文件版本 1.6.0.0，见 `src/Updates.cs`；界面显示 V1.6）。
+- 版本号与 macOS 一致：1.7.0（程序集 1.7.0.0，见 `src/Updates.cs`）。
 - 安装向导使用 Inno Setup 默认英文界面（Inno 6.7.3 未内置简体中文向导文件），程序名、快捷方式为中文。
 - **代码签名：未签名。** 本机没有代码签名证书，安装程序和 `ClaudeLauncher.exe` 都没有 Authenticode 签名。客户首次运行会看到 SmartScreen“Windows 已保护你的电脑”，需点“更多信息 → 仍要运行”；部分杀毒软件可能更谨慎。需要正式证书（OV/EV）后在打包时对 exe 和 setup.exe 签名，此项待用户决定。
-- 与自建更新（`Updates.cs`）的关系：**当前代码**仍是 1.2.0 协议——检查自建服务的 `latest.json`（RSA 签名），下载单个 `ClaudeLauncher-x.x.x.x.exe` 并在安装目录内原地替换（用户目录可写，无需管理员）；原地更新后“应用和功能”里的版本号停留在安装时的版本。SPEC“更新与安装”已改为：`latest-windows.json`（RSA-3072 + SHA-256，两端同一公钥）、自建失败回退 GitHub Releases、两处都失败时提示前往 GitHub 下载，自动更新下载并静默运行 Setup。这部分 **Windows 待同步**，本轮未改动更新逻辑（需要新密钥与发布流程，见 STATUS）。
+- 静默安装参数 `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /RELAUNCH=1`：`/RELAUNCH=1` 仅在静默模式下让 Setup 装好后重新打开启动器。
+
+## 应用内更新（SPEC 更新与安装）
+
+- 入口：系统设置“检查更新”；启动 8 秒后若距上次检查超过 24 小时自动检查一次（失败只记日志）。
+- 来源：自建服务 `Updates.BaseUrl` + `latest-windows.json` → 失败回退 `https://github.com/wyl20020808/ClaudeLauncher/releases/latest/download/latest-windows.json` → 都失败时列出原因并提供“前往 GitHub 下载”（打开 Releases 页面）。
+- 清单：`platform=windows`、`version` x.y.z、`file=ClaudeLauncherSetup-<版本>.exe`、`size`（1 KB～50 MB）、小写 `sha256`、`minimumOS`、`signature`；签名原文为 platform、version、file、size、sha256 各一行（`\n` 结尾），RSA-3072 + SHA-256（PKCS#1 v1.5），公钥 `assets/update-public-key.xml`（与 macOS 同一把）。清单上限 16 KB。
+- 网络：只走 HTTPS（TLS 1.2）；不自动跳转，自建服务出现任何跳转即拒绝，GitHub 只允许跳到 `github.com`、`objects.githubusercontent.com`、`release-assets.githubusercontent.com`（HTTPS、默认端口），最多 5 跳；每次请求 15 秒超时，清单 30 秒、安装包 300 秒总时限，并按清单 `size` 限制下载字节数。
+- 只升级不降级；系统低于 `minimumOS` 时只提示不安装。下载到 `%LOCALAPPDATA%\Claude-MultiLauncher\updates\<随机>\`，大小或 SHA-256 不符即删除并换下一个来源。
+- 运行前再次核对哈希，并比对 Authenticode 签名者：当前程序已签名时，Setup 必须由同一证书签名且签名有效。**当前程序与 Setup 都没有签名，无法比对签名者，只依赖清单签名与 SHA-256**（SPEC【Windows 差异】）。
+- 通过后静默运行 Setup，启动器随即关闭；Setup 先卸载旧版、安装新版，再重新打开启动器。不退出、不结束任何 Claude。
+- 1.2.0 兼容：程序保留 `--apply-update`（旧清单 `latest.json` + 单个 exe 原地替换），供仍在 1.2.0 的客户端升级到 1.7.0 单 exe。
+
+## 发布（发布机）
+
+`scripts/publish-release.ps1 -MacSize <字节> -MacSha256 <哈希>`：构建 Setup → 从草稿 Release `v<版本>` 下载 macOS DMG 并核对 macOS 给出的 size/sha256 → 内存中解密 DPAPI 私钥，签名 `latest-windows.json`、`latest-macos.json`（首行 `macos`、`Claude多开启动器-<版本>.dmg`、`minimumOS=12.0`）和 1.2.0 兼容 `latest.json`，并本地验签 → 安装包复制到 `updates/public/` → Setup 与两份清单上传到草稿 → 原子切换自建服务清单 → 草稿转正式 → 从自建服务与 GitHub 各下载一次清单和安装包验签核对。正式发布后的任何失败都会恢复自建清单并把 Release 改回草稿。`-DryRun` 只构建、签名和本地校验，不上传（可用测试密钥）。私钥不落盘、不输出。服务端白名单与维护步骤见 `updates/维护说明.md`。
 
 ## 与 SPEC 的对应
 
@@ -99,7 +115,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup.ps1
 3. **新目录权限**：不修改 ACL，继承 `%APPDATA%` 的默认权限（本人、SYSTEM、Administrators），不等同于 macOS 的 0700。（SPEC 已确认）
 4. **所有者校验**：以管理员身份创建的文件，所有者是 Administrators 组，会被拒绝（失败即停止）。（SPEC 已确认）
 5. **进程范围**：只扫描当前登录会话中的进程。（SPEC 已确认）
-6. **额外功能**：签名云更新、本地诊断日志（设置页“本地诊断日志 → 打开”）。
+6. **额外功能**：本地诊断日志（设置页“本地诊断日志 → 打开”）；1.2.0 兼容的 `--apply-update`。
+10. **更新签名者比对**：程序与 Setup 尚无 Authenticode 签名，当前无法执行“同一证书”检查，只依赖清单 RSA 签名与 SHA-256；签名后自动生效。
+11. **更新回滚**：Setup 先卸载旧版再安装；新版安装失败时旧版已卸载，不能自动回滚（账号数据不受影响）。
+12. **minimumOS 格式**：每段允许 1～5 位数字，以容纳 Windows 构建号（10.0.19041）。
 7. **启动请求超时**：`Process.Start` 是同步调用，立即返回 PID 或失败，不存在 macOS LaunchServices“请求超过 35 秒仍未回调”的悬挂状态；35 秒超时只用于等待主进程窗口出现。
 8. **Code 已指定的依据**：用 `Process.Start` 返回的 PID 与 WMI `CreationDate`（不早于请求时间）认定“本次启动的新进程”，对应 macOS 的 `NSRunningApplication` 与 `launchDate`。若官方程序启动时转交给其他进程，PID 不匹配，保守显示“Code 未确认”。
 9. **1.2.0 遗留的 01 删除标记**：01 不可删，因此 1.2.0 中对 01 发起且未完成的删除无法在启动器内重试，01 会一直提示“删除未完成”。需用户手动处理该标记（`%LOCALAPPDATA%\Claude-MultiLauncher\pending-01`），启动器不自动清除。
@@ -112,7 +131,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup.ps1
 - `ClaudeLauncher.exe --self-test | Write-Output`：98 项通过，临时目录已清理。
 - 离屏渲染四个页面（合成进程状态，不扫描或启动 Claude），人工比对 `docs/assets/界面.png` 与 macOS 四页：布局、插画、文字无裁切。图片在 `artifacts/previews/`，未提交。离屏渲染不代表桌面输入。
 - `scripts/setup.ps1`：生成 `ClaudeLauncherSetup-1.6.0.exe`（约 2.9 MB）。静默安装到 `%TEMP%` 随机目录（`/NOICONS`，不运行程序）：文件版本 1.6.0.0；放入一个模拟的 `.previous-*` 更新备份后静默卸载：安装目录被完整移除，`%APPDATA%\Claude-Second`、`Claude-Profile-03`、`%LOCALAPPDATA%\Claude-Data`、`Claude-MultiLauncher` 均保留，卸载注册表项已清除。随后测试覆盖安装：先装到随机目录并放入模拟 `.previous-*` 备份，再静默运行同一 Setup——旧版先被静默卸载（备份被移除），新版装回同一目录，卸载程序仍为 `unins000`；最后卸载，目录与注册表项清除，账号目录保留。启动器运行中时的关闭流程未测（未启动启动器）。
-- `scripts/test-install.ps1`：见 STATUS 本轮记录。
+- `scripts/test-install.ps1`：1.2.0 兼容 `--apply-update` 的成功、回退、篡改 3 个场景通过。
+
+#### 1.7.0 更新协议（2026-10-28，已执行）
+
+- `build.ps1`：241 项断言通过；`ClaudeLauncher.exe --self-test | Write-Output`：130 项通过（新增 32 项更新协议检查，见“构建与自检”）。
+- `setup.ps1` 生成 `ClaudeLauncherSetup-1.7.0.exe`；临时目录静默安装（版本 1.7.0 / 1.7.0.0）→ 覆盖安装（先卸载旧版、模拟更新备份被清除）→ 卸载（目录与注册表项清除，账号目录、`Claude-Data`、`Claude-MultiLauncher` 保留）；不带 `/RELAUNCH=1` 的静默安装不会启动启动器。
+- `test-install.ps1`：3 个场景通过。
+- `publish-release.ps1 -DryRun`（一次性测试密钥、4 KB 假 DMG）：构建、签名三份清单并本地验签通过；DMG 哈希不符时中止。测试密钥与暂存目录已删除。
+- `updates/server.py`：把 dry-run 产物放进临时目录、回环随机端口启动，六类文件 200 且字节数一致、Content-Type 正确；路径穿越、`server.py`、`latest-linux.json`、错误版本格式均 404。
+- 用仓库公钥校验旧服务目录中 1.2.0 的 `latest.json`：通过，确认这把 RSA-3072 密钥就是 1.2.0 客户端信任的发布密钥。
 
 ### GUI / 真实实例（本轮未执行）
 
@@ -120,4 +148,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup.ps1
 - PID 激活、托盘恢复（用 PID 自身程序重启动、5 秒复查）：**未验证**。
 - 真实 Claude 4.29 实例的递归存储检查耗时（Cache 文件较多时）、“Code 已指定”是否在真实 MSIX 启动时出现：**未验证**。
 - Code 标签页是否实际使用 `CLAUDE_CONFIG_DIR`、双账号登录隔离、登录回调归属：**未验证**。
-- 安装包：开始菜单与桌面快捷方式、交互式向导、覆盖升级、从安装目录运行后的自建更新、SmartScreen 实际提示：**未验证**。
+- 安装包：开始菜单与桌面快捷方式、交互式向导、启动器运行中时的正常关闭、`/RELAUNCH=1` 重新打开、SmartScreen 实际提示：**未验证**。
+- 应用内更新端到端（真实 HTTPS 自建服务与 GitHub 下载、跳转实际路径、下载后运行 Setup、“前往 GitHub 下载”按钮）：**未验证**。自建服务当前 502，GitHub 上尚无 1.7.0 Release。
+- 发布脚本正式发布路径（gh 上传草稿、转正式、两来源复核、失败回滚）：**未验证**，本机没有发布私钥，也没有 macOS 草稿 Release。
+- 有 Authenticode 签名时的签名者比对：**未验证**（无证书）。

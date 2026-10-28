@@ -56,7 +56,6 @@ namespace ClaudeLauncher {
         int loginAccount, page;
         string executable, scanError, lastProcessState = "", lastRefreshError = "", lastLogged;
         bool scanning, closed, healthy, deleting, updating;
-        Release available;
         DateTime nextHeartbeat = DateTime.MinValue;
 
         static SolidColorBrush B(string hex) { var brush = (SolidColorBrush)new BrushConverter().ConvertFromString(hex); brush.Freeze(); return brush; }
@@ -316,7 +315,7 @@ namespace ClaudeLauncher {
             }
             At(settings, T("更改仅作用于本地启动器", 12, "#8A7F74", FontWeights.Normal), 230, 652);
             update = At(settings, Action("检查更新", "Btn", "", 14), 400, 642, 120, 38);
-            update.Click += async delegate { await UpdateClick(); };
+            update.Click += async delegate { await CheckUpdate(true); };
             var reset = At(settings, Action("恢复默认", "Btn", null, 14), 530, 642, 100, 38); reset.IsHitTestVisible = false; reset.Focusable = false;
             var save = At(settings, Action("保存设置", "Primary", "", 14), 640, 642, 116, 38); save.IsHitTestVisible = false; save.Focusable = false;
 
@@ -324,7 +323,12 @@ namespace ClaudeLauncher {
             AddLog("启动器已完成初始化");
             timer.Interval = TimeSpan.FromSeconds(2);
             timer.Tick += async delegate { await Refresh(); };
-            window.Loaded += async delegate { await Refresh(); timer.Start(); await CheckUpdate(false); };
+            window.Loaded += async delegate {
+                await Refresh(); timer.Start();
+                // 启动 8 秒后，距上次检查超过 24 小时才自动检查；失败只记日志。
+                await Task.Delay(TimeSpan.FromSeconds(8));
+                if (!closed && Updates.CheckDue()) await CheckUpdate(false);
+            };
             window.Closed += delegate { closed = true; timer.Stop(); processWatch.Dispose(); Diagnostics.Write("window_closed", "正常关闭启动器"); };
             window.Closing += delegate(object sender, System.ComponentModel.CancelEventArgs e) {
                 if (deleting) { e.Cancel = true; Message("请先完成或取消当前删除操作。", true); }
@@ -835,32 +839,49 @@ namespace ClaudeLauncher {
         void Alert(string title, string detail) { Ask(title, detail, new[] { "知道了" }, 0, 0); }
 
         public void Show() { window.ShowDialog(); }
+        // SPEC 更新与安装：自建服务 → GitHub Releases；清单或下载失败换下一个来源，都失败时提供“前往 GitHub 下载”。
         async Task CheckUpdate(bool manual) {
-            update.IsEnabled = false;
-            try {
-                var release = await Task.Run(() => Updates.Check());
-                if (closed) return;
-                available = Updates.IsNewer(release) ? release : null;
-                update.Content = available == null ? "检查更新" : "更新到 " + available.version;
-                if (manual) Message(available == null ? "当前已是最新发布版本。" : "发现新版。再次点击更新按钮可下载并安装。", false);
-            } catch (Exception error) {
-                Diagnostics.Error("update_check_error", error);
-                if (manual && !closed) Message("暂时无法检查更新；可以继续使用。" + error.Message, true);
-            } finally { if (!closed) update.IsEnabled = true; }
-        }
-        async Task UpdateClick() {
-            if (updating || deleting || pending.Count > 0 || checking.Count > 0) { Message("请先等待当前操作完成。", true); return; }
-            if (available == null) { await CheckUpdate(true); return; }
-            if (Ask("更新启动器", "下载并更新启动器到 " + available.version + "？\n仅重启启动器，不退出 Claude、不改动账号数据。", new[] { "取消", "更新" }, 0, 0) != 1) return;
+            if (updating || closed) return;
+            if (manual && (deleting || pending.Count > 0 || checking.Count > 0)) { Message("请先等待当前操作完成。", true); return; }
             updating = true; update.IsEnabled = false; Render();
+            var failures = new List<string>();
+            bool accepted = false;
             try {
-                Message("正在下载并校验更新签名…", false);
-                string staged = await Task.Run(() => Updates.Download(available));
-                if (closed) return;
-                Updates.StartInstaller(staged);
-                Diagnostics.Write("update_handoff", "退出启动器等待替换"); window.Close();
-            } catch (Exception error) { Diagnostics.Error("update_error", error); if (!closed) Message("更新未完成，原版仍可使用：" + error.Message, true); }
-            finally { updating = false; if (!closed) { update.IsEnabled = true; Render(); } }
+                foreach (UpdateSource source in Updates.Sources()) {
+                    Release release;
+                    try { release = await Task.Run(() => Updates.CheckSource(source)); }
+                    catch (Exception error) { failures.Add(source.Name + "：" + error.Message); continue; }
+                    if (closed) return;
+                    Updates.MarkChecked();
+                    if (!Updates.IsNewer(release)) { if (manual) Alert("已是最新版本", "当前版本 " + Updates.DisplayVersion + "。"); return; }
+                    if (!Updates.OsSupported(release.minimumOS, Environment.OSVersion.Version)) {
+                        if (manual) Alert("新版本需要更高的系统版本", release.version + " 需要 Windows " + release.minimumOS + " 及以上。");
+                        return;
+                    }
+                    if (!accepted) {
+                        if (deleting || pending.Count > 0 || checking.Count > 0) { Message("发现新版本 " + release.version + "，当前操作完成后可在系统设置中更新。", false); return; }
+                        if (Ask("发现新版本 " + release.version, "当前版本 " + Updates.DisplayVersion + "。更新会先校验安装包，再关闭启动器、卸载旧版并安装新版，完成后重新打开；Claude 实例和账号数据不受影响。",
+                            new[] { "稍后", "立即更新" }, 0, 1) != 1) return;
+                        accepted = true;
+                    }
+                    Message("正在从" + source.Name + "下载 " + release.file + "…", false);
+                    string setup;
+                    try { setup = await Task.Run(() => Updates.Download(release, source)); }
+                    catch (Exception error) { failures.Add(source.Name + "：" + error.Message); continue; }
+                    if (closed) return;
+                    try { Updates.StartSetup(setup, release); }
+                    catch (Exception error) { Diagnostics.Error("update_setup_error", error); Alert("无法安装更新", error.Message); return; }
+                    Diagnostics.Write("update_handoff", "退出启动器，交由安装程序卸载旧版并安装新版");
+                    window.Close(); return;
+                }
+                Diagnostics.Write("update_failed", String.Join("；", failures));
+                AddLog("检查更新失败：" + String.Join("；", failures));
+                if ((manual || accepted) && !closed &&
+                    Ask("自动更新失败", String.Join("\n", failures) + "\n\n可以前往 GitHub 手动下载最新版本。", new[] { "关闭", "前往 GitHub 下载" }, 0, 1) == 1) {
+                    try { Process.Start(new ProcessStartInfo(Updates.ReleasesPage) { UseShellExecute = true }); }
+                    catch (Exception error) { Message("无法打开浏览器：" + error.Message, true); }
+                }
+            } finally { updating = false; if (!closed) { update.IsEnabled = true; Render(); } }
         }
 
         const string Styles = @"

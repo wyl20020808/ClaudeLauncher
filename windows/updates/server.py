@@ -6,10 +6,24 @@ from pathlib import Path
 import re
 import threading
 import time
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 ROOT = Path(__file__).resolve().parent
 PUBLIC = ROOT / 'public'
+# 严格白名单：新协议清单与安装包，以及 1.2.0 客户端仍在使用的 latest.json 与单 exe。
+ALLOWED = (
+    (re.compile(r'latest(-windows|-macos)?\.json', re.ASCII), 'application/json'),
+    (re.compile(r'ClaudeLauncherSetup-\d{1,4}\.\d{1,4}\.\d{1,4}\.exe', re.ASCII), 'application/octet-stream'),
+    (re.compile(r'Claude多开启动器-\d{1,4}\.\d{1,4}\.\d{1,4}\.dmg', re.ASCII), 'application/x-apple-diskimage'),
+    (re.compile(r'ClaudeLauncher-\d+\.\d+\.\d+\.\d+\.exe', re.ASCII), 'application/octet-stream'),
+)
+
+
+def content_type(name):
+    for pattern, kind in ALLOWED:
+        if pattern.fullmatch(name):
+            return kind
+    return None
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -27,8 +41,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def serve(self, body):
         path = urlsplit(self.path).path
         prefix = '/claude-launcher/'
-        name = path[len(prefix):] if path.startswith(prefix) else ''
-        if name != 'latest.json' and not re.fullmatch(r'ClaudeLauncher-\d+\.\d+\.\d+\.\d+\.exe', name):
+        try:
+            name = unquote(path[len(prefix):], errors='strict') if path.startswith(prefix) else ''
+        except UnicodeDecodeError:
+            name = ''
+        kind = content_type(name)
+        if kind is None:
             self.send_error(404)
             return
         target = PUBLIC / name
@@ -38,7 +56,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         try:
             with target.open('rb') as source:
                 self.send_response(200)
-                self.send_header('Content-Type', 'application/json' if name == 'latest.json' else 'application/octet-stream')
+                self.send_header('Content-Type', kind)
                 self.send_header('Content-Length', str(os.fstat(source.fileno()).st_size))
                 self.send_header('Cache-Control', 'no-store')
                 self.send_header('X-Content-Type-Options', 'nosniff')
