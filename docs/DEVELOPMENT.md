@@ -62,3 +62,7 @@
 ## 界面截图
 
 `ClaudeLauncher --snapshot <输出.png> [页码]` 在后台渲染窗口到 PNG，不占单实例锁、不启动 Claude。页码：0 实例管理、1 账号管理、2 日志记录、3 系统设置。从终端运行时辅助功能状态按终端判断，可能显示未授权。插画位于 `resources/ui/`，构建时复制进应用。
+
+## DMG
+
+`scripts/dmg.sh [应用路径] [输出路径]` 把已构建应用和“应用程序”快捷方式打进只读压缩 DMG（UDZO），设置 `SIGN_IDENTITY` 时同时给 DMG 签名，最后 `hdiutil verify`。不重新构建、不修改应用。构建为通用二进制（arm64 + x86_64），Intel 自检可用 `arch -x86_64 … --self-test` 在 Rosetta 下运行。未做 Apple 公证；macOS 27 上 `hdiutil create/attach` 会提示已弃用但仍可用。

@@ -66,6 +66,14 @@
 - 系统设置：分类导航与各开关、下拉为静态占位；“关闭窗口后继续运行”反映实际行为；辅助功能权限状态与“打开设置”、数据存储路径（点击在 Finder 中显示）可用。
 - 构建、自检通过；四个页面离屏截图核对。真实点击未验证。
 
+## 安装包（2026-10-28，feature/dmg）
+
+- 新增 scripts/dmg.sh，生成 build/Claude多开启动器-1.6.dmg（约 1.9 MB，签名、hdiutil verify 通过）。
+- 构建改为通用二进制（arm64 + x86_64）；两种架构自检通过（x86_64 经 Rosetta）。
+- 已从 DMG 安装到 /Applications/Claude 启动器.app 并启动；辅助功能授权保留（accessibility=yes）。
+- 未做 Apple 公证：客户首次打开需手动放行。图标与名称对外分发的许可待用户确认。
+- Windows Setup 安装程序列为 Windows 端待办（见 windows/README.md）。
+
 ## 已实现
 
 - 10 个固定账号目录；01 沿用原默认目录。
