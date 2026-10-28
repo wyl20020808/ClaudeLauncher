@@ -160,7 +160,7 @@ static NSString *ReadOrganization(int directory, NSDate *now, UsageKeyProvider p
                 if (plainLength == 0 && encryptedLength == 83 && !memcmp(sqlite3_column_blob(statement,2),"v10",3)) {
                     uint8_t key[kCCKeySizeAES128] = {0};
                     if (provider(key)) value = DecryptOrganization([NSData dataWithBytes:sqlite3_column_blob(statement,2) length:83],host,key);
-                    else *failure = @"组织解密未授权";
+                    else *failure = @"组织密钥不可用";
                     ClearBytes(key,sizeof(key));
                 }
                 if (!value) { valid = NO; break; }
@@ -313,7 +313,7 @@ void TestUsageHistory(void) {
         return testKey(key);
     });
     NSCAssert(!changing[@"fh"] && [changing[@"status"] isEqual:@"组织记录正在更新"],@"discard organization changing during read");
-    NSCAssert([ReadUsageHistoryWithKey(folder,now,^BOOL(uint8_t *key) { return NO; })[@"status"] isEqual:@"组织解密未授权"],@"no fallback on key denial");
+    NSCAssert([ReadUsageHistoryWithKey(folder,now,^BOOL(uint8_t *key) { return NO; })[@"status"] isEqual:@"组织密钥不可用"],@"no fallback on key denial");
     int dir = open(folder.fileSystemRepresentation,O_RDONLY|O_DIRECTORY); NSString *failure = nil;
     NSCAssert([ReadOrganization(dir,now,testKey,&failure) isEqual:org],@"only matching selector decrypted");
     NSCAssert(!ReadOrganization(dir,[NSDate dateWithTimeIntervalSince1970:10000000000],testKey,&failure),@"expired selector rejected");
