@@ -25,6 +25,12 @@ if (-not $DryRun) {
     & gh auth status *> $null
     if ($LASTEXITCODE -ne 0) { throw 'gh is not logged in. Run: gh auth login' }
 }
+# 在 Codex 桌面版（打包应用）中运行 init-update-key.ps1 时，%LOCALAPPDATA% 写入被重定向到其包缓存；同一账户下 DPAPI 照常解密。
+if (-not $PSBoundParameters.ContainsKey('KeyFile') -and -not (Test-Path -LiteralPath $KeyFile)) {
+    $redirected = Get-ChildItem -Path (Join-Path $env:LOCALAPPDATA 'Packages') -Directory -Filter 'OpenAI.Codex_*' -ErrorAction SilentlyContinue |
+        ForEach-Object { Join-Path $_.FullName 'LocalCache\Local\ClaudeLauncher-Publisher\signing-key.dpapi' } | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+    if ($redirected) { $KeyFile = $redirected; Write-Output ('Using signing key from Codex package cache: ' + $KeyFile) }
+}
 if (-not (Test-Path -LiteralPath $KeyFile)) { throw ('Signing key not found: ' + $KeyFile + '. Restore the DPAPI key on the publishing account first; do not generate a new one.') }
 if ($MacSha256 -notmatch '^[a-f0-9]{64}$') { throw 'MacSha256 must be 64 lowercase hex characters.' }
 
