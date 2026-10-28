@@ -273,7 +273,7 @@ namespace ClaudeLauncher {
             object[][][] sections = {
                 new object[][] { new object[] { "启动与运行", "管理启动器的常规行为" },
                     new object[] { "开机自动启动", "系统登录后自动运行启动器", false },
-                    new object[] { "关闭窗口后继续运行", "关闭启动器不会退出 Claude", true },
+                    new object[] { "关闭窗口后继续运行", "留在通知区域，右键图标可退出；不退出 Claude", true },
                     new object[] { "启动时恢复上次窗口", "自动恢复上一次打开的实例", false },
                     new object[] { "本地诊断日志", "启动、进程与异常记录，不含账号信息", "logs" } },
                 new object[][] { new object[] { "默认行为", "新实例将沿用这些设置" },
@@ -331,8 +331,97 @@ namespace ClaudeLauncher {
             };
             window.Closed += delegate { closed = true; timer.Stop(); processWatch.Dispose(); Diagnostics.Write("window_closed", "正常关闭启动器"); };
             window.Closing += delegate(object sender, System.ComponentModel.CancelEventArgs e) {
-                if (deleting) { e.Cancel = true; Message("请先完成或取消当前删除操作。", true); }
+                if (deleting) { e.Cancel = true; Message("请先完成或取消当前删除操作。", true); return; }
+                // SPEC 常驻图标：关闭主窗口后启动器继续运行，图标留在通知区域；只有“退出启动器”才真正退出。
+                if (tray != null && !exiting) {
+                    e.Cancel = true; window.Hide();
+                    if (!trayHintShown) {
+                        trayHintShown = true;
+                        tray.ShowBalloonTip(4000, Title, "启动器仍在通知区域运行。左键单击图标打开窗口，右键可退出。", System.Windows.Forms.ToolTipIcon.Info);
+                    }
+                }
             };
+            window.SourceInitialized += delegate {
+                var source = System.Windows.Interop.HwndSource.FromHwnd(new System.Windows.Interop.WindowInteropHelper(window).Handle);
+                source.AddHook(ExitHook);
+            };
+            Application.Current.SessionEnding += delegate { exiting = true; };
+        }
+
+        // ---- 常驻图标（通知区域） ----
+        System.Windows.Forms.NotifyIcon tray;
+        bool exiting, trayHintShown;
+        // 安装程序用此消息请求启动器退出（WM_CLOSE 现在只是隐藏到通知区域）。
+        public static readonly int ExitMessage = Native.RegisterWindowMessage("ClaudeMultiLauncher.Exit");
+        IntPtr ExitHook(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled) {
+            if (msg == ExitMessage) { handled = true; if (!deleting) ExitLauncher(); }
+            return IntPtr.Zero;
+        }
+        void CreateTray() {
+            using (Stream stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("ClaudeLauncher.Icon"))
+                tray = new System.Windows.Forms.NotifyIcon { Icon = new System.Drawing.Icon(stream, System.Windows.Forms.SystemInformation.SmallIconSize), Text = Title, Visible = true };
+            var menu = new System.Windows.Forms.ContextMenuStrip();
+            menu.Opening += delegate { BuildTrayMenu(menu); };
+            menu.Items.Add("…");
+            tray.ContextMenuStrip = menu;
+            tray.MouseClick += delegate(object sender, System.Windows.Forms.MouseEventArgs e) { if (e.Button == System.Windows.Forms.MouseButtons.Left) ShowMain(); };
+            tray.DoubleClick += delegate { ShowMain(); };
+        }
+        void ShowMain() {
+            if (closed) return;
+            window.Show();
+            if (window.WindowState == WindowState.Minimized) window.WindowState = WindowState.Normal;
+            window.Activate();
+        }
+        // 菜单每次打开都重新扫描进程；扫描失败时账号项禁用并显示原因。不显示任何账号内容。
+        void BuildTrayMenu(System.Windows.Forms.ContextMenuStrip menu) {
+            string failure = null;
+            try { Apply(Core.Scan()); healthy = true; scanError = null; }
+            catch (Exception error) { failure = error.Message; healthy = false; scanError = error.Message; }
+            Render();
+            menu.Items.Clear();
+            var show = new System.Windows.Forms.ToolStripMenuItem("显示启动器窗口");
+            show.Font = new System.Drawing.Font(show.Font, System.Drawing.FontStyle.Bold);
+            show.Click += delegate { ShowMain(); };
+            menu.Items.Add(show);
+            menu.Items.Add(new System.Windows.Forms.ToolStripSeparator());
+            if (failure != null) {
+                menu.Items.Add(new System.Windows.Forms.ToolStripMenuItem("无法读取账号状态：" + (failure.Length > 60 ? failure.Substring(0, 60) + "…" : failure)) { Enabled = false, ToolTipText = failure });
+            } else {
+                var entries = TrayAccounts();
+                if (entries.Count == 0) menu.Items.Add(new System.Windows.Forms.ToolStripMenuItem("本机还没有账号") { Enabled = false });
+                foreach (var entry in entries) {
+                    int number = entry.Item1;
+                    var item = new System.Windows.Forms.ToolStripMenuItem(entry.Item2) { Enabled = entry.Item3 };
+                    item.Click += async delegate { if (incompleteDeletes.Contains(number)) await Delete(number); else await Select(number); };
+                    menu.Items.Add(item);
+                }
+            }
+            menu.Items.Add(new System.Windows.Forms.ToolStripSeparator());
+            var check = new System.Windows.Forms.ToolStripMenuItem("检查更新…") { Enabled = !updating };
+            check.Click += async delegate { ShowMain(); await CheckUpdate(true); };
+            menu.Items.Add(check);
+            var exit = new System.Windows.Forms.ToolStripMenuItem("退出启动器");
+            exit.ToolTipText = "只退出启动器，不退出任何 Claude。";
+            exit.Click += delegate { ExitLauncher(); };
+            menu.Items.Add(exit);
+        }
+        // 托盘中的账号项：与主界面卡片同一份可见性与可用状态（编号、标签、是否可点）。
+        internal List<Tuple<int, string, bool>> TrayAccounts() {
+            var result = new List<Tuple<int, string, bool>>();
+            for (int n = 1; n <= 10; n++) {
+                if (cards[n].Root.Visibility != Visibility.Visible) continue;
+                string state = incompleteDeletes.Contains(n) ? "删除未完成" : checking.Contains(n) ? "检查中" : pending.ContainsKey(n) ? "启动中" : Core.Running(n, instances) ? "运行中" : "未运行";
+                result.Add(Tuple.Create(n, "账号 " + Two(n) + " · " + state, cards[n].Action.IsEnabled));
+            }
+            return result;
+        }
+        void ExitLauncher() {
+            if (deleting) { ShowMain(); Message("请先完成或取消当前删除操作。", true); return; }
+            exiting = true;
+            if (tray != null) { tray.Visible = false; tray.Dispose(); tray = null; }
+            window.Close();
+            Application.Current.Shutdown();
         }
         readonly BitmapFrame logo;
 
@@ -818,7 +907,8 @@ namespace ClaudeLauncher {
         // 返回按下的按钮序号；关闭窗口或 Esc 视为 cancelIndex。
         int Ask(string title, string detail, string[] buttons, int cancelIndex, int defaultIndex) {
             var dialog = Dialog(title);
-            if (window.IsLoaded) dialog.Owner = window; else dialog.WindowStartupLocation = WindowStartupLocation.CenterScreen;
+            // 主窗口隐藏在通知区域时（从托盘菜单操作），对话框居中置顶显示。
+            if (window.IsLoaded && window.IsVisible) dialog.Owner = window; else { dialog.WindowStartupLocation = WindowStartupLocation.CenterScreen; dialog.Topmost = true; }
             var panel = (StackPanel)((ScrollViewer)dialog.Content).Content;
             panel.Children.Add(new TextBlock { Text = title, FontSize = 18, FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap });
             panel.Children.Add(new TextBlock { Text = detail ?? "", TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 12, 0, 20), Foreground = B("#4A433C"), LineHeight = 21 });
@@ -838,7 +928,16 @@ namespace ClaudeLauncher {
         }
         void Alert(string title, string detail) { Ask(title, detail, new[] { "知道了" }, 0, 0); }
 
-        public void Show() { window.ShowDialog(); }
+        // 正式运行：建立托盘图标与“再次打开时显示窗口”的信号，窗口隐藏后程序继续运行，直到“退出启动器”。
+        public void Show() {
+            CreateTray();
+            var signal = new EventWaitHandle(false, EventResetMode.AutoReset, Program.ShowSignalName);
+            ThreadPool.RegisterWaitForSingleObject(signal, delegate { window.Dispatcher.BeginInvoke(new Action(ShowMain)); }, null, -1, false);
+            Application.Current.ShutdownMode = ShutdownMode.OnExplicitShutdown;
+            window.Show();
+            Application.Current.Run();
+            if (tray != null) tray.Dispose();
+        }
 
         // 更新进度窗口：下载（真实进度）→ 校验 → 安装三步；下载期间可取消，关闭窗口视为取消。
         internal sealed class UpdateProgress {
@@ -964,7 +1063,7 @@ namespace ClaudeLauncher {
                     Diagnostics.Write("update_handoff", "退出启动器，交由安装程序卸载旧版并安装新版");
                     await Task.Delay(TimeSpan.FromSeconds(2));
                     CloseProgress(progress);
-                    window.Close(); return;
+                    ExitLauncher(); return;
                 }
                 CloseProgress(progress);
                 window.IsEnabled = true;

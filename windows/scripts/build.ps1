@@ -6,12 +6,12 @@ $bin = Join-Path $projectRoot 'artifacts/bin'
 $framework = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319'
 if (-not (Test-Path (Join-Path $framework 'csc.exe'))) { $framework = Join-Path $env:WINDIR 'Microsoft.NET\Framework\v4.0.30319' }
 $compiler = Join-Path $framework 'csc.exe'
-$references = @('System.dll', 'System.Core.dll', 'System.Management.dll', 'System.Xaml.dll', 'System.Web.Extensions.dll')
+$references = @('System.dll', 'System.Core.dll', 'System.Management.dll', 'System.Xaml.dll', 'System.Web.Extensions.dll', 'System.Drawing.dll', 'System.Windows.Forms.dll')
 foreach ($name in @('WindowsBase.dll', 'PresentationCore.dll', 'PresentationFramework.dll')) { $references += Join-Path $framework ('WPF\' + $name) }
 $arguments = @('/nologo', '/optimize+', '/platform:anycpu', '/utf8output')
 foreach ($reference in $references) { $arguments += '/reference:' + $reference }
-$icon = Join-Path $projectRoot 'assets/claude.ico'
-if (-not (Test-Path -LiteralPath $icon)) { throw 'Missing claude.ico. Extract the icon from the locally installed Claude executable first.' }
+$icon = Join-Path $projectRoot 'assets/app.ico'
+if (-not (Test-Path -LiteralPath $icon)) { throw 'Missing assets/app.ico. Run scripts/make-icon.ps1.' }
 $arguments += '/resource:' + $icon + ',ClaudeLauncher.Icon'
 $arguments += '/resource:' + (Join-Path $projectRoot 'assets/update-public-key.xml') + ',ClaudeLauncher.UpdateKey'
 # 界面插画：仓库中的 WebP 在构建时转为 JPEG 内嵌，客户电脑无需 WebP 解码器。

@@ -107,6 +107,10 @@ public static class LauncherTests {
         var buttons = Children(ui.Snapshot(0, state)).OfType<Button>().ToArray();
         Check(buttons.Single(b => AutomationProperties.GetAutomationId(b) == "Profile1").Content as string == "打开", "Running account should offer Open");
         Check(buttons.Any(b => AutomationProperties.GetAutomationId(b) == "NewInstance"), "New instance button missing");
+        // 托盘菜单账号项：与卡片同一份可见性和可用状态，只显示编号与运行状态。
+        var trayItems = ui.TrayAccounts();
+        Check(trayItems.Any(t => t.Item1 == 1 && t.Item2 == "账号 01 · 运行中" && t.Item3) && trayItems.Any(t => t.Item1 == 2 && t.Item2 == "账号 02 · 运行中"), "Tray account items wrong");
+        Check(trayItems.All(t => System.Text.RegularExpressions.Regex.IsMatch(t.Item2, "^账号 [0-9]{2} · (运行中|未运行|检查中|启动中|删除未完成)$")), "Tray items must show only number and state");
         Console.WriteLine("PASS: " + checks + " assertions; WPF layout loaded without showing windows.");
         return 0;
     }
