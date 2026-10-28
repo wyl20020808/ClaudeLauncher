@@ -1,5 +1,11 @@
 # 项目状态
 
+## macOS 1.7.5 发布（2026-10-28）
+
+- 内容：本地用量历史（被动读取官方 plan-usage-history.json）、项目目录登记到 Claude 侧栏（仅 Claude 4.29.0）。发布前审查通过，arm64 与 x86_64 自检 8 组通过。
+- 首个由 Mac 发布私钥签名、用 `scripts/publish-macos.sh` 自行发布的版本（macos-v1.7.5），Windows 文件从当前 Latest 原样带入。用户确认现在发布：停在 1.7.3 及以下的客户端收不到此版本，需手动下载。
+- 发布结果与自建服务同步核对见下一条记录。
+
 ## 项目目录登记与本地用量功能合并（2026-10-28）
 
 - 按用户要求，将目录登记功能 `6c27ce1` 合入本地 dev，保留 dev `fdc46f2` 已有的本地用量显示；未修改 Windows。仅 `src/main.m` 自检入口发生文本冲突，保留 `TestProjectRegistration` 与 `TestUsageHistory` 两项调用。
