@@ -2,6 +2,16 @@
 
 整理日期：2026-10-28。源码与本机日常 build/：1.6 / build 7（未发布）；历史交付：1.5 / build 6。
 
+## 1.7.0 发布（2026-10-28，Windows 发布机）
+
+- Windows 已按 macOS 要求把 DMG 文件名改为 `ClaudeLauncher-x.y.z.dmg`（`550ff18`，自检 131 项通过）。
+- 按用户授权运行 `windows/scripts/publish-release.ps1 -MacSize 2412068 -MacSha256 6fd16b9e…6280`：构建 Setup，从草稿下载并核对 DMG，签名 `latest-windows.json`、`latest-macos.json` 和 1.2.0 兼容 `latest.json`，上传自建服务与 GitHub，草稿转正式：https://github.com/wyl20020808/ClaudeLauncher/releases/tag/v1.7.0 （附件：DMG、`ClaudeLauncherSetup-1.7.0.exe`、两份清单）。
+- 发布前经用户确认把草稿目标从 main（仍是 1.6 初始提交）改为 dev `5060f14`，标签 v1.7.0 指向该提交；未推送 main。
+- 自建服务由旧项目 `D:\Claude-MultiLauncher\updates\server.py` 切换为 `windows/updates/server.py`，旧 `public/` 中的 1.2.0 文件已复制过来；隧道 kaskd 不变。
+- 复核：脚本从自建服务与 GitHub 各下载两份清单和安装包，验签与哈希一致；另用客户端代码（含跳转白名单）从两个来源取清单并下载 Setup 成功；自建 `latest.json` 已指向 1.7.0.0，1.2.0 客户端可升级。
+- 发布脚本修复（`bc8ecd6`）：包装函数 `Gh` 与 `gh` 同名导致递归，第一次运行在任何构建或上传前失败；改为直接调用 gh.exe 后重跑成功。
+- 未验证：客户端实机点击“检查更新”并完成静默安装、1.2.0 客户端实际升级、macOS 客户端实际更新。Setup 与 exe 没有 Authenticode 签名。
+
 ## macOS 1.7.0 发布准备（2026-10-28，feature/mac-release-name）
 
 - 草稿 Release v1.7.0 上传 DMG 时实测 GitHub 把附件名 `Claude多开启动器-1.7.0.dmg` 改成 `Claude.-1.7.0.dmg`：GitHub 回退下载会 404，Windows 发布脚本也取不到 DMG。macOS 发布文件名改为 ASCII `ClaudeLauncher-<版本>.dmg`（客户端校验、dmg.sh、SPEC 同步），已替换草稿附件。
