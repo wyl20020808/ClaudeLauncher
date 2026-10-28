@@ -2,6 +2,14 @@
 
 整理日期：2026-10-28。源码与本机日常 build/：1.6 / build 7（未发布）；历史交付：1.5 / build 6。
 
+## macOS 1.7.2 发布准备（2026-10-28）
+
+- 合并本地 dev（astra 项目管理 e1a44c4）与远端 Windows 托盘（66c3d96），STATUS 冲突保留双方记录。
+- macOS 版本 1.7.2 / build 9，与 Windows 1.7.2 同版本联合发布（发布脚本联合模式按 Windows 版本打 v1.7.2 标签，DMG 文件名需同版本）。
+- 内容：菜单栏常驻图标、自有图标、项目管理第一版。自检五组通过（arm64、x86_64）。
+- DMG：ClaudeLauncher-1.7.2.dmg，size 1632956，sha256 8ee751c3741942cd8d9579fee490b93adbdaf5192511c6a3b6396a0b1aa4771a；签名 ClaudeLauncher Local Signing；自建更新地址已写入。已上传草稿 Release v1.7.2，等待 Windows 发布机签名并转正式。
+- 计划由用户在 /Applications 的 1.7.0 中点击“检查更新”实测界面更新流程。
+
 ## 项目管理与菜单栏合并验证（2026-10-28）
 
 - 按用户要求在 `feature/projects` 先合并 `origin/dev`（`001829f`）。解决 build.sh、main.m 启动初始化、STATUS 和使用说明的冲突：保留 Projects.m 编译、自有 AppIcon／菜单栏图标、构建前清空输出应用、菜单栏初始化以及项目清单损坏提示；双方历史记录保留。
