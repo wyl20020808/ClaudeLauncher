@@ -66,3 +66,15 @@
 ## DMG
 
 `scripts/dmg.sh [应用路径] [输出路径]` 把已构建应用和“应用程序”快捷方式打进只读压缩 DMG（UDZO），设置 `SIGN_IDENTITY` 时同时给 DMG 签名，最后 `hdiutil verify`。不重新构建、不修改应用。构建为通用二进制（arm64 + x86_64），Intel 自检可用 `arch -x86_64 … --self-test` 在 Rosetta 下运行。未做 Apple 公证；macOS 27 上 `hdiutil create/attach` 会提示已弃用但仍可用。
+
+## 自动更新（macOS）
+
+规则见 SPEC“更新与安装”。实现要点：
+
+- 来源：构建时 `UPDATE_BASE_URL=https://…` 写入 Info.plist 的 `ClaudeLauncherUpdateBaseURL`（可不设）；之后固定回退 GitHub Releases `latest/download/`。都失败时提示并提供“前往 GitHub 下载”。
+- 公钥：构建时复制 `windows/assets/update-public-key.xml`（RSA-3072，与 Windows 同一把）。私钥只在 Windows 发布机。
+- 校验：清单形状 + RSA-SHA256 签名 → 版本只升不降、系统版本 → 下载包大小与 SHA-256 → 挂载 DMG，核对包标识、版本 → 新应用须满足当前应用的签名要求（同一证书）→ 复制到同目录隐藏的暂存包并再次核对。
+- 替换：`resources/update-helper.sh` 等启动器退出后，旧版改名备份、新版就位并 `codesign --verify`，失败则回滚旧版；新版启动后把备份移到废纸篓。只动这三个应用包。
+- 入口：系统设置“检查更新”、应用菜单“检查更新…”；启动 8 秒后若距上次检查超过 24 小时自动检查一次（失败只记日志）。
+- `ClaudeLauncher --check-signer <应用路径>`：开发用，判断该应用能否作为更新被接受。
+- `scripts/dmg.sh` 输出发布机签名清单需要的 `file`、`size`、`sha256`。

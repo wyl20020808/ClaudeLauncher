@@ -19,9 +19,9 @@ if [[ -z "$BUILD_SDK" ]]; then
         BUILD_SDK=$(xcrun --show-sdk-path)
     fi
 fi
-xcrun clang -isysroot "$BUILD_SDK" -arch arm64 -arch x86_64 -fobjc-arc -Wall -Wextra -Wno-unused-parameter -mmacosx-version-min=12.0 -framework Cocoa -framework ApplicationServices src/main.m -o "$APP/Contents/MacOS/ClaudeLauncher"
+xcrun clang -isysroot "$BUILD_SDK" -arch arm64 -arch x86_64 -fobjc-arc -Wall -Wextra -Wno-unused-parameter -mmacosx-version-min=12.0 -framework Cocoa -framework ApplicationServices -framework Security src/main.m -o "$APP/Contents/MacOS/ClaudeLauncher"
 cp "$CLAUDE/Contents/Resources/$ICON" "$APP/Contents/Resources/Claude.icns"
-cp resources/ui/*.webp "$APP/Contents/Resources/"
+cp resources/ui/*.webp resources/update-helper.sh windows/assets/update-public-key.xml "$APP/Contents/Resources/"
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -31,14 +31,19 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 <key>CFBundleName</key><string>Claude 启动器</string>
 <key>CFBundleDisplayName</key><string>Claude 启动器</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleVersion</key><string>7</string>
-<key>CFBundleShortVersionString</key><string>1.6</string>
+<key>CFBundleVersion</key><string>8</string>
+<key>CFBundleShortVersionString</key><string>1.7.0</string>
 <key>CFBundleIconFile</key><string>Claude.icns</string>
 <key>LSMinimumSystemVersion</key><string>12.0</string>
 <key>NSHighResolutionCapable</key><true/>
 <key>NSPrincipalClass</key><string>NSApplication</string>
 </dict></plist>
 PLIST
+# UPDATE_BASE_URL（可选，必须 https）：自建更新服务地址；未设置时只用 GitHub Releases。
+if [[ -n "${UPDATE_BASE_URL:-}" ]]; then
+    [[ "$UPDATE_BASE_URL" == https://* ]] || { print -u2 "UPDATE_BASE_URL 必须是 https 地址"; exit 1; }
+    /usr/libexec/PlistBuddy -c "Add :ClaudeLauncherUpdateBaseURL string $UPDATE_BASE_URL" "$APP/Contents/Info.plist"
+fi
 # SIGN_IDENTITY 为钥匙串中的代码签名证书名；留空用 ad-hoc（每次重建身份都会变，辅助功能授权失效）。
 SIGN="${SIGN_IDENTITY:--}"
 KEYCHAIN_ARGS=()
