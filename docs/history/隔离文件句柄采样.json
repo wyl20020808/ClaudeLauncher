@@ -1,0 +1,30 @@
+{
+  "01": {
+    "main_pid": 99676,
+    "descendants": 22,
+    "observed_profile_roots": [
+      "Claude"
+    ],
+    "auth_storage_roots": [
+      "Claude"
+    ],
+    "open_cookie_files": [
+      "/Users/apple/Library/Application Support/Claude/Cookies"
+    ],
+    "lsof_returncode": 0
+  },
+  "04": {
+    "main_pid": 8270,
+    "descendants": 7,
+    "observed_profile_roots": [
+      "Claude-Profile-04"
+    ],
+    "auth_storage_roots": [
+      "Claude-Profile-04"
+    ],
+    "open_cookie_files": [
+      "/Users/apple/Library/Application Support/Claude-Profile-04/Cookies"
+    ],
+    "lsof_returncode": 0
+  }
+}
