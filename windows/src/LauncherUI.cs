@@ -839,16 +839,73 @@ namespace ClaudeLauncher {
         void Alert(string title, string detail) { Ask(title, detail, new[] { "知道了" }, 0, 0); }
 
         public void Show() { window.ShowDialog(); }
+
+        // 更新进度窗口：下载（真实进度）→ 校验 → 安装三步；下载期间可取消，关闭窗口视为取消。
+        internal sealed class UpdateProgress {
+            public Window Window; public TextBlock Status, Detail; public ProgressBar Bar; public Button Cancel;
+            public TextBlock[] Steps; public volatile bool Cancelled; public bool Finished;
+        }
+        internal UpdateProgress BuildUpdateProgress(string version) {
+            var progress = new UpdateProgress();
+            var dialog = Dialog("更新启动器");
+            dialog.Width = 460;
+            var panel = (StackPanel)((ScrollViewer)dialog.Content).Content;
+            panel.Children.Add(new TextBlock { Text = "正在更新到 " + version, FontSize = 18, FontWeight = FontWeights.SemiBold });
+            panel.Children.Add(new TextBlock { Text = "当前版本 " + Updates.DisplayVersion + " · Claude 实例和账号数据不受影响", FontSize = 12, Foreground = B(Muted), Margin = new Thickness(0, 6, 0, 16) });
+            var steps = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 14) };
+            string[] names = { "1  下载", "2  校验", "3  安装" };
+            progress.Steps = new TextBlock[names.Length];
+            for (int i = 0; i < names.Length; i++) {
+                if (i > 0) steps.Children.Add(new TextBlock { Text = "—", Foreground = B("#D9CFC3"), Margin = new Thickness(10, 0, 10, 0), VerticalAlignment = VerticalAlignment.Center });
+                progress.Steps[i] = new TextBlock { Text = names[i], FontSize = 13, Foreground = B(Faint) };
+                steps.Children.Add(new Border { Child = progress.Steps[i], CornerRadius = new CornerRadius(10), Background = B("#FAF6EF"), BorderBrush = B("#E8DFD3"), BorderThickness = new Thickness(1), Padding = new Thickness(10, 3, 10, 3) });
+            }
+            panel.Children.Add(steps);
+            progress.Status = new TextBlock { Text = "正在准备…", TextWrapping = TextWrapping.Wrap, Foreground = B(Ink) };
+            panel.Children.Add(progress.Status);
+            progress.Bar = new ProgressBar { Height = 8, Minimum = 0, Maximum = 100, Margin = new Thickness(0, 10, 0, 6), Foreground = B(Brown), Background = B("#EEE8E0"), BorderThickness = new Thickness(0) };
+            panel.Children.Add(progress.Bar);
+            progress.Detail = new TextBlock { Text = " ", FontSize = 12, Foreground = B(Muted) };
+            panel.Children.Add(progress.Detail);
+            progress.Cancel = new Button { Content = "取消更新", Style = (Style)window.FindResource("Btn"), Padding = new Thickness(16, 7, 16, 7), Margin = new Thickness(0, 18, 0, 0), HorizontalAlignment = HorizontalAlignment.Right };
+            progress.Cancel.Click += delegate { progress.Cancelled = true; progress.Cancel.IsEnabled = false; progress.Status.Text = "正在取消…"; };
+            panel.Children.Add(progress.Cancel);
+            dialog.Closing += delegate(object sender, System.ComponentModel.CancelEventArgs e) {
+                if (progress.Finished) return;
+                e.Cancel = true;
+                if (progress.Cancel.IsEnabled) { progress.Cancelled = true; progress.Cancel.IsEnabled = false; progress.Status.Text = "正在取消…"; }
+            };
+            progress.Window = dialog;
+            SetUpdateStep(progress, 0);
+            return progress;
+        }
+        static void SetUpdateStep(UpdateProgress progress, int active) {
+            for (int i = 0; i < progress.Steps.Length; i++) {
+                progress.Steps[i].Foreground = B(i < active ? "#3C8A68" : i == active ? "#9A6447" : Faint);
+                progress.Steps[i].FontWeight = i == active ? FontWeights.SemiBold : FontWeights.Normal;
+                var box = (Border)progress.Steps[i].Parent;
+                box.Background = B(i == active ? "#F3E6DA" : i < active ? "#E3F3EA" : "#FAF6EF");
+            }
+        }
+        static string Megabytes(long bytes) { return (bytes / 1048576.0).ToString("0.0") + " MB"; }
+        static void CloseProgress(UpdateProgress progress) {
+            if (progress == null || progress.Finished) return;
+            progress.Finished = true; progress.Window.Close();
+        }
         // SPEC 更新与安装：自建服务 → GitHub Releases；清单或下载失败换下一个来源，都失败时提供“前往 GitHub 下载”。
         async Task CheckUpdate(bool manual) {
             if (updating || closed) return;
             if (manual && (deleting || pending.Count > 0 || checking.Count > 0)) { Message("请先等待当前操作完成。", true); return; }
             updating = true; update.IsEnabled = false; Render();
+            object buttonContent = update.Content;
+            if (manual) update.Content = "正在检查…";
             var failures = new List<string>();
             bool accepted = false;
+            UpdateProgress progress = null;
             try {
                 foreach (UpdateSource source in Updates.Sources()) {
                     Release release;
+                    if (progress != null) { SetUpdateStep(progress, 0); progress.Bar.IsIndeterminate = true; progress.Status.Text = "正在从" + source.Name + "获取更新信息…"; progress.Detail.Text = " "; }
                     try { release = await Task.Run(() => Updates.CheckSource(source)); }
                     catch (Exception error) { failures.Add(source.Name + "：" + error.Message); continue; }
                     if (closed) return;
@@ -863,17 +920,54 @@ namespace ClaudeLauncher {
                         if (Ask("发现新版本 " + release.version, "当前版本 " + Updates.DisplayVersion + "。更新会先校验安装包，再关闭启动器、卸载旧版并安装新版，完成后重新打开；Claude 实例和账号数据不受影响。",
                             new[] { "稍后", "立即更新" }, 0, 1) != 1) return;
                         accepted = true;
+                        progress = BuildUpdateProgress(release.version);
+                        progress.Window.Owner = window;
+                        window.IsEnabled = false;
+                        progress.Window.Show();
                     }
-                    Message("正在从" + source.Name + "下载 " + release.file + "…", false);
+                    SetUpdateStep(progress, 0);
+                    progress.Bar.IsIndeterminate = false; progress.Bar.Value = 0;
+                    progress.Status.Text = "正在从" + source.Name + "下载 " + release.file + "…";
+                    progress.Detail.Text = "0.0 MB / " + Megabytes(release.size);
+                    Message(progress.Status.Text, false);
+                    var shown = progress; long total = release.size; int lastPercent = -1;
+                    Action<long> report = received => {
+                        int percent = (int)(received * 100 / Math.Max(1, total));
+                        if (percent == lastPercent) return;
+                        lastPercent = percent;
+                        shown.Window.Dispatcher.BeginInvoke(new Action(() => {
+                            shown.Bar.Value = percent;
+                            shown.Detail.Text = Megabytes(received) + " / " + Megabytes(total) + " · " + percent + "%";
+                        }));
+                    };
                     string setup;
-                    try { setup = await Task.Run(() => Updates.Download(release, source)); }
-                    catch (Exception error) { failures.Add(source.Name + "：" + error.Message); continue; }
+                    try { setup = await Task.Run(() => Updates.Download(release, source, report, () => shown.Cancelled)); }
+                    catch (OperationCanceledException) { CloseProgress(progress); Message("已取消更新，未做任何改动。", false); return; }
+                    catch (Exception error) {
+                        failures.Add(source.Name + "：" + error.Message);
+                        if (progress.Cancelled) { CloseProgress(progress); Message("已取消更新，未做任何改动。", false); return; }
+                        continue;
+                    }
                     if (closed) return;
-                    try { Updates.StartSetup(setup, release); }
-                    catch (Exception error) { Diagnostics.Error("update_setup_error", error); Alert("无法安装更新", error.Message); return; }
+                    if (progress.Cancelled) { CloseProgress(progress); Message("已取消更新，未做任何改动。", false); return; }
+                    SetUpdateStep(progress, 1);
+                    progress.Cancel.IsEnabled = false;
+                    progress.Bar.IsIndeterminate = true;
+                    progress.Status.Text = "正在校验安装包的签名与完整性…";
+                    progress.Detail.Text = Megabytes(total) + " 已下载";
+                    try { await Task.Run(() => Updates.StartSetup(setup, release)); }
+                    catch (Exception error) { Diagnostics.Error("update_setup_error", error); CloseProgress(progress); window.IsEnabled = true; Alert("无法安装更新", error.Message); return; }
+                    SetUpdateStep(progress, 2);
+                    progress.Bar.IsIndeterminate = false; progress.Bar.Value = 100;
+                    progress.Status.Text = "校验通过。启动器即将关闭，由安装程序卸载旧版并安装新版，完成后会自动重新打开。";
+                    progress.Detail.Text = "请稍候，不要手动打开启动器。";
                     Diagnostics.Write("update_handoff", "退出启动器，交由安装程序卸载旧版并安装新版");
+                    await Task.Delay(TimeSpan.FromSeconds(2));
+                    CloseProgress(progress);
                     window.Close(); return;
                 }
+                CloseProgress(progress);
+                window.IsEnabled = true;
                 Diagnostics.Write("update_failed", String.Join("；", failures));
                 AddLog("检查更新失败：" + String.Join("；", failures));
                 if ((manual || accepted) && !closed &&
@@ -881,7 +975,10 @@ namespace ClaudeLauncher {
                     try { Process.Start(new ProcessStartInfo(Updates.ReleasesPage) { UseShellExecute = true }); }
                     catch (Exception error) { Message("无法打开浏览器：" + error.Message, true); }
                 }
-            } finally { updating = false; if (!closed) { update.IsEnabled = true; Render(); } }
+            } finally {
+                updating = false;
+                if (!closed) { CloseProgress(progress); window.IsEnabled = true; update.Content = buttonContent; update.IsEnabled = true; Render(); }
+            }
         }
 
         const string Styles = @"
