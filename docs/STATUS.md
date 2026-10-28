@@ -7,6 +7,7 @@
 - 按用户要求，把 `codex/usage-limits-research` 的功能提交 `237ceef` 快进合并到本地 `dev`；从 `432d2d5` 前进，无冲突。原侧栏研究分支保持不变。
 - 源码和构建脚本与上一轮已验证版本完全一致；沿用上一轮 arm64／x86_64 七组自检与 GUI 结果，本轮不重复构建或宣称新增 GUI 验证。合并后检查提交归属、源码一致性与工作区状态。
 - 逻辑保持被动读取：启动器切前台时读取官方本地用量历史，不新增查询、不读取凭据、不触发官方刷新。同步 README、SPEC 与使用说明的合并状态，下方实验记录保留原结论。
+- 同步合入远端 `14694e0` 的 1.7.4 发布记录；仅 STATUS 同位置插入冲突，双方记录完整保留，源码没有冲突。
 - 版本号仍为 1.7.4 / build 11。本轮未推送、未合并 main、未发布、未替换 /Applications 中的日常安装版。
 
 ## 本地用量历史实验（2026-10-28，codex/usage-limits-research）
@@ -20,6 +21,13 @@
 - **GUI**：官方 Code 用量弹窗点击到观察到结果约 919 毫秒，不能视为纯网络延迟。新启动器首次打开与实例页返回均显示真实本地记录／歧义状态，页面返回到观察结果约 501 毫秒（含自动化开销）。测试仅正常退出／重开启动器；结束后已恢复 `/Applications` 的 1.7.3。未退出、重启或启动 Claude，未提交聊天。
 - **签名**：保持 `ClaudeLauncher Local Signing`，certificate leaf `5ce1d074d09ff41a6347a3bbcaff92c8fe25bda5`，未改变系统权限或官方应用签名。
 - **限制／未验证**：后台静置和反复失焦的长期压力测试、真实登录身份与切换登录后的正确归属、其他 Claude 版本／所有订阅类型、Windows GUI 未验证。官方历史至少约 4.5 分钟才可能追加，并非实时数据；不保证切前台时能拿到新记录，不承诺账号零封禁风险。
+
+## macOS 1.7.4 发布（2026-10-28，macos-v1.7.4，Windows 发布机，最后一次由共用密钥签 Mac）
+
+- 草稿目标 `d4cb8a6`；DMG 1686728 字节、SHA-256 与 Mac 端给出一致。Mac 公钥文件只含 Modulus/Exponent，RSA-3072，与共用公钥不同。
+- 共用 DPAPI 密钥在内存中签名 `latest-macos.json`（原文逐字节核对）并验签；Windows 1.7.2 清单与 Setup 从当前 Latest（macos-v1.7.3）下载，验签并核对大小/哈希后原样上传。自建服务放入 DMG 并切换 macOS 清单（旧清单备份 `latest-macos.json.before-1.7.4`），Windows 文件未动。
+- 转正式并设为 Latest；自建与 GitHub 两端清单和包复核：windows 1.7.2、macos 1.7.4 全部通过。之后手动运行一次 `sync.py`：两端均为最新，macOS 信任共用公钥与 `resources/update-public-key-macos.xml`；`tests/sync_test.py` 18 项通过。
+- 此后 Mac 版本由 Mac 发布机用自己的密钥签名，自建服务自动同步。未验证：Mac 1.7.3 → 1.7.4 应用内更新；第一个 Mac 密钥签名版本经同步上线。
 
 ## macOS 独立签名（2026-10-28，feature/mac-signing-key，1.7.4 / build 11）
 
