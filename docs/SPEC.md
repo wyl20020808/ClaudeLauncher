@@ -185,8 +185,10 @@ Windows 对应：重解析点（符号链接、junction）等同链接；硬链�
 ### 来源与回退
 
 1. **自建服务**：`<自建地址>/latest-<平台>.json` 与同目录安装包。macOS 在构建时通过 `UPDATE_BASE_URL` 配置，未配置则直接使用 GitHub。自建服务每 10 分钟从 GitHub `releases/latest/download/` 同步两端清单（`windows/updates/sync.py`）：只有验签通过、版本高于当前、安装包大小与 SHA-256 一致时才切换，因此任一端只需发布到 GitHub，自建服务自动跟上（主机开机且服务运行时）。
-2. **GitHub Releases**（自建失败时自动回退）：`https://github.com/wyl20020808/ClaudeLauncher/releases/latest/download/latest-<平台>.json` 与同一 Release 中的安装包。
+2. **GitHub Releases**：`https://github.com/wyl20020808/ClaudeLauncher/releases/latest/download/latest-<平台>.json` 与同一 Release 中的安装包。
 3. 两处都失败：提示原因，并提供“前往 GitHub 下载”按钮打开 Releases 页面，由用户手动下载安装。
+
+**取较高版本（2026-10-28 起，macOS 1.7.6 / Windows 待同步）**：每次检查同时向所有来源取清单，各自验签；在验签通过的清单中取版本最高者。两个来源版本相同时，按上述顺序（自建优先）下载，下载失败或哈希不符再换同版本的下一个来源。只有全部来源都取不到有效清单时才算失败。原因：自建服务同步前仍提供合法的旧清单，旧规则下客户端会据此判定“已是最新”而不再查 GitHub（1.7.5 发布时实测约 7 分钟），同步持续失败时客户会一直收不到更新。
 
 只用 HTTPS，不跟随跳转到其他域名（GitHub 下载跳转到 `objects.githubusercontent.com` 除外），请求有超时与大小上限。检查更新由用户触发或启动后低频进行，失败不影响正常使用。
 

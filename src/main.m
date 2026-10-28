@@ -143,6 +143,14 @@ static NSComparisonResult CompareVersions(NSString *a, NSString *b) {
     }
     return NSOrderedSame;
 }
+// Keep the offers carrying the highest version, in source order (self-hosted first, then GitHub).
+static NSArray *BestOffers(NSArray<NSDictionary *> *offers) {
+    NSString *best = nil;
+    for (NSDictionary *offer in offers) if (!best || CompareVersions(offer[@"manifest"][@"version"],best) == NSOrderedDescending) best = offer[@"manifest"][@"version"];
+    NSMutableArray *chosen = [NSMutableArray array];
+    for (NSDictionary *offer in offers) if (best && CompareVersions(offer[@"manifest"][@"version"],best) == NSOrderedSame) [chosen addObject:offer];
+    return chosen;
+}
 static BOOL Matches(id value, NSString *pattern) {
     return [value isKindOfClass:NSString.class] && [value rangeOfString:pattern options:NSRegularExpressionSearch].location != NSNotFound;
 }
@@ -1191,7 +1199,7 @@ static const unsigned CardFill = 0xFFFCF7;
     if (self.updating) { if (manual) [self alert:@"正在检查更新" detail:@"请稍候。"]; return; }
     self.updating = YES;
     [NSUserDefaults.standardUserDefaults setObject:[NSDate date] forKey:@"lastUpdateCheck"];
-    [self trySource:0 failures:@[] manual:manual];
+    [self checkAllSources:manual];
 }
 - (void)updateFailed:(NSArray<NSString *> *)failures manual:(BOOL)manual {
     self.updating = NO;
@@ -1204,15 +1212,35 @@ static const unsigned CardFill = 0xFFFCF7;
     [alert addButtonWithTitle:@"前往 GitHub 下载"]; [alert addButtonWithTitle:@"关闭"];
     if ([alert runModal] == NSAlertFirstButtonReturn) [NSWorkspace.sharedWorkspace openURL:[NSURL URLWithString:ReleasesPage]];
 }
-- (void)trySource:(NSUInteger)index failures:(NSArray<NSString *> *)failures manual:(BOOL)manual {
+// Ask every source at once and compare: a lagging self-hosted copy must not hide a newer release on GitHub.
+- (void)checkAllSources:(BOOL)manual {
     NSArray *sources = [self updateSources];
-    if (index >= sources.count) { [self updateFailed:failures manual:manual]; return; }
-    NSDictionary *source = sources[index]; BOOL github = [source[@"github"] boolValue];
-    NSArray *(^failed)(NSString *) = ^NSArray *(NSString *why) { return [failures arrayByAddingObject:[NSString stringWithFormat:@"%@：%@",source[@"name"],why]]; };
-    Fetch([NSURL URLWithString:[source[@"base"] stringByAppendingString:@"latest-macos.json"]], github, 16384, 30, ^(NSData *data, NSString *failure) {
-        NSString *invalid = failure;
-        NSDictionary *manifest = data ? VerifyManifest(data, ReleaseKeys(), &invalid) : nil;
-        if (!manifest) { [self trySource:index+1 failures:failed(invalid) manual:manual]; return; }
+    NSMutableArray *results = [NSMutableArray array];
+    for (NSUInteger i = 0; i < sources.count; i++) [results addObject:NSNull.null];
+    dispatch_group_t group = dispatch_group_create();
+    for (NSUInteger i = 0; i < sources.count; i++) {
+        NSDictionary *source = sources[i];
+        dispatch_group_enter(group);
+        Fetch([NSURL URLWithString:[source[@"base"] stringByAppendingString:@"latest-macos.json"]], [source[@"github"] boolValue], 16384, 30, ^(NSData *data, NSString *failure) {
+            NSString *invalid = failure;
+            NSDictionary *manifest = data ? VerifyManifest(data, ReleaseKeys(), &invalid) : nil;
+            results[i] = manifest ? @{@"source":source,@"manifest":manifest} : @{@"source":source,@"failure":invalid ?: @"未知错误"};
+            dispatch_group_leave(group);
+        });
+    }
+    dispatch_group_notify(group, dispatch_get_main_queue(), ^{ [self chooseUpdate:results manual:manual]; });
+}
+- (void)chooseUpdate:(NSArray<NSDictionary *> *)results manual:(BOOL)manual {
+    NSMutableArray *offers = [NSMutableArray array], *failures = [NSMutableArray array];
+    for (NSDictionary *result in results) {
+        if (self.headless) printf("[source] %s: %s\n",[result[@"source"][@"name"] UTF8String],result[@"manifest"] ? [result[@"manifest"][@"version"] UTF8String] : [result[@"failure"] UTF8String]);
+        if (result[@"manifest"]) [offers addObject:result];
+        else [failures addObject:[NSString stringWithFormat:@"%@：%@",result[@"source"][@"name"],result[@"failure"]]];
+    }
+    if (!offers.count) { [self updateFailed:failures manual:manual]; return; }
+    NSArray *best = BestOffers(offers);
+    NSDictionary *manifest = best.firstObject[@"manifest"], *source = best.firstObject[@"source"];
+    {
         NSString *current = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"0";
         if (CompareVersions(manifest[@"version"],current) != NSOrderedDescending) {
             self.updating = NO;
@@ -1234,12 +1262,18 @@ static const unsigned CardFill = 0xFFFCF7;
         if (self.headless) { if (blocker) { printf("[result] %s\n",blocker.UTF8String); exit(4); } printf("[offer] %s from %s, accepted\n",[manifest[@"version"] UTF8String],[source[@"name"] UTF8String]); }
         else if ([offer runModal] != NSAlertFirstButtonReturn) { self.updating = NO; return; }
         if (blocker) { self.updating = NO; [NSWorkspace.sharedWorkspace openURL:[NSURL URLWithString:ReleasesPage]]; return; }
-        [self addLog:[NSString stringWithFormat:@"正在从%@下载 %@",source[@"name"],manifest[@"file"]]];
-        Fetch([NSURL URLWithString:[source[@"base"] stringByAppendingString:[manifest[@"file"] stringByAddingPercentEncodingWithAllowedCharacters:NSCharacterSet.URLPathAllowedCharacterSet]]], github, UpdateSizeLimit, 300, ^(NSData *package, NSString *downloadFailure) {
-            NSString *problem = downloadFailure ?: (long long)package.length != [manifest[@"size"] longLongValue] || ![SHA256Hex(package) isEqual:manifest[@"sha256"]] ? @"安装包大小或 SHA-256 不匹配，已拒绝。" : nil;
-            if (problem) { [self trySource:index+1 failures:failed(problem) manual:YES]; return; }
-            [self installPackage:package version:manifest[@"version"]];
-        });
+        [self downloadOffer:best index:0 failures:failures];
+    }
+}
+// Download from the sources that offer the chosen version, in source order; a failed download moves to the next one.
+- (void)downloadOffer:(NSArray<NSDictionary *> *)offers index:(NSUInteger)index failures:(NSArray<NSString *> *)failures {
+    if (index >= offers.count) { [self updateFailed:failures manual:YES]; return; }
+    NSDictionary *source = offers[index][@"source"], *manifest = offers[index][@"manifest"];
+    [self addLog:[NSString stringWithFormat:@"正在从%@下载 %@",source[@"name"],manifest[@"file"]]];
+    Fetch([NSURL URLWithString:[source[@"base"] stringByAppendingString:[manifest[@"file"] stringByAddingPercentEncodingWithAllowedCharacters:NSCharacterSet.URLPathAllowedCharacterSet]]], [source[@"github"] boolValue], UpdateSizeLimit, 300, ^(NSData *package, NSString *downloadFailure) {
+        NSString *problem = downloadFailure ?: (long long)package.length != [manifest[@"size"] longLongValue] || ![SHA256Hex(package) isEqual:manifest[@"sha256"]] ? @"安装包大小或 SHA-256 不匹配，已拒绝。" : nil;
+        if (problem) { [self downloadOffer:offers index:index+1 failures:[failures arrayByAddingObject:[NSString stringWithFormat:@"%@：%@",source[@"name"],problem]]]; return; }
+        [self installPackage:package version:manifest[@"version"]];
     });
 }
 - (void)installPackage:(NSData *)package version:(NSString *)version {
@@ -1987,6 +2021,12 @@ static int SelfTest(void) {
         NSCAssert(!VerifyManifest(json(good),@[],&why),@"no keys, no update");
         CFRelease(macPrivate); CFRelease(otherPrivate);
         CFRelease(rebuilt); CFRelease(publicKey); CFRelease(privateKey);
+        NSArray *(^offer)(NSString *, NSString *) = ^NSArray *(NSString *name, NSString *version) { return @[@{@"source":@{@"name":name},@"manifest":@{@"version":version}}]; };
+        NSArray *lagging = [offer(@"自建",@"1.7.4") arrayByAddingObjectsFromArray:offer(@"GitHub",@"1.7.5")];
+        NSCAssert([BestOffers(lagging).firstObject[@"source"][@"name"] isEqual:@"GitHub"] && BestOffers(lagging).count == 1,@"lagging self-hosted does not hide newer GitHub");
+        NSArray *same = [offer(@"自建",@"1.7.5") arrayByAddingObjectsFromArray:offer(@"GitHub",@"1.7.5")];
+        NSCAssert(BestOffers(same).count == 2 && [BestOffers(same).firstObject[@"source"][@"name"] isEqual:@"自建"],@"equal versions keep self-hosted first, GitHub as download fallback");
+        NSCAssert(BestOffers(@[]).count == 0 && [BestOffers([offer(@"GitHub",@"1.10.0") arrayByAddingObjectsFromArray:offer(@"自建",@"1.9.9")]).firstObject[@"source"][@"name"] isEqual:@"GitHub"],@"numeric comparison, empty input");
         NSCAssert(CompareVersions(@"1.7.0",@"1.6") == NSOrderedDescending && CompareVersions(@"1.6.0",@"1.6") == NSOrderedSame && CompareVersions(@"1.10.0",@"1.9.9") == NSOrderedDescending,@"numeric version order");
         NSCAssert(RedirectAllowed([NSURL URLWithString:@"https://objects.githubusercontent.com/x"],YES) && !RedirectAllowed([NSURL URLWithString:@"https://evil.example/x"],YES) && !RedirectAllowed([NSURL URLWithString:@"https://github.com/x"],NO) && !RedirectAllowed([NSURL URLWithString:@"http://github.com/x"],YES),@"redirect allowlist");
         NSCAssert(InstallBlocker(@"/private/var/folders/x/AppTranslocation/y/Claude 启动器.app") && InstallBlocker(@"/Volumes/Claude/Claude 启动器.app") && InstallBlocker(@"/tmp/not-an-app"),@"unsafe install locations rejected");
@@ -1994,6 +2034,7 @@ static int SelfTest(void) {
         NSCAssert(bundled.count == 2,@"both bundled release keys load (shared + macOS)");
         for (id key in bundled) NSCAssert(SecKeyGetBlockSize((__bridge SecKeyRef)key) == 384,@"bundled release key is RSA-3072");
         NSCAssert(![CFBridgingRelease(SecKeyCopyExternalRepresentation((__bridge SecKeyRef)bundled[0],NULL)) isEqual:CFBridgingRelease(SecKeyCopyExternalRepresentation((__bridge SecKeyRef)bundled[1],NULL))],@"the two bundled keys differ: %@ vs %@",[CFBridgingRelease(SecKeyCopyExternalRepresentation((__bridge SecKeyRef)bundled[0],NULL)) subdataWithRange:NSMakeRange(0,24)],[CFBridgingRelease(SecKeyCopyExternalRepresentation((__bridge SecKeyRef)bundled[1],NULL)) subdataWithRange:NSMakeRange(0,24)]);
+        puts("PASS: update source choice keeps the highest verified version (lagging self-hosted cannot hide GitHub)");
         puts("PASS: update manifest signature and tampering, two accepted keys (shared/macOS) and unknown-key rejection, XML key import, version order, redirect allowlist, install location, bundled RSA-3072 keys");
     } return 0;
 }
