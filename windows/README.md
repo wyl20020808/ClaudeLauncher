@@ -62,7 +62,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup.ps1
 - 先卸载再安装（SPEC）：用固定 AppId 查当前用户的卸载项；已安装时提示“检测到已安装 x.y.z，将先卸载再安装新版”。随后按 PID 核对、对旧安装目录中运行的启动器窗口发送正常关闭（WM_CLOSE，不结束进程，不涉及 Claude），等待退出；再静默运行旧版卸载程序，等卸载项和旧卸载程序都消失后才安装新版。启动器无法正常关闭（如删除未完成）或旧版卸载失败、超时，都中止安装并提示原因。
 - 卸载只删除安装的 `ClaudeLauncher.exe`、卸载程序以及自建更新在安装目录内留下的 `.previous-*`、`.new-*`、`.failed-*` 文件。**不删除任何账号数据目录**（`%APPDATA%\Claude-*`、`%LOCALAPPDATA%\Claude-Data`、商店版 `Packages\Claude_*`），也不删除启动器日志、登录保护和删除状态目录 `%LOCALAPPDATA%\Claude-MultiLauncher`。
 - 升级覆盖安装时，Inno Setup 只会请求关闭占用本程序文件的进程（启动器本身），不涉及 Claude。
-- 版本号与 macOS 一致：1.7.0（程序集 1.7.0.0，见 `src/Updates.cs`）。
+- 版本号 1.7.1（程序集 1.7.1.0，见 `src/Updates.cs`）；与 macOS 各自递增，不要求一致。
 - 安装向导使用 Inno Setup 默认英文界面（Inno 6.7.3 未内置简体中文向导文件），程序名、快捷方式为中文。
 - **代码签名：未签名。** 本机没有代码签名证书，安装程序和 `ClaudeLauncher.exe` 都没有 Authenticode 签名。客户首次运行会看到 SmartScreen“Windows 已保护你的电脑”，需点“更多信息 → 仍要运行”；部分杀毒软件可能更谨慎。需要正式证书（OV/EV）后在打包时对 exe 和 setup.exe 签名，此项待用户决定。
 - 静默安装参数 `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /RELAUNCH=1`：`/RELAUNCH=1` 仅在静默模式下让 Setup 装好后重新打开启动器。
@@ -80,7 +80,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup.ps1
 
 ## 发布（发布机）
 
-`scripts/publish-release.ps1 -MacSize <字节> -MacSha256 <哈希>`：构建 Setup → 从草稿 Release `v<版本>` 下载 macOS DMG 并核对 macOS 给出的 size/sha256 → 内存中解密 DPAPI 私钥，签名 `latest-windows.json`、`latest-macos.json`（首行 `macos`、`ClaudeLauncher-<版本>.dmg`、`minimumOS=12.0`）和 1.2.0 兼容 `latest.json`，并本地验签 → 安装包复制到 `updates/public/` → Setup 与两份清单上传到草稿 → 原子切换自建服务清单 → 草稿转正式 → 从自建服务与 GitHub 各下载一次清单和安装包验签核对。正式发布后的任何失败都会恢复自建清单并把 Release 改回草稿。`-DryRun` 只构建、签名和本地校验，不上传（可用测试密钥）。私钥不落盘、不输出。服务端白名单与维护步骤见 `updates/维护说明.md`。
+两种方式：只发布 Windows 时直接运行 `scripts/publish-release.ps1`（标签 `windows-v<版本>`，从当前最新 Release 带入已签名的 macOS 清单与 DMG，验签核对后一并放进新 Release，自建服务的 macOS 清单不动）；两端同时发布时运行 `scripts/publish-release.ps1 -MacSize <字节> -MacSha256 <哈希>`（标签 `v<版本>`）：构建 Setup → 从草稿 Release `v<版本>` 下载 macOS DMG 并核对 macOS 给出的 size/sha256 → 内存中解密 DPAPI 私钥，签名 `latest-windows.json`、`latest-macos.json`（首行 `macos`、`ClaudeLauncher-<版本>.dmg`、`minimumOS=12.0`）和 1.2.0 兼容 `latest.json`，并本地验签 → 安装包复制到 `updates/public/` → Setup 与两份清单上传到草稿 → 原子切换自建服务清单 → 草稿转正式 → 从自建服务与 GitHub 各下载一次清单和安装包验签核对。正式发布后的任何失败都会恢复自建清单并把 Release 改回草稿。`-DryRun` 只构建、签名和本地校验，不上传（可用测试密钥）。私钥不落盘、不输出。服务端白名单与维护步骤见 `updates/维护说明.md`。
 
 ## 与 SPEC 的对应
 
