@@ -15,14 +15,20 @@ Add-Type -AssemblyName System.Security
 Add-Type -AssemblyName System.Web.Extensions
 $projectRoot = Split-Path $PSScriptRoot -Parent
 function Step([string]$text) { Write-Output ('== ' + $text) }
-function Gh {
-    & gh @args
+# PowerShell 函数名不区分大小写：必须直接调用 gh.exe，否则包装函数会递归调用自身。
+$ghExe = $null
+$ghCommand = Get-Command gh -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+if ($ghCommand) { $ghExe = $ghCommand.Source }
+function Invoke-Gh {
+    if (-not $ghExe) { throw 'GitHub CLI (gh) not found.' }
+    & $ghExe @args
     if ($LASTEXITCODE -ne 0) { throw ('gh ' + ($args -join ' ') + ' failed.') }
 }
 function Write-Utf8([string]$path, [string]$text) { [IO.File]::WriteAllText($path, $text, (New-Object Text.UTF8Encoding($false))) }
 
 if (-not $DryRun) {
-    & gh auth status *> $null
+    if (-not $ghExe) { throw 'GitHub CLI (gh) not found.' }
+    & $ghExe auth status *> $null
     if ($LASTEXITCODE -ne 0) { throw 'gh is not logged in. Run: gh auth login' }
 }
 # 在 Codex 桌面版（打包应用）中运行 init-update-key.ps1 时，%LOCALAPPDATA% 写入被重定向到其包缓存；同一账户下 DPAPI 照常解密。
@@ -53,12 +59,12 @@ Copy-Item -LiteralPath $exe -Destination (Join-Path $staging $legacyName)
 
 Step ('Obtain macOS DMG ' + $dmgName)
 if (-not $DryRun) {
-    $draft = (& gh release view $tag --repo $Repository --json isDraft | ConvertFrom-Json)
+    $draft = (& $ghExe release view $tag --repo $Repository --json isDraft | ConvertFrom-Json)
     if ($LASTEXITCODE -ne 0 -or -not $draft) { throw ('Release ' + $tag + ' not found. macOS must upload the DMG to a draft release first.') }
     if (-not $draft.isDraft) { throw ('Release ' + $tag + ' is already published. Increase the version instead of republishing.') }
 }
 if ($MacDmg) { Copy-Item -LiteralPath $MacDmg -Destination (Join-Path $staging $dmgName) }
-else { Gh release download $tag --repo $Repository --pattern $dmgName --dir $staging }
+else { Invoke-Gh release download $tag --repo $Repository --pattern $dmgName --dir $staging }
 $dmg = Join-Path $staging $dmgName
 if ((Get-Item -LiteralPath $dmg).Length -ne $MacSize -or [ClaudeLauncher.Updates]::Hash($dmg) -ne $MacSha256) { throw 'macOS DMG size or SHA-256 does not match the values given by macOS.' }
 
@@ -119,7 +125,7 @@ foreach ($name in @($setupName, $dmgName, $legacyName)) {
 }
 
 Step ('Upload Setup and manifests to draft ' + $tag)
-Gh release upload $tag (Join-Path $staging $setupName) (Join-Path $staging 'latest-windows.json') (Join-Path $staging 'latest-macos.json') --repo $Repository --clobber
+Invoke-Gh release upload $tag (Join-Path $staging $setupName) (Join-Path $staging 'latest-windows.json') (Join-Path $staging 'latest-macos.json') --repo $Repository --clobber
 
 $switched = @()
 $published = $false
@@ -134,7 +140,7 @@ try {
     }
 
     Step ('Publish ' + $tag)
-    Gh release edit $tag --repo $Repository --draft=false --latest
+    Invoke-Gh release edit $tag --repo $Repository --draft=false --latest
     $published = $true
 
     Step 'Verify both sources'
@@ -163,6 +169,6 @@ try {
         if (Test-Path -LiteralPath ($target + '.previous')) { Copy-Item -LiteralPath ($target + '.previous') -Destination $target -Force }
         else { Remove-Item -LiteralPath $target }
     }
-    if ($published) { & gh release edit $tag --repo $Repository --draft=true }
+    if ($published) { & $ghExe release edit $tag --repo $Repository --draft=true }
     throw $failure
 }
