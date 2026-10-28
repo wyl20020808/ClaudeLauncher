@@ -10,6 +10,7 @@
 #import <CommonCrypto/CommonDigest.h>
 #import "Projects.h"
 #import "ProjectImport.h"
+#import "UsageHistory.h"
 
 static NSString * const BundleID = @"local.claude.profile-launcher";
 static NSString * const WakeNotification = @"local.claude.profile-launcher.show";
@@ -508,6 +509,9 @@ static const unsigned CardFill = 0xFFFCF7;
 @property NSColor *dot;
 @property NSTextField *status;
 @property ActionButton *button;
+@property NSArray<NSTextField *> *usageLabels;
+@property NSTextField *usageSource;
+@property NSArray *usageValues;
 @end
 @implementation AccountCard
 - (BOOL)isFlipped { return YES; }
@@ -534,10 +538,15 @@ static const unsigned CardFill = 0xFFFCF7;
         [Hex(0xFAF6EF) setFill]; [path fill]; [Hex(0xE8DFD3) setStroke]; [path stroke];
         DrawCentered(chip, rect, chipText); x = NSMaxX(rect)+8;
     }
-    // Quota rows are layout placeholders until a data source exists; empty tracks, no invented numbers.
+    // Missing or ambiguous local history leaves empty tracks; never invent a current quota.
     for (NSInteger row = 0; row < 2; row++) {
         NSBezierPath *track = [NSBezierPath bezierPathWithRoundedRect:NSMakeRect(436,44+row*46,150,6) xRadius:3 yRadius:3];
         [Hex(0xEEE8E0) setFill]; [track fill];
+        id value = self.usageValues.count > (NSUInteger)row ? self.usageValues[row] : nil;
+        if ([value isKindOfClass:NSNumber.class] && [value doubleValue] > 0) {
+            [Hex(0xA99A87) setFill];
+            [[NSBezierPath bezierPathWithRoundedRect:NSMakeRect(436,44+row*46,150*[value doubleValue]/100,6) xRadius:3 yRadius:3] fill];
+        }
     }
 }
 @end
@@ -587,6 +596,9 @@ static const unsigned CardFill = 0xFFFCF7;
 @property NSInteger loginAccount;
 @property NSButton *endLoginButton;
 @property NSTextField *summaryLabel;
+@property NSDictionary<NSNumber *,NSDictionary *> *usageHistory;
+@property BOOL readingUsageHistory;
+@property NSTimeInterval lastUsageRead;
 @end
 @implementation Launcher
 - (instancetype)init {
@@ -639,13 +651,18 @@ static const unsigned CardFill = 0xFFFCF7;
     [card addSubview:Text([NSString stringWithFormat:@"账号 %02ld",(long)n], NSMakeRect(84,18,150,24), [NSFont systemFontOfSize:18 weight:NSFontWeightSemibold], ink)];
     card.status = Text(@"读取状态…", NSMakeRect(102,44,160,20), [NSFont systemFontOfSize:13], muted); [card addSubview:card.status];
     NSArray *rows = @[@[@"clock",@"5小时限额"],@[@"calendar",@"周限额"]];
+    NSMutableArray *usageLabels = [NSMutableArray array];
     for (NSInteger row = 0; row < 2; row++) {
         CGFloat y = 18+row*46;
         [card addSubview:Symbol(rows[row][0], NSMakeRect(406,y+1,18,18), muted)];
         [card addSubview:Text(rows[row][1], NSMakeRect(436,y,120,20), [NSFont systemFontOfSize:14 weight:NSFontWeightMedium], ink)];
-        NSTextField *pending = Text(@"未接入", NSMakeRect(592,y+19,44,16), [NSFont systemFontOfSize:12], Hex(0xA59B90)); pending.alignment = NSTextAlignmentRight;
+        NSTextField *pending = Text(@"—", NSMakeRect(588,y+19,48,16), [NSFont systemFontOfSize:12], Hex(0xA59B90)); pending.alignment = NSTextAlignmentRight;
         [card addSubview:pending];
+        [usageLabels addObject:pending];
     }
+    card.usageLabels = usageLabels;
+    card.usageSource = Text(@"本地记录 · 待读取",NSMakeRect(436,100,200,16),[NSFont systemFontOfSize:11],muted);
+    [card addSubview:card.usageSource];
     card.button = [ActionButton buttonWithTitle:@"启动" target:self action:@selector(selectAccount:)];
     card.button.tag = n; card.button.frame = NSMakeRect(646,36,86,52); card.button.bordered = NO; card.button.buttonType = NSButtonTypeMomentaryPushIn;
     card.button.toolTip = ProfilePath(n); [card addSubview:card.button];
@@ -1375,7 +1392,44 @@ static const unsigned CardFill = 0xFFFCF7;
     [appMenu addItemWithTitle:@"退出 Claude 启动器" action:@selector(terminate:) keyEquivalent:@"q"];
     NSApp.mainMenu = menu;
 }
-- (void)show:(id)sender { [self.window deminiaturize:nil]; [self.window makeKeyAndOrderFront:nil]; [NSApp activateIgnoringOtherApps:YES]; }
+- (void)show:(id)sender { [self.window deminiaturize:nil]; [self.window makeKeyAndOrderFront:nil]; [NSApp activateIgnoringOtherApps:YES]; [self readLocalUsage]; }
+- (void)applicationDidBecomeActive:(NSNotification *)note { [self readLocalUsage]; }
+- (void)windowDidBecomeKey:(NSNotification *)note { if (note.object == self.window) [self readLocalUsage]; }
+- (void)readLocalUsage {
+    if (self.snapshotMode || !NSApp.isActive || !self.window.visible || self.page != 0 || self.readingUsageHistory ||
+        NSProcessInfo.processInfo.systemUptime-self.lastUsageRead < 1) return;
+    self.readingUsageHistory = YES; self.lastUsageRead = NSProcessInfo.processInfo.systemUptime;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY,0), ^{
+        NSMutableDictionary *results = [NSMutableDictionary dictionary]; NSDate *now = NSDate.date;
+        for (NSInteger n=1;n<=10;n++) results[@(n)] = ReadUsageHistory(ProfilePath(n),now);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            self.usageHistory = results; self.readingUsageHistory = NO; [self updateUsageCards];
+        });
+    });
+}
+- (void)updateUsageCards {
+    NSDateFormatter *clock = [NSDateFormatter new]; clock.dateFormat = @"HH:mm";
+    for (AccountCard *card in self.cards) {
+        NSDictionary *record = self.usageHistory[@(card.number)];
+        NSString *status = record[@"status"] ?: @"待读取"; NSDate *date = record[@"date"];
+        if ([status isEqual:@"本地记录"] && -date.timeIntervalSinceNow > 15*60) status = @"记录已过期";
+        if (self.loginAccount == card.number) status = @"登录保护中";
+        if (self.scanError) status = @"进程待核对";
+        BOOL available = [status isEqual:@"本地记录"];
+        card.usageValues = @[(available ? record[@"fh"] : nil) ?: NSNull.null,(available ? record[@"sd"] : nil) ?: NSNull.null];
+        NSString *detail = @"仅显示此账号目录中官方保存的历史用量，不是实时查询，无法证明当前登录身份。超过 15 分钟或含多组织记录时隐藏百分比。请在官方 Claude 的「用量」中核对；本程序不发送查询、不触发刷新、不读取凭据。";
+        if (date) detail = [detail stringByAppendingFormat:@"\n官方记录时间：%@。记录不含重置时间。",[NSDateFormatter localizedStringFromDate:date dateStyle:NSDateFormatterMediumStyle timeStyle:NSDateFormatterMediumStyle]];
+        card.usageSource.stringValue = available ? [@"本地记录 · " stringByAppendingString:[clock stringFromDate:date]] : status;
+        card.usageSource.toolTip = detail;
+        for (NSUInteger row=0;row<2;row++) {
+            id value = card.usageValues[row];
+            card.usageLabels[row].stringValue = [value isKindOfClass:NSNumber.class] ? [NSString stringWithFormat:@"%.0f%%",[value doubleValue]] : @"—";
+            card.usageLabels[row].toolTip = detail;
+            card.usageLabels[row].accessibilityLabel = [NSString stringWithFormat:@"%@，%@，%@",row == 0 ? @"5小时已使用" : @"每周已使用",card.usageLabels[row].stringValue,card.usageSource.stringValue];
+        }
+        card.needsDisplay = YES;
+    }
+}
 // Menu-bar item (SPEC 常驻图标). Uses the bundled resources/icon/menubar.png template, with an SF Symbol fallback.
 - (void)makeStatusItem {
     self.statusItem = [NSStatusBar.systemStatusBar statusItemWithLength:NSVariableStatusItemLength];
@@ -1462,6 +1516,7 @@ static const unsigned CardFill = 0xFFFCF7;
         self.lastLogged = text; [self addLog:text];
     }
     [self refreshAccountTable];
+    [self updateUsageCards];
 }
 - (void)refreshAccountTable {
     NSUInteger shown = 0, running = 0, attention = 0; CGFloat y = 0;
@@ -1499,6 +1554,7 @@ static const unsigned CardFill = 0xFFFCF7;
     if (page != 0) self.emptyHint.hidden = YES;
     self.sidebar.needsDisplay = YES;
     for (NSView *item in self.navItems) item.needsDisplay = YES;
+    if (page == 0) [self readLocalUsage];
 }
 - (void)navClicked:(NSClickGestureRecognizer *)recognizer { [self showPage:recognizer.view.identifier.integerValue]; }
 - (void)newInstance:(id)sender {
@@ -1783,6 +1839,7 @@ static int SelfTest(void) {
         TestProjects();
         TestProjectImport();
         TestProjectRegistration();
+        TestUsageHistory();
         NSCAssert(AccountForArguments(@[@"Claude"]) == 1, @"default");
         for (NSInteger n=1;n<=10;n++) {
             NSCAssert(AccountForArguments(@[@"Claude",[@"--user-data-dir=" stringByAppendingString:ProfilePath(n)]]) == n,@"equals");
@@ -1943,6 +2000,15 @@ static int SelfTest(void) {
 int main(int argc, const char *argv[]) {
     @autoreleasepool {
         if (argc > 1 && strcmp(argv[1],"--self-test") == 0) return SelfTest();
+        if (argc > 1 && strcmp(argv[1],"--usage-history-check") == 0) {
+            // Only statuses/timing, never organization identifiers or credential contents.
+            for (NSInteger n=1;n<=10;n++) {
+                NSTimeInterval start = NSProcessInfo.processInfo.systemUptime;
+                NSDictionary *result = ReadUsageHistory(ProfilePath(n),NSDate.date);
+                printf("account=%02ld status=%s read_ms=%.3f\n",(long)n,[result[@"status"] UTF8String],(NSProcessInfo.processInfo.systemUptime-start)*1000);
+            }
+            return 0;
+        }
         if (argc > 1 && strcmp(argv[1],"--diagnose") == 0) {
             NSString *failure=nil; NSDictionary *pids=Scan(&failure);
             if (failure) { puts(failure.UTF8String); return 1; }
@@ -2000,6 +2066,10 @@ int main(int argc, const char *argv[]) {
                 @{@"name":@"较长的项目名称用于检查表格截断",@"group":@"个人学习资料",@"path":@"/Users/example/Documents/一个很长的目录名称/研究项目/Notes",@"lastAccount":@1,@"previewStatus":@"不存在"},
                 @{@"name":@"归档资料",@"group":@"",@"path":@"/Volumes/Archive/Research",@"lastAccount":@0,@"previewStatus":@"无权限"}];
             [launcher makeWindow]; [launcher refresh];
+            if (argc > 4 && strcmp(argv[4],"--usage-demo") == 0) {
+                launcher.usageHistory = @{@1:@{@"status":@"本地记录",@"date":NSDate.date,@"fh":@62,@"sd":@70},@2:@{@"status":@"身份待核对"}};
+                [launcher updateUsageCards];
+            }
             NSView *view = launcher.window.contentView;
             NSAlert *importPreview = nil;
             if (argc > 4 && strcmp(argv[4],"--import-demo") == 0) {
