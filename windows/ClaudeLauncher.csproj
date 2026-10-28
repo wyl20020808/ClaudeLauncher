@@ -35,8 +35,15 @@
     <Compile Include="src\Diagnostics.cs" />
     <Compile Include="src\Updates.cs" />
     <Compile Include="src\Storage.cs" />
+    <Compile Include="src\LauncherUI.cs" />
     <EmbeddedResource Include="assets\claude.ico"><LogicalName>ClaudeLauncher.Icon</LogicalName></EmbeddedResource>
     <EmbeddedResource Include="assets\update-public-key.xml"><LogicalName>ClaudeLauncher.UpdateKey</LogicalName></EmbeddedResource>
+    <EmbeddedResource Include="..\resources\ui\background.webp"><LogicalName>ClaudeLauncher.UI.background</LogicalName></EmbeddedResource>
+    <EmbeddedResource Include="..\resources\ui\sidebar.webp"><LogicalName>ClaudeLauncher.UI.sidebar</LogicalName></EmbeddedResource>
+    <EmbeddedResource Include="..\resources\ui\card-1.webp"><LogicalName>ClaudeLauncher.UI.card-1</LogicalName></EmbeddedResource>
+    <EmbeddedResource Include="..\resources\ui\card-2.webp"><LogicalName>ClaudeLauncher.UI.card-2</LogicalName></EmbeddedResource>
+    <EmbeddedResource Include="..\resources\ui\card-3.webp"><LogicalName>ClaudeLauncher.UI.card-3</LogicalName></EmbeddedResource>
+    <EmbeddedResource Include="..\resources\ui\card-4.webp"><LogicalName>ClaudeLauncher.UI.card-4</LogicalName></EmbeddedResource>
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
 </Project>

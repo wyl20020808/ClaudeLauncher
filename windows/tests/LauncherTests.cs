@@ -90,20 +90,23 @@ public static class LauncherTests {
         // 构造原生界面以验证 XAML 和控件，测试不显示窗口、不启动 Claude。
         new System.Windows.Application();
         var ui = new LauncherUI();
-        foreach (int n in new[] {1, 3}) {
-            var dialog = ui.BuildDeleteDialog(n, new[] { @"C:\fixture\Claude" });
-            var controls = Children(dialog).ToArray();
-            var confirm = controls.OfType<Button>().Single(b => AutomationProperties.GetAutomationId(b) == "ConfirmDelete");
-            var cancel = controls.OfType<Button>().Single(b => b.IsCancel);
-            Check(cancel.IsDefault && !confirm.IsDefault, "Enter must default to cancel");
-            Check(confirm.IsEnabled == (n != 1), "Default account needs extra acknowledgment");
-            Check(controls.OfType<TextBox>().Single().IsReadOnly, "Deletion paths must be read-only");
-            if (n == 1) {
-                var acknowledge = controls.OfType<CheckBox>().Single();
-                acknowledge.IsChecked = true; Check(confirm.IsEnabled, "Acknowledgment should enable confirmation");
-                acknowledge.IsChecked = false; Check(!confirm.IsEnabled, "Removing acknowledgment should disable confirmation");
-            }
+        // 01 不可删（Core.DeleteBlocker），删除确认框只用于 02～10。
+        var dialog = ui.BuildDeleteDialog(3, new[] { @"C:\fixture\Claude-Profile-03" });
+        var controls = Children(dialog).ToArray();
+        var confirm = controls.OfType<Button>().Single(b => AutomationProperties.GetAutomationId(b) == "ConfirmDelete");
+        var cancel = controls.OfType<Button>().Single(b => b.IsCancel);
+        Check(cancel.IsDefault && !confirm.IsDefault, "Enter must default to cancel");
+        Check(controls.OfType<TextBox>().Single().IsReadOnly, "Deletion paths must be read-only");
+        // 四个页面以合成状态渲染，不扫描真实进程。
+        var state = new List<Instance> { new Instance { Number=1, ProcessId=111 }, new Instance { Number=2, ProcessId=222 } };
+        for (int page = 0; page < 4; page++) {
+            var pageRoot = ui.Snapshot(page, state);
+            pageRoot.Measure(new Size(1080, 720)); pageRoot.Arrange(new Rect(0, 0, 1080, 720));
+            Check(pageRoot.ActualWidth == 1080, "Page layout failed");
         }
+        var buttons = Children(ui.Snapshot(0, state)).OfType<Button>().ToArray();
+        Check(buttons.Single(b => AutomationProperties.GetAutomationId(b) == "Profile1").Content as string == "打开", "Running account should offer Open");
+        Check(buttons.Any(b => AutomationProperties.GetAutomationId(b) == "NewInstance"), "New instance button missing");
         Console.WriteLine("PASS: " + checks + " assertions; WPF layout loaded without showing windows.");
         return 0;
     }

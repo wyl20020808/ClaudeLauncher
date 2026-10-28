@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
@@ -28,8 +29,12 @@ namespace ClaudeLauncher {
             // FILE_READ_ATTRIBUTES，共享全部；BACKUP_SEMANTICS | OPEN_REPARSE_POINT 不跟随链接。
             using (SafeFileHandle handle = CreateFile(path, 0x80, 7, IntPtr.Zero, 3, 0x02000000 | 0x00200000, IntPtr.Zero)) {
                 FileInfoByHandle info;
-                if (handle.IsInvalid || !GetFileInformationByHandle(handle, out info))
+                if (handle.IsInvalid) {
+                    int error = Marshal.GetLastWin32Error();
+                    if (error == 2 || error == 3) return 0; // 检查期间被 Claude 删除的缓存文件。
                     throw new IOException("无法检查存储项：" + path, Marshal.GetHRForLastWin32Error());
+                }
+                if (!GetFileInformationByHandle(handle, out info)) throw new IOException("无法检查存储项：" + path, Marshal.GetHRForLastWin32Error());
                 return (int)info.Links;
             }
         }
@@ -38,7 +43,9 @@ namespace ClaudeLauncher {
             catch (FileNotFoundException) { return null; }
             catch (DirectoryNotFoundException) { return null; }
         }
-        public static void Validate(int number, string roaming, string local) {
+        public static void Validate(int number, string roaming, string local) { Validate(number, roaming, local, true); }
+        // recursive=false 只复查目录链与顶层存储项，用于后台递归检查完成后、启动前的快速复核。
+        public static void Validate(int number, string roaming, string local, bool recursive) {
             var user = WindowsIdentity.GetCurrent().User;
             foreach (string folder in ProfileDeletion.Candidates(number, roaming, local)) {
                 for (string entry = folder; entry != null; entry = Path.GetDirectoryName(entry)) {
@@ -48,16 +55,30 @@ namespace ClaudeLauncher {
                     if ((attributes.Value & FileAttributes.Directory) == 0) throw new IOException("账号目录路径不是文件夹，已停止：" + entry);
                 }
                 if (Attributes(folder) == null) continue;
-                foreach (string name in Items) {
-                    string path = Path.Combine(folder, name);
-                    FileAttributes? attributes = Attributes(path);
-                    if (attributes == null) continue;
-                    if ((attributes.Value & FileAttributes.ReparsePoint) != 0) throw new IOException("存储项是链接，已停止：" + path);
-                    bool directory = (attributes.Value & FileAttributes.Directory) != 0;
+                foreach (string name in Items) Check(Path.Combine(folder, name), user, recursive);
+            }
+        }
+        // 逐项检查存储项及其内部：不跟随链接，检查期间消失的条目跳过，其余异常一律停止。
+        static void Check(string root, SecurityIdentifier user, bool recursive) {
+            var pending = new Stack<string>(); pending.Push(root);
+            while (pending.Count > 0) {
+                string path = pending.Pop();
+                FileAttributes? attributes = Attributes(path);
+                if (attributes == null) continue;
+                if ((attributes.Value & FileAttributes.ReparsePoint) != 0) throw new IOException("存储项含链接或重定向，已停止：" + path);
+                bool directory = (attributes.Value & FileAttributes.Directory) != 0;
+                SecurityIdentifier owner;
+                try {
                     FileSystemSecurity security = directory ? (FileSystemSecurity)Directory.GetAccessControl(path, AccessControlSections.Owner) : File.GetAccessControl(path, AccessControlSections.Owner);
-                    if (!user.Equals(security.GetOwner(typeof(SecurityIdentifier)))) throw new IOException("存储项不属于当前用户，已停止：" + path);
-                    if (!directory && LinkCount(path) > 1) throw new IOException("存储项是硬链接，已停止：" + path);
-                }
+                    owner = (SecurityIdentifier)security.GetOwner(typeof(SecurityIdentifier));
+                } catch (FileNotFoundException) { continue; } catch (DirectoryNotFoundException) { continue; }
+                catch (UnauthorizedAccessException) { throw new IOException("无法读取存储项所有者，已停止：" + path); }
+                if (!user.Equals(owner)) throw new IOException("存储项不属于当前用户，已停止：" + path);
+                if (!directory && LinkCount(path) > 1) throw new IOException("存储项是硬链接，已停止：" + path);
+                if (!directory || !recursive) continue;
+                try { foreach (string entry in Directory.EnumerateFileSystemEntries(path)) pending.Push(entry); }
+                catch (DirectoryNotFoundException) { }
+                catch (UnauthorizedAccessException) { throw new IOException("无法读取存储目录，已停止：" + path); }
             }
         }
     }
@@ -112,6 +133,49 @@ namespace ClaudeLauncher {
                 Check(Core.Single(3, rows) == null, "未运行账号应返回空");
                 Check(Core.Single(2, rows).Executable == trayRow.Executable, "托盘重启动须使用该 PID 自身的程序");
                 Rejects(() => Core.Single(2, rows.Concat(new[] { new Instance { Number = 2, ProcessId = 203 } })), "同账号第二个主进程必须报错");
+                // 账号显示与新建编号
+                var none = new int[0];
+                Func<int, bool> has = n => n == 1 || n == 4;
+                Check(Core.Visible(4, rows, none, has) && Core.Visible(2, rows, none, has) && Core.Visible(6, rows, new[] { 6 }, has) && !Core.Visible(3, rows, none, has), "账号显示条件错误");
+                Check(Core.NextFree(rows, none, has) == 3 && Core.NextFree(rows, new[] { 3 }, has) == 5, "新建编号应取最小未使用编号");
+                Check(Core.NextFree(rows, none, n => true) == 0, "全部已用时应返回 0");
+                // 保守 Code 状态：只认本次启动并仍存活的同一进程
+                var started = new DateTime(2026, 10, 28, 1, 0, 0, DateTimeKind.Utc);
+                var mine = new Instance { Number = 3, ProcessId = 303, Started = started };
+                var record = new LaunchRecord { ProcessId = 303, Requested = started.AddSeconds(-1) };
+                Check(Core.CodeState(1, new[] { new Instance { Number = 1, ProcessId = 1 } }, null) == "Code 默认", "01 应为 Code 默认");
+                Check(Core.CodeState(3, rows, record) == "Code 待启动", "未运行应为 Code 待启动");
+                Check(Core.CodeState(3, new[] { mine }, record) == "Code 已指定", "本次启动的进程应为 Code 已指定");
+                Check(Core.CodeState(3, new[] { mine }, null) == "Code 未确认", "外部或旧进程应为 Code 未确认");
+                Check(Core.CodeState(3, new[] { mine }, new LaunchRecord { ProcessId = 303, Requested = started.AddSeconds(1) }) == "Code 未确认", "早于请求的进程不能算已指定");
+                Check(Core.CodeState(3, new[] { mine }, new LaunchRecord { ProcessId = 304, Requested = record.Requested }) == "Code 未确认", "PID 变化不能沿用已指定");
+                Check(Core.CodeState(3, new[] { mine, new Instance { Number = 3, ProcessId = 305, Started = started } }, record) == "Code 未确认", "重复主进程不能算已指定");
+                // 删除准入：01、运行中、启动/检查中、登录保护中均不可删
+                Check(Core.DeleteBlocker(1, new Instance[0], false, 0) != null, "01 必须不可删");
+                Check(Core.DeleteBlocker(2, rows, false, 0) != null, "运行中账号必须不可删");
+                Check(Core.DeleteBlocker(3, rows, true, 0) != null, "启动或检查中账号必须不可删");
+                Check(Core.DeleteBlocker(3, rows, false, 3) != null, "登录保护中账号必须不可删");
+                Check(Core.DeleteBlocker(3, rows, false, 4) == null, "未运行账号应允许删除");
+                // 登录保护准入与保护期间打开
+                var unmanaged = new Instance { Number = 0, ProcessId = 900 };
+                Check(Core.LoginBlocker(2, new[] { trayRow }, none) == null, "仅目标账号运行时应允许进入保护");
+                Check(Core.LoginBlocker(3, new[] { trayRow }, none) != null, "其他账号运行时必须阻止");
+                Check(Core.LoginBlocker(3, new[] { unmanaged }, none) != null, "未管理实例必须阻止");
+                Check(Core.LoginBlocker(2, new[] { trayRow, new Instance { Number = 2, ProcessId = 203 } }, none) != null, "目标重复主进程必须阻止");
+                Check(Core.LoginBlocker(3, new Instance[0], new[] { 5 }) != null && Core.LoginBlocker(3, new Instance[0], new[] { 3 }) == null, "其他账号进行中必须阻止");
+                Check(Core.OpeningBlocker(4, 0, new Instance[0], 3, none) != null, "保护期间不能打开其他账号");
+                Check(Core.OpeningBlocker(3, 0, new Instance[0], 3, new[] { 3 }) == null, "保护期间应能打开目标账号");
+                Check(Core.OpeningBlocker(3, 0, new[] { unmanaged }, 3, none) != null, "保护期间出现其他实例必须阻止");
+                // 检查期间 PID 退出或被替换：不自动重启、不切换
+                Check(Core.OpeningBlocker(2, 202, rows, 0, none) == null, "PID 未变应允许激活");
+                Check(Core.OpeningBlocker(2, 201, rows, 0, none) != null, "PID 被替换必须阻止");
+                Check(Core.OpeningBlocker(3, 303, rows, 0, none) != null, "PID 已退出必须阻止");
+                // 登录保护持久化
+                Check(LoginProtection.Read(local) == 0, "初始不应有登录保护");
+                LoginProtection.Save(local, 4);
+                Check(LoginProtection.Read(local) == 4, "登录保护未持久化");
+                LoginProtection.Save(local, 0);
+                Check(LoginProtection.Read(local) == 0, "结束保护未清除");
                 // 启动参数与环境变量
                 var first = Core.PrepareLaunch(1, "claude.exe", roaming);
                 Check(first.Arguments == "" && !first.UseShellExecute && !first.EnvironmentVariables.ContainsKey("CLAUDE_CONFIG_DIR"), "01 不应传覆盖参数或配置变量");
@@ -134,6 +198,24 @@ namespace ClaudeLauncher {
                 Junction(Path.Combine(folder, "Network"), target);
                 Rejects(() => Storage.Validate(2, roaming, local), "链接存储项必须拒绝");
                 Directory.Delete(Path.Combine(folder, "Network"));
+                Storage.Validate(2, roaming, local);
+                // 递归：存储项内部的深层链接、硬链接同样拒绝；非递归复核只看顶层
+                string deep = Path.Combine(folder, @"Network\a\b");
+                Directory.CreateDirectory(deep);
+                File.WriteAllText(Path.Combine(deep, "ok.txt"), "x");
+                Storage.Validate(2, roaming, local);
+                Check(CreateHardLink(Path.Combine(deep, "linked.txt"), outside, IntPtr.Zero), "无法创建深层硬链接夹具");
+                Rejects(() => Storage.Validate(2, roaming, local), "深层硬链接必须拒绝");
+                Storage.Validate(2, roaming, local, false);
+                File.Delete(Path.Combine(deep, "linked.txt"));
+                Junction(Path.Combine(deep, "junction"), target);
+                Rejects(() => Storage.Validate(2, roaming, local), "深层目录链接必须拒绝");
+                Directory.Delete(Path.Combine(deep, "junction"));
+                string code = Path.Combine(Core.CodeConfig(folder), "projects");
+                Directory.CreateDirectory(Path.GetDirectoryName(code));
+                Junction(code, target);
+                Rejects(() => Storage.Validate(2, roaming, local), "深层 Code 存储链接必须拒绝");
+                Directory.Delete(code);
                 Storage.Validate(2, roaming, local);
                 Junction(folders[2], target);
                 Rejects(() => Storage.Validate(3, roaming, local), "链接账号目录必须拒绝");

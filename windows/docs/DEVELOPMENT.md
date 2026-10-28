@@ -2,9 +2,11 @@
 
 ## 技术结构
 
-- `src/ClaudeLauncher.cs`：账号路径、进程发现、窗口恢复、WPF 界面及程序入口。
-- `src/ProfileDeletion.cs`：目录范围校验、运行状态拦截、回收站操作和未完成删除标记。删除入口按 SPEC 暂停，仅保留未完成删除的重试。
-- `src/Storage.cs`：启动前存储元数据校验（链接、所有者、硬链接）及 `--self-test`。
+- `src/ClaudeLauncher.cs`：账号路径、进程发现、准入判断（打开/删除/登录保护/Code 状态）、登录保护持久化、窗口恢复及程序入口。
+- `src/LauncherUI.cs`：WPF 四页界面、“···”菜单、对话框，以及后台检查后再核对的打开/删除/登录保护流程。
+- `src/ProfileDeletion.cs`：目录范围校验、运行状态拦截、回收站操作和未完成删除标记。
+- `src/Storage.cs`：存储元数据递归校验（链接、所有者、硬链接）及 `--self-test`。
+- `installer/ClaudeLauncher.iss`、`scripts/setup.ps1`：Inno Setup 安装包。
 - `src/Diagnostics.cs`：本地日志与账号进程退出观察。
 - `src/Updates.cs`：版本号、更新地址、公钥验签、下载验证、替换与回退。
 - `assets/update-public-key.xml`：客户端公开验签密钥，允许随源码分发。
@@ -20,8 +22,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1
 # 更新安装集成验证：成功、失败回退、签名篡改
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-install.ps1
 
-# 生成离屏界面预览，不操作用户桌面
+# 生成四个页面的离屏预览（artifacts/previews），不操作用户桌面
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/preview-ui.ps1
+
+# 生成安装包 artifacts/setup/ClaudeLauncherSetup-<主.次.修订>.exe（需 Inno Setup 6）
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup.ps1
 
 # 更新服务，只在发布电脑上使用；占用冲突会拒绝启动，不杀其他程序
 powershell -NoProfile -ExecutionPolicy Bypass -File updates/start-server.ps1
