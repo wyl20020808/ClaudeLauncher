@@ -9,7 +9,9 @@
 ## 项目结构
 
 ```text
-src/main.m                  应用实现与内置自检
+src/main.m                  macOS 应用实现与内置自检
+windows/                    Windows 版（规划中，未实现）
+docs/SPEC.md                跨平台行为规格
 scripts/build.sh            构建、签名和自检
 scripts/package.sh          打包已构建的应用
 build/                      开发构建输出（Git 忽略）
