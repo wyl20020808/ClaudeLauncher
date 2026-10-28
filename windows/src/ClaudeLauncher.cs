@@ -140,6 +140,12 @@ namespace ClaudeLauncher {
             Folder(number, Root);
             return !running.Any(x => x.Number == number);
         }
+        // 该账号唯一的已核实主进程；未运行返回 null；多个主进程时报错，不结束任何进程。
+        public static Instance Single(int number, IEnumerable<Instance> running) {
+            var found = running.Where(x => x.Number == number).ToList();
+            if (found.Count > 1) throw new InvalidOperationException("账号 " + number.ToString("00") + " 有多个 Claude 主进程（PID " + String.Join("、", found.Select(x => x.ProcessId)) + "），已停止操作，未激活或结束任何实例。");
+            return found.FirstOrDefault();
+        }
     }
 
     public static class Native {
@@ -331,18 +337,26 @@ namespace ClaudeLauncher {
             try {
                 var latest = await Task.Run(() => Core.Scan());
                 if (closed) return;
-                var existing = latest.Where(x => x.Number == number).ToList();
-                if (existing.Count > 1) throw new InvalidOperationException("账号 " + number.ToString("00") + " 有多个 Claude 主进程（PID " + String.Join("、", existing.Select(x => x.ProcessId)) + "），已停止操作，未激活或结束任何实例。");
-                IntPtr handle = existing.Select(x => Native.WindowFor(x.ProcessId)).FirstOrDefault(x => x != IntPtr.Zero);
-                if (!Core.NeedsLaunch(number, latest) && handle != IntPtr.Zero) {
+                Instance running = Core.Single(number, latest);
+                IntPtr handle = running == null ? IntPtr.Zero : Native.WindowFor(running.ProcessId);
+                if (handle != IntPtr.Zero) {
                     bool focused = Native.Focus(handle);
                     Diagnostics.Write("account_reuse", "slot=" + number + "; focused=" + focused);
                     pending.Remove(number); instances = latest;
                     Message(focused ? "已切回账号 " + number.ToString("00") + "，没有重复启动。" : "账号已经运行；Windows 未允许切换焦点，请从任务栏打开。", !focused);
-                } else {
-                    // 后台实例没有窗口时，同目录启动仅请求 Claude 自己恢复窗口。
+                } else if (running == null) {
                     string path = executable;
                     await Task.Run(() => Core.Launch(number, path));
+                } else {
+                    // SPEC Windows 例外：托盘实例无可见窗口时，用该 PID 自身的程序同目录再启动，由 Claude 单实例锁转交窗口。
+                    Diagnostics.Write("account_tray_relaunch", "slot=" + number + "; pid=" + running.ProcessId + "; claude=" + running.Executable);
+                    await Task.Run(() => Core.Launch(number, running.Executable));
+                    // shortcut: 固定等 5 秒让转交进程退出后复查一次；若出现慢退出的误报，再改为多次复查。
+                    await Task.Delay(TimeSpan.FromSeconds(5));
+                    var after = await Task.Run(() => Core.Scan());
+                    if (closed) return;
+                    instances = after;
+                    Core.Single(number, after);
                 }
             } catch (Exception error) { Diagnostics.Error("account_open_error", error); pending.Remove(number); Message(error.Message, true); }
             if (!closed) Render();

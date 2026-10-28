@@ -60,10 +60,10 @@ artifacts\bin\ClaudeLauncher.exe --self-test | Write-Output
 - Claude Code CLI 位于 `%LOCALAPPDATA%\Claude-Data\claude_pzs8sxrjxfjjc\claude-code\<版本>\<哈希>\claude.exe`，与桌面版同名。
 - 只读检索 4.29.0 的 `app.asar`：包含 `process.env.CLAUDE_CONFIG_DIR`（与 macOS 1.6 的依据一致），也包含 `requestSingleInstanceLock` / `second-instance`。
 
-## 与 SPEC 的差异（已在 SPEC 中标注）
+## 与 SPEC 的差异（SPEC 已定稿确认）
 
 1. **01 数据目录**：MSIX 版为 `%LOCALAPPDATA%\Claude-Data\claude_pzs8sxrjxfjjc`，旧安装可能是 `%APPDATA%\Claude`。02～10 的基础目录为 `%APPDATA%`，沿用已有数据。商店版可能把目录虚拟化到 `Packages\…\LocalCache\Roaming\`，识别和校验都同时覆盖这两处。
-2. **托盘中没有可见窗口的实例**：按 PID 找不到窗口时，用同一 `--user-data-dir` 再启动一次，由 Claude 自身的单实例锁转交给已有进程显示窗口。这只针对单个账号目录，不是按程序名泛泛打开，但也不是纯粹的 PID 激活。
+2. **托盘中没有可见窗口的实例（SPEC 已确认的例外）**：仅当该账号恰好一个已核实主进程且无可见窗口时，用**该 PID 自身的可执行文件**、同一 `--user-data-dir` 再启动一次，由 Claude 单实例锁转交给已有进程显示窗口。5 秒后重新扫描，若同账号出现第二个主进程则报错，不结束任何进程。
 3. **新目录权限**：不修改 ACL，继承 `%APPDATA%` 的默认权限（本人、SYSTEM、Administrators），不等同于 macOS 的 0700。
 4. **所有者校验**：以管理员身份创建的文件，所有者是 Administrators 组，会被拒绝（失败即停止）。
 5. **进程范围**：只扫描当前登录会话中的进程。
@@ -75,11 +75,12 @@ artifacts\bin\ClaudeLauncher.exe --self-test | Write-Output
 
 - `scripts/build.ps1`：编译通过。`LauncherTests` 241 项断言通过，包括：用启动探针验证参数和 `CLAUDE_CONFIG_DIR` 确实传入子进程、01 不继承该变量、WPF 布局离屏加载。
 - `ClaudeLauncher.exe --self-test`：60 项通过，临时目录已清理。
+- 托盘重启动适配后复跑：`LauncherTests` 241 项、`--self-test` 63 项通过（新增同账号主进程唯一性、使用该 PID 自身程序的检查），临时目录已清理。
 - `scripts/test-install.ps1`：本轮未改更新逻辑，**未运行**。
 
 ### GUI / 真实实例（本轮未执行）
 
-- 启动器界面点击、PID 激活、托盘恢复：**未验证**。本轮未改界面布局；1.2.0 的历史验收见原项目记录。
+- 启动器界面点击、PID 激活、托盘恢复（含用 PID 自身程序重启动、5 秒后复查第二个主进程的报错）：**未验证**。本轮未改界面布局；1.2.0 的历史验收见原项目记录。
 - Claude 4.29 实例是否接受 `--user-data-dir`、Code 标签页是否使用 `CLAUDE_CONFIG_DIR`、MSIX 虚拟化对 `ClaudeCodeConfig` 位置的影响：**未验证**，需要重启或新建账号实例，未执行。
 - 删除入口隐藏后的界面：**未验证**。
 - 双账号登录隔离、登录回调归属：**未验证**。

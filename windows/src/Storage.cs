@@ -106,6 +106,12 @@ namespace ClaudeLauncher {
                 Rejects(() => Core.NumberFromCommand(app + " --user-data-dir --foo", roaming, local), "缺值必须拒绝");
                 Rejects(() => Core.NumberFromCommand(app + " --user-data-dir=", roaming, local), "空值必须拒绝");
                 Rejects(() => Core.NumberFromCommand(null, roaming, local), "无法读取的进程必须拒绝");
+                // 同账号主进程唯一性（托盘重启动前后复查）
+                var trayRow = new Instance { Number = 2, ProcessId = 202, Executable = @"D:\Other\claude.exe" };
+                var rows = new[] { new Instance { Number = 1, ProcessId = 101, Executable = @"C:\First\claude.exe" }, trayRow };
+                Check(Core.Single(3, rows) == null, "未运行账号应返回空");
+                Check(Core.Single(2, rows).Executable == trayRow.Executable, "托盘重启动须使用该 PID 自身的程序");
+                Rejects(() => Core.Single(2, rows.Concat(new[] { new Instance { Number = 2, ProcessId = 203 } })), "同账号第二个主进程必须报错");
                 // 启动参数与环境变量
                 var first = Core.PrepareLaunch(1, "claude.exe", roaming);
                 Check(first.Arguments == "" && !first.UseShellExecute && !first.EnvironmentVariables.ContainsKey("CLAUDE_CONFIG_DIR"), "01 不应传覆盖参数或配置变量");
