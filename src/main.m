@@ -40,7 +40,7 @@ static NSString *CheckStorageNode(NSString *path, BOOL recursive) {
     }
     return nil;
 }
-static NSString *ValidateProfileAtPath(NSString *path, NSString *expected) {
+static NSString *ValidateProfileRoot(NSString *path, NSString *expected) {
     if (![path isEqual:expected] || !path.isAbsolutePath || ![path isEqual:path.stringByStandardizingPath]) return @"账号数据路径不符合固定目录约定。";
     NSString *prefix = @"/";
     for (NSString *component in path.pathComponents) {
@@ -53,7 +53,10 @@ static NSString *ValidateProfileAtPath(NSString *path, NSString *expected) {
         }
         if (S_ISLNK(info.st_mode) || !S_ISDIR(info.st_mode)) return [NSString stringWithFormat:@"账号目录或其上级是链接/非目录，已停止：%@",prefix];
     }
-    NSString *failure = CheckStorageNode(path,NO);
+    return CheckStorageNode(path,NO);
+}
+static NSString *ValidateProfileAtPath(NSString *path, NSString *expected) {
+    NSString *failure = ValidateProfileRoot(path,expected);
     if (failure) return failure;
     // Chromium's SingletonSocket/SingletonLock are expected links; they are not credential storage.
     for (NSString *relative in @[@"Cookies",@"Cookies-journal",@"Network",@"Local Storage",@"Session Storage",@"IndexedDB",@"Partitions",@"Local State",@"Preferences",@"config.json",@"Cache",@"Code Cache",@"Service Worker",@"ClaudeCodeConfig"]) {
@@ -62,9 +65,13 @@ static NSString *ValidateProfileAtPath(NSString *path, NSString *expected) {
     }
     return nil;
 }
-static NSString *ValidateProfile(NSInteger account) {
-    if (account < 1 || account > 10) return @"账号编号无效。";
-    return ValidateProfileAtPath(ProfilePath(account),ProfilePath(account));
+static void ValidateProfileAsync(NSString *path, void (^completion)(NSString *)) {
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0), ^{
+        @autoreleasepool {
+            NSString *failure = ValidateProfileAtPath(path,path);
+            dispatch_async(dispatch_get_main_queue(), ^{ completion(failure); });
+        }
+    });
 }
 // Returns why an account cannot be deleted right now, or nil. 01 is the official default profile and is never deleted here.
 static NSString *DeleteBlocker(NSInteger account, NSArray *pids, BOOL starting) {
@@ -76,6 +83,17 @@ static NSString *DeleteBlocker(NSInteger account, NSArray *pids, BOOL starting) 
 static BOOL LoginConflict(NSDictionary<NSNumber *,NSArray *> *processes, NSInteger account) {
     for (NSNumber *key in processes) if (key.integerValue != account && [processes[key] count]) return YES;
     return NO;
+}
+static NSString *LoginBlocker(NSDictionary<NSNumber *,NSArray *> *processes, NSArray<NSNumber *> *busy, NSInteger account) {
+    if (LoginConflict(processes,account)) return @"请先保存工作并正常退出其他 Claude 实例（包括未管理的实例），再进入登录保护。启动器不会替你退出或登出账号。";
+    if ([processes[@(account)] count] > 1) return @"该账号有多个主进程，不能进入登录保护。";
+    for (NSNumber *key in busy) if (key.integerValue != account) return @"其他账号正在检查或启动，请等待完成后重试。";
+    return nil;
+}
+static NSString *CodeStatus(NSInteger account, BOOL running, BOOL configured) {
+    if (account == 1) return @"Code 默认";
+    if (!running) return @"Code 待启动";
+    return configured ? @"Code 已指定" : @"Code 未确认";
 }
 static NSArray<NSString *> *Arguments(pid_t pid) {
     int mib[] = {CTL_KERN, KERN_PROCARGS2, pid};
@@ -296,6 +314,10 @@ static const unsigned CardFill = 0xFFFCF7;
 @property NSTextField *accessibilityStatus;
 @property NSTextField *message;
 @property NSMutableDictionary<NSNumber *, NSDate *> *starting;
+@property NSMutableSet<NSNumber *> *pendingLaunches;
+@property NSMutableSet<NSNumber *> *checking;
+// Only retain this launcher's successful launches; never infer configuration from a directory or read process environments.
+@property NSMutableDictionary<NSNumber *, NSRunningApplication *> *configuredApps;
 @property NSMutableDictionary<NSNumber *, NSString *> *errors;
 @property NSDictionary<NSNumber *, NSArray<NSNumber *> *> *processes;
 @property NSString *scanError;
@@ -306,6 +328,14 @@ static const unsigned CardFill = 0xFFFCF7;
 @property NSTextField *summaryLabel;
 @end
 @implementation Launcher
+- (instancetype)init {
+    if ((self = [super init])) {
+        self.starting = [NSMutableDictionary dictionary]; self.errors = [NSMutableDictionary dictionary];
+        self.pendingLaunches = [NSMutableSet set];
+        self.checking = [NSMutableSet set]; self.configuredApps = [NSMutableDictionary dictionary];
+    }
+    return self;
+}
 - (void)applicationDidFinishLaunching:(NSNotification *)note {
     NSString *support = [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Application Support/Claude Launcher"];
     NSError *error;
@@ -322,7 +352,6 @@ static const unsigned CardFill = 0xFFFCF7;
         [NSApp terminate:nil]; return;
     }
     [NSDistributedNotificationCenter.defaultCenter addObserver:self selector:@selector(show:) name:WakeNotification object:nil];
-    self.starting = [NSMutableDictionary dictionary]; self.errors = [NSMutableDictionary dictionary];
     NSInteger savedLogin = [NSUserDefaults.standardUserDefaults integerForKey:@"loginProtectionAccount"];
     self.loginAccount = savedLogin >= 1 && savedLogin <= 10 ? savedLogin : 0;
     [self makeWindow]; [self refresh]; [self show:nil];
@@ -336,7 +365,7 @@ static const unsigned CardFill = 0xFFFCF7;
     NSColor *ink = Hex(0x2B2622), *muted = Hex(0x6E655C);
     AccountCard *card = [[AccountCard alloc] initWithFrame:frame];
     card.number = n; card.art = art; card.dot = Hex(0xB9B1A7);
-    card.chips = n == 1 ? @[@"默认目录",@"Code 默认"] : @[[ProfilePath(n).lastPathComponent stringByReplacingOccurrencesOfString:@"Claude-" withString:@""],@"Code 独立"];
+    card.chips = @[(n == 1 ? @"默认目录" : [ProfilePath(n).lastPathComponent stringByReplacingOccurrencesOfString:@"Claude-" withString:@""]),CodeStatus(n,NO,NO)];
     [card addSubview:Text([NSString stringWithFormat:@"账号 %02ld",(long)n], NSMakeRect(84,18,150,24), [NSFont systemFontOfSize:18 weight:NSFontWeightSemibold], ink)];
     card.status = Text(@"读取状态…", NSMakeRect(102,44,160,20), [NSFont systemFontOfSize:13], muted); [card addSubview:card.status];
     NSArray *rows = @[@[@"clock",@"5小时限额"],@[@"calendar",@"周限额"]];
@@ -443,8 +472,9 @@ static const unsigned CardFill = 0xFFFCF7;
     Canvas *accounts = [[Canvas alloc] initWithFrame:pageFrame];
     accounts.paint = ^(NSRect bounds) { [Hex(CardFill) setFill]; [[NSBezierPath bezierPathWithRoundedRect:bounds xRadius:14 yRadius:14] fill]; };
     [accounts addSubview:Text(@"账号管理", NSMakeRect(28,26,300,24), [NSFont systemFontOfSize:17 weight:NSFontWeightSemibold], ink)];
-    NSTextField *soon = [NSTextField wrappingLabelWithString:@"后续在这里管理账号备注等本地信息。启动器不读取登录凭据或账号内容。"];
-    soon.frame = NSMakeRect(28,60,720,40); soon.textColor = muted; [accounts addSubview:soon];
+    NSTextField *soon = [NSTextField wrappingLabelWithString:@"登录或重新登录：从账号卡片的「···」进入登录保护，按提示正常退出其他 Claude，再自行登录并核对身份。\n\nCode 已指定：本次启动器启动时指定了独立配置目录，不代表已验证 Code 实际写入位置。Code 未确认：请在保存工作后正常退出该 Claude，再从这里启动。\n\n不同账号应使用各自的项目副本和服务端口。共同操作同一项目、MCP 或本地服务仍会互相影响。01 的 Code 默认配置与普通终端 CLI 共用。启动器不读取凭据，不迁移历史数据。"];
+    soon.frame = NSMakeRect(28,60,720,260); soon.textColor = muted; [accounts addSubview:soon];
+    [main addSubview:accounts];
 
     NSScrollView *logScroll = [NSTextView scrollableTextView];
     logScroll.frame = pageFrame; logScroll.wantsLayer = YES; logScroll.layer.cornerRadius = 14; logScroll.borderType = NSNoBorder;
@@ -455,7 +485,7 @@ static const unsigned CardFill = 0xFFFCF7;
     Canvas *settings = [[Canvas alloc] initWithFrame:pageFrame];
     settings.paint = accounts.paint;
     NSString *version = [NSString stringWithFormat:@"%@（build %@）",[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"开发版",[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleVersion"] ?: @"-"];
-    NSArray *rows = @[@[@"辅助功能权限",@""],@[@"账号数据目录",@"~/Library/Application Support（01 为 Claude，02 为 Claude-Second，03～10 为 Claude-Profile-NN）"],@[@"隔离范围",@"02～10 的 Code 配置位于各自账号目录的 ClaudeCodeConfig。钥匙串、登录回调、日志目录仍共享；完整隔离请使用独立 macOS 用户。"],@[@"版本",version]];
+    NSArray *rows = @[@[@"辅助功能权限",@""],@[@"账号数据目录",@"~/Library/Application Support（01 为 Claude，02 为 Claude-Second，03～10 为 Claude-Profile-NN）"],@[@"隔离范围",@"02～10 新启动时指定独立 Code 配置；实际写入未验证。系统权限、登录回调、日志、项目和本地服务仍可能共享。"],@[@"版本",version]];
     for (NSUInteger i = 0; i < rows.count; i++) {
         CGFloat y = 26+i*92;
         [settings addSubview:Text(rows[i][0], NSMakeRect(28,y,300,22), [NSFont systemFontOfSize:15 weight:NSFontWeightSemibold], ink)];
@@ -475,7 +505,7 @@ static const unsigned CardFill = 0xFFFCF7;
     self.endLoginButton.frame = NSMakeRect(640,680,140,28); self.endLoginButton.bezelStyle = NSBezelStyleRounded;
     [main addSubview:self.endLoginButton];
     self.message.accessibilityIdentifier = @"launcher-feedback";
-    [self showPage:0];
+    [self showPage:self.page];
     NSMenu *menu = [NSMenu new]; NSMenuItem *appItem = [NSMenuItem new]; [menu addItem:appItem];
     NSMenu *appMenu = [NSMenu new]; appItem.submenu = appMenu;
     NSMenuItem *show = [appMenu addItemWithTitle:@"显示账号窗口" action:@selector(show:) keyEquivalent:@"0"]; show.target = self;
@@ -489,41 +519,50 @@ static const unsigned CardFill = 0xFFFCF7;
 - (void)refresh {
     NSString *failure = nil; NSDictionary *snapshot = Scan(&failure);
     self.scanError = failure; if (snapshot) self.processes = snapshot;
-    self.endLoginButton.enabled = self.loginAccount != 0;
+    self.endLoginButton.enabled = self.loginAccount != 0 && !self.checking.count && !self.starting.count;
     self.endLoginButton.hidden = self.loginAccount == 0;
     for (NSInteger n = 1; n <= 10; n++) {
         NSNumber *key = @(n); NSArray *pids = self.processes[key];
+        BOOL checking = [self.checking containsObject:key];
+        NSRunningApplication *configured = self.configuredApps[key];
+        BOOL knownLaunch = !failure && pids.count == 1 && configured && !configured.terminated && [pids.firstObject intValue] == configured.processIdentifier;
+        if (!failure && !knownLaunch) [self.configuredApps removeObjectForKey:key];
+        self.cards[n-1].chips = @[(n == 1 ? @"默认目录" : [ProfilePath(n).lastPathComponent stringByReplacingOccurrencesOfString:@"Claude-" withString:@""]),CodeStatus(n,pids.count > 0,knownLaunch)];
+        self.cards[n-1].toolTip = n == 1 ? @"01 沿用默认 Code 配置，与普通终端 CLI 共用。" : knownLaunch ? @"本次启动时已指定独立 Code 配置；尚未验证 Code 的实际写入位置。" : @"运行中实例的 Code 配置未确认。保存工作后正常退出该 Claude，再从这里启动；不会迁移或删除旧记录。";
         NSDate *since = self.starting[key];
-        if (since && pids.count && VisibleWindow([pids.firstObject intValue])) { [self.starting removeObjectForKey:key]; since = nil; }
+        BOOL launchPending = [self.pendingLaunches containsObject:key];
+        if (since && !launchPending && pids.count && VisibleWindow([pids.firstObject intValue])) { [self.starting removeObjectForKey:key]; since = nil; }
         if (since && -since.timeIntervalSinceNow > 35) {
-            [self.starting removeObjectForKey:key]; since = nil;
-            self.errors[key] = pids.count ? @"进程已运行，但未发现可见窗口。请点击恢复。" : @"启动失败：35 秒内未发现主进程。请重试。";
+            // A timed-out LaunchServices request can still start an app later. Keep its account reserved until it returns.
+            if (!launchPending) { [self.starting removeObjectForKey:key]; since = nil; }
+            self.errors[key] = launchPending ? @"启动请求超过 35 秒仍未返回，等待系统响应；暂不重复启动或进入其他账号的登录保护。" : pids.count ? @"进程已运行，但未发现可见窗口。请点击恢复。" : @"启动失败：35 秒内未发现主进程。请重试。";
             self.message.stringValue = [NSString stringWithFormat:@"账号 %02ld：%@", (long)n, self.errors[key]];
         }
         BOOL exists = [NSFileManager.defaultManager fileExistsAtPath:ProfilePath(n)];
-        NSString *state = failure ? @"状态读取失败" : since ? @"正在启动…" : pids.count > 1 ? @"运行中 · 多个实例，请检查" : pids.count ? @"运行中" : @"未运行";
-        if (!failure && !since && !pids.count && self.errors[key]) state = @"未运行 · 启动失败";
+        NSString *state = failure ? @"状态读取失败" : checking ? @"正在检查…" : since ? (self.errors[key] ? @"启动响应超时" : @"正在启动…") : pids.count > 1 ? @"运行中 · 多个实例，请检查" : pids.count ? @"运行中" : @"未运行";
+        if (!failure && !checking && !since && !pids.count && self.errors[key]) state = @"未运行 · 操作失败";
         BOOL broken = failure || self.errors[key];
         self.statuses[n-1].stringValue = state;
         self.statuses[n-1].textColor = broken ? NSColor.systemRedColor : Hex(0x6E655C);
-        self.statuses[n-1].toolTip = pids.count ? [NSString stringWithFormat:@"主进程 PID：%@",[pids componentsJoinedByString:@"、"]] : ProfilePath(n);
+        self.statuses[n-1].toolTip = self.errors[key] ?: (pids.count ? [NSString stringWithFormat:@"主进程 PID：%@",[pids componentsJoinedByString:@"、"]] : ProfilePath(n));
         self.cards[n-1].dot = broken ? NSColor.systemRedColor : since ? Hex(0xE0A23A) : pids.count ? Hex(0x3BAA6E) : Hex(0xB9B1A7);
         [self.cards[n-1] setNeedsDisplay:YES];
-        self.buttons[n-1].title = since ? @"启动中" : pids.count ? @"打开" : exists ? @"启动" : @"创建";
-        self.buttons[n-1].enabled = !failure && !since;
+        self.buttons[n-1].title = checking ? @"检查中" : since ? @"启动中" : pids.count ? @"打开" : exists ? @"启动" : @"创建";
+        self.buttons[n-1].enabled = !failure && !since && !checking && (!self.loginAccount || self.loginAccount == n);
         self.buttons[n-1].accessibilityLabel = [NSString stringWithFormat:@"账号 %02ld，%@",(long)n,state];
     }
     // Show only accounts present on this Mac (data directory, running or starting), packed top to bottom.
     CGFloat y = 0; NSUInteger shown = 0, running = 0;
     for (NSInteger n = 1; n <= 10; n++) {
         NSArray *pids = self.processes[@(n)]; if (pids.count) running++;
-        BOOL visible = pids.count || self.starting[@(n)] || [NSFileManager.defaultManager fileExistsAtPath:ProfilePath(n)];
+        BOOL visible = pids.count || self.starting[@(n)] || [self.checking containsObject:@(n)] || [NSFileManager.defaultManager fileExistsAtPath:ProfilePath(n)];
         self.cards[n-1].hidden = !visible;
         if (visible) { [self.cards[n-1] setFrameOrigin:NSMakePoint(0,y)]; y += 136; shown++; }
     }
     [self.cardsView setFrameSize:NSMakeSize(776,MAX(y-12,0))];
     self.emptyHint.hidden = shown > 0 || self.page != 0;
     self.summaryLabel.stringValue = failure ? @"状态暂不可用" : [NSString stringWithFormat:@"本机 %lu 个账号 · %lu 个运行中",(unsigned long)shown,(unsigned long)running];
+    self.createButton.enabled = !failure && !self.loginAccount;
     if (failure) self.message.stringValue = failure;
     else if (self.loginAccount) self.message.stringValue = [NSString stringWithFormat:@"账号 %02ld 登录保护中。%@",(long)self.loginAccount,LoginConflict(snapshot,self.loginAccount) ? @"检测到其他 Claude！请停止登录，并正常退出其他实例。" : @"完成登录并核对身份后，点「结束登录保护」恢复多开。"];
     self.accessibilityStatus.stringValue = AXIsProcessTrusted() ? @"已授权：可恢复最小化的 Claude 窗口。" : @"未授权：无法恢复最小化窗口。授权不会修改账号数据。";
@@ -545,8 +584,10 @@ static const unsigned CardFill = 0xFFFCF7;
 }
 - (void)navClicked:(NSClickGestureRecognizer *)recognizer { [self showPage:recognizer.view.identifier.integerValue]; }
 - (void)newInstance:(id)sender {
+    [self refresh];
+    if (self.scanError || self.loginAccount) return;
     for (NSInteger n = 1; n <= 10; n++) {
-        if (![NSFileManager.defaultManager fileExistsAtPath:ProfilePath(n)]) { [self selectAccount:self.buttons[n-1]]; return; }
+        if (!self.processes[@(n)].count && !self.starting[@(n)] && ![self.checking containsObject:@(n)] && ![NSFileManager.defaultManager fileExistsAtPath:ProfilePath(n)]) { [self selectAccount:self.buttons[n-1]]; return; }
     }
     [self alert:@"10 个账号空间都已创建" detail:@"请直接在列表中启动或打开对应账号。"];
 }
@@ -556,11 +597,14 @@ static const unsigned CardFill = 0xFFFCF7;
     reveal.target = self; reveal.tag = sender.tag; reveal.enabled = [NSFileManager.defaultManager fileExistsAtPath:ProfilePath(sender.tag)];
     NSMenuItem *copy = [menu addItemWithTitle:@"复制账号目录路径" action:@selector(copyProfilePath:) keyEquivalent:@""];
     copy.target = self; copy.tag = sender.tag;
+    NSMenuItem *login = [menu addItemWithTitle:@"登录 / 重新登录保护…" action:@selector(beginLogin:) keyEquivalent:@""];
+    login.target = self; login.tag = sender.tag;
+    login.enabled = !self.loginAccount && !self.starting[@(sender.tag)] && ![self.checking containsObject:@(sender.tag)];
     [menu addItem:NSMenuItem.separatorItem];
     NSMenuItem *remove = [menu addItemWithTitle:@"删除该实例…" action:@selector(deleteProfile:) keyEquivalent:@""];
     remove.target = self; remove.tag = sender.tag;
     remove.attributedTitle = [[NSAttributedString alloc] initWithString:@"删除该实例…" attributes:@{NSForegroundColorAttributeName:NSColor.systemRedColor,NSFontAttributeName:[NSFont menuFontOfSize:0]}];
-    remove.enabled = sender.tag != 1 && [NSFileManager.defaultManager fileExistsAtPath:ProfilePath(sender.tag)];
+    remove.enabled = sender.tag != 1 && self.loginAccount != sender.tag && !self.starting[@(sender.tag)] && ![self.checking containsObject:@(sender.tag)] && !self.processes[@(sender.tag)].count && [NSFileManager.defaultManager fileExistsAtPath:ProfilePath(sender.tag)];
     if (sender.tag == 1) remove.toolTip = @"账号 01 是 Claude 默认目录，不能在启动器中删除。";
     [menu popUpMenuPositioningItem:nil atLocation:NSMakePoint(0,-4) inView:sender];
 }
@@ -571,25 +615,52 @@ static const unsigned CardFill = 0xFFFCF7;
 - (void)deleteProfile:(NSMenuItem *)item {
     NSInteger account = item.tag; NSNumber *key = @(account);
     [self refresh];
-    NSString *blocker = self.scanError ?: DeleteBlocker(account, self.processes[key], self.starting[key] != nil);
+    NSString *blocker = self.scanError ?: [self deletionBlocker:account];
     if (blocker) { [self alert:@"暂时不能删除" detail:blocker]; return; }
     NSAlert *confirm = [NSAlert new]; confirm.alertStyle = NSAlertStyleWarning;
     confirm.messageText = [NSString stringWithFormat:@"删除账号 %02ld？",(long)account];
     confirm.informativeText = [NSString stringWithFormat:@"将把以下目录移到废纸篓，其中的登录状态、聊天缓存和 Claude Code 配置会一起移走：\n%@\n\n清空废纸篓前可以恢复。",ProfilePath(account)];
     [confirm addButtonWithTitle:@"取消"];
     NSButton *destroy = [confirm addButtonWithTitle:@"移到废纸篓"]; destroy.hasDestructiveAction = YES;
-    if ([confirm runModal] != NSAlertSecondButtonReturn) return;
+    [self.checking addObject:key]; // Reserve this account while the modal dialog runs its nested event loop.
+    NSModalResponse response = [confirm runModal];
+    [self.checking removeObject:key];
+    if (response != NSAlertSecondButtonReturn) { [self refresh]; return; }
     // State may have changed while the dialog was open; recheck identity, process state and path safety.
     [self refresh];
-    blocker = self.scanError ?: DeleteBlocker(account, self.processes[key], self.starting[key] != nil) ?: ValidateProfile(account);
+    blocker = self.scanError ?: [self deletionBlocker:account];
     if (blocker) { [self alert:@"已取消删除" detail:blocker]; return; }
-    NSError *error = nil;
-    if (![NSFileManager.defaultManager trashItemAtURL:[NSURL fileURLWithPath:ProfilePath(account) isDirectory:YES] resultingItemURL:nil error:&error]) {
-        [self alert:@"删除失败" detail:error.localizedDescription ?: @"未移动任何数据。"]; return;
-    }
-    [self.errors removeObjectForKey:key];
-    self.message.stringValue = [NSString stringWithFormat:@"账号 %02ld 已移到废纸篓。",(long)account];
-    [self refresh];
+    [self checkAccount:account completion:^{
+        [self refresh];
+        NSString *failure = self.scanError ?: [self deletionBlocker:account] ?: ValidateProfileRoot(ProfilePath(account),ProfilePath(account));
+        if (failure) { [self alert:@"已取消删除" detail:failure]; return; }
+        NSError *error = nil;
+        if (![NSFileManager.defaultManager trashItemAtURL:[NSURL fileURLWithPath:ProfilePath(account) isDirectory:YES] resultingItemURL:nil error:&error]) {
+            [self alert:@"删除失败" detail:error.localizedDescription ?: @"未移动任何数据。"]; return;
+        }
+        [self.errors removeObjectForKey:key]; [self.configuredApps removeObjectForKey:key];
+        self.message.stringValue = [NSString stringWithFormat:@"账号 %02ld 已移到废纸篓。",(long)account];
+        [self refresh];
+    }];
+}
+- (NSString *)deletionBlocker:(NSInteger)account {
+    if (self.loginAccount == account) return @"该账号处于登录保护中，请先结束保护。";
+    return DeleteBlocker(account,self.processes[@(account)],self.starting[@(account)] != nil || [self.checking containsObject:@(account)]);
+}
+- (void)checkAccount:(NSInteger)account completion:(void (^)(void))completion {
+    NSNumber *key = @(account);
+    if (account < 1 || account > 10 || [self.checking containsObject:key] || self.starting[key]) return;
+    [self.checking addObject:key]; [self.errors removeObjectForKey:key]; [self refresh];
+    ValidateProfileAsync(ProfilePath(account), ^(NSString *failure) {
+        [self.checking removeObject:key];
+        if (failure) {
+            self.errors[key] = failure;
+            self.message.stringValue = [NSString stringWithFormat:@"账号 %02ld：%@",(long)account,failure];
+            [self refresh]; [self alert:@"账号存储隔离检查未通过" detail:failure]; return;
+        }
+        completion();
+        [self refresh];
+    });
 }
 - (void)revealSupport:(id)sender {
     [NSWorkspace.sharedWorkspace openURL:[NSURL fileURLWithPath:[NSHomeDirectory() stringByAppendingPathComponent:@"Library/Application Support"]]];
@@ -599,58 +670,132 @@ static const unsigned CardFill = 0xFFFCF7;
     [NSWorkspace.sharedWorkspace openURL:[NSURL URLWithString:@"x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"]];
 }
 - (void)endLogin:(id)sender {
+    if (!self.loginAccount || self.checking.count || self.starting.count) return;
+    NSInteger account = self.loginAccount;
+    NSAlert *confirm = [NSAlert new]; confirm.messageText = @"结束登录保护？";
+    confirm.informativeText = @"请确认登录已完成并核对账号身份，或已取消浏览器中的登录流程。结束保护后可以打开其他账号；启动器无法验证登录结果或拦截浏览器回调。";
+    [confirm addButtonWithTitle:@"继续保护"]; [confirm addButtonWithTitle:@"结束保护"];
+    [self.checking addObject:@(account)];
+    NSModalResponse response = [confirm runModal];
+    [self.checking removeObject:@(account)];
+    if (response != NSAlertSecondButtonReturn) { [self refresh]; return; }
     self.loginAccount = 0;
     [NSUserDefaults.standardUserDefaults removeObjectForKey:@"loginProtectionAccount"];
     self.message.stringValue = @"已结束登录保护。只有确认登录完成、身份正确后，才应同时打开其他账号。";
     [self refresh];
 }
+- (NSString *)loginBlocker:(NSInteger)account {
+    return self.scanError ?: LoginBlocker(self.processes,[self.starting.allKeys arrayByAddingObjectsFromArray:self.checking.allObjects],account);
+}
+- (NSString *)openingBlocker:(NSInteger)account expectedPID:(pid_t)expectedPID {
+    if (self.scanError) return self.scanError;
+    NSArray *pids = self.processes[@(account)];
+    if (expectedPID && (pids.count != 1 || [pids.firstObject intValue] != expectedPID)) return @"检查期间原实例已退出或被替换，未自动重启。请重新点击。";
+    if (self.loginAccount && (self.loginAccount != account || [self loginBlocker:account])) return @"登录保护中：请先完成目标账号登录并核对身份。外部启动的其他 Claude 需要你正常退出。";
+    if (pids.count > 1) return @"同一目录发现多个主进程，未激活或结束任何实例。请自行检查 Claude 窗口。";
+    return nil;
+}
+- (void)beginLogin:(id)sender {
+    NSInteger account = [sender tag]; NSNumber *key = @(account);
+    if (account < 1 || account > 10 || self.loginAccount || self.starting[key] || [self.checking containsObject:key]) return;
+    [self refresh];
+    NSString *failure = [self loginBlocker:account];
+    if (failure) { [self alert:@"暂时不能进入登录保护" detail:failure]; return; }
+    NSAlert *confirm = [NSAlert new];
+    confirm.messageText = [NSString stringWithFormat:@"账号 %02ld：进入登录保护？",(long)account];
+    confirm.informativeText = @"保护期间，启动器只允许打开这个账号。随后由你在 Claude 中登录或重新登录，并核对浏览器和 Claude 中的身份。\n\n不会退出、登出其他账号或改写登录数据。请勿从 Dock、终端等外部入口打开其他 Claude；启动器不能拦截系统登录回调。新账号会在保护中创建目录。";
+    [confirm addButtonWithTitle:@"取消"]; [confirm addButtonWithTitle:@"保护并打开"];
+    [self.checking addObject:key];
+    NSModalResponse response = [confirm runModal];
+    [self.checking removeObject:key];
+    [self refresh];
+    if (response != NSAlertSecondButtonReturn) return;
+    [self protectAndOpen:account];
+}
+- (void)protectAndOpen:(NSInteger)account {
+    NSString *failure = [self loginBlocker:account];
+    if (failure) { [self alert:@"状态已变化，未进入保护" detail:failure]; return; }
+    self.loginAccount = account;
+    [NSUserDefaults.standardUserDefaults setInteger:account forKey:@"loginProtectionAccount"];
+    [self selectAccount:self.buttons[account-1]];
+}
 - (void)selectAccount:(NSButton *)sender {
     NSNumber *key = @(sender.tag);
-    if (self.starting[key]) return;
+    if (sender.tag < 1 || sender.tag > 10 || self.starting[key] || [self.checking containsObject:key]) return;
     [self refresh];
-    if (self.scanError) { [self alert:@"暂时无法识别账号" detail:self.scanError]; return; }
-    if (self.loginAccount && (self.loginAccount != sender.tag || LoginConflict(self.processes,sender.tag))) {
-        [self alert:@"登录保护：已阻止切换或启动" detail:@"请先完成目标账号登录并核对身份，然后结束登录保护。外部启动的其他 Claude 需要你正常退出。"] ; return;
+    NSString *failure = [self openingBlocker:sender.tag expectedPID:0];
+    if (failure) { [self alert:@"暂时不能打开账号" detail:failure]; return; }
+    NSInteger account = sender.tag;
+    BOOL create = !self.loginAccount && !self.processes[key].count && ![NSFileManager.defaultManager fileExistsAtPath:ProfilePath(account)];
+    if (create) {
+        NSAlert *choice = [NSAlert new];
+        choice.messageText = [NSString stringWithFormat:@"创建账号 %02ld？",(long)account];
+        choice.informativeText = @"将创建独立的本地数据目录。\n\n直接创建：立即启动，其他 Claude 保持运行。登录时浏览器回调可能打开其他窗口，登录后请核对身份。\n\n进入登录保护：需先正常退出其他 Claude；保护期间只允许打开这个账号，登录更稳妥。";
+        [choice addButtonWithTitle:@"直接创建"]; [choice addButtonWithTitle:@"进入登录保护"]; [choice addButtonWithTitle:@"取消"];
+        [self.checking addObject:key]; // Reserve this account while the modal dialog runs its nested event loop.
+        NSModalResponse response = [choice runModal];
+        [self.checking removeObject:key];
+        [self refresh];
+        if (response == NSAlertSecondButtonReturn) { [self protectAndOpen:account]; return; }
+        if (response != NSAlertFirstButtonReturn) return;
+        failure = [self openingBlocker:account expectedPID:0];
+        if (failure || self.processes[key].count) { [self alert:@"状态已变化，未创建" detail:failure ?: @"该账号已在运行，请重新点击。"]; return; }
     }
-    NSString *storageFailure = ValidateProfile(sender.tag);
-    if (storageFailure) { [self alert:@"账号存储隔离检查未通过" detail:storageFailure]; return; }
+    pid_t expectedPID = self.processes[key].count == 1 ? [self.processes[key].firstObject intValue] : 0;
+    [self checkAccount:account completion:^{ [self openCheckedAccount:account expectedPID:expectedPID create:create]; }];
+}
+- (void)openCheckedAccount:(NSInteger)account expectedPID:(pid_t)expectedPID create:(BOOL)create {
+    NSNumber *key = @(account);
+    [self refresh]; // The background check may outlive a process or a login-protection change.
+    NSString *failure = [self openingBlocker:account expectedPID:expectedPID];
+    if (failure) { [self alert:@"实例或保护状态已变化" detail:failure]; return; }
+    NSString *storageFailure = ValidateProfileRoot(ProfilePath(account),ProfilePath(account));
+    if (storageFailure) { [self alert:@"账号路径已变化" detail:storageFailure]; return; }
     NSArray *pids = self.processes[key];
-    if (pids.count > 1) { [self alert:@"同一目录发现多个主进程" detail:@"为避免切错账号，未激活或结束任何实例。请自行检查 Claude 窗口。"] ; return; }
     [self.errors removeObjectForKey:key];
-    if (pids.count == 1) { [self activatePID:[pids.firstObject intValue] account:sender.tag]; return; }
+    if (pids.count == 1) { [self activatePID:[pids.firstObject intValue] account:account]; return; }
     NSString *bundlePath = nil;
     for (NSString *path in @[@"/Applications/Claude.app", [NSHomeDirectory() stringByAppendingPathComponent:@"Applications/Claude.app"]]) {
         if ([NSFileManager.defaultManager isExecutableFileAtPath:[path stringByAppendingPathComponent:@"Contents/MacOS/Claude"]]) { bundlePath = path; break; }
     }
     if (!bundlePath) { [self alert:@"未找到官方 Claude.app" detail:@"请将官方 Claude.app 安装到 /Applications 或 ~/Applications 后重试。"] ; return; }
     NSError *error = nil; BOOL directory = NO;
-    BOOL exists = [NSFileManager.defaultManager fileExistsAtPath:ProfilePath(sender.tag) isDirectory:&directory];
-    if (!exists && !self.loginAccount) {
-        NSAlert *notice = [NSAlert new]; notice.messageText = @"创建账号空间";
-        notice.informativeText = @"将创建独立的本地数据目录。登录前请正常退出其他 Claude 实例，避免浏览器登录回调切错窗口。";
-        [notice addButtonWithTitle:@"取消"]; [notice addButtonWithTitle:@"创建并打开"];
-        if ([notice runModal] != NSAlertSecondButtonReturn) return;
-        [self refresh];
-        if (self.scanError || self.processes[key].count) { self.message.stringValue = @"状态已变化，未启动新实例，请重新点击。"; return; }
+    BOOL exists = [NSFileManager.defaultManager fileExistsAtPath:ProfilePath(account) isDirectory:&directory];
+    if (!exists && !self.loginAccount && !create) {
+        self.message.stringValue = @"账号目录已变化，未创建新目录。请重新点击。"; return;
     }
-    if ((exists && !directory) || (!exists && ![NSFileManager.defaultManager createDirectoryAtPath:ProfilePath(sender.tag) withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions:@0700} error:&error])) {
+    if ((exists && !directory) || (!exists && ![NSFileManager.defaultManager createDirectoryAtPath:ProfilePath(account) withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions:@0700} error:&error])) {
         [self alert:@"无法使用账号目录" detail:error.localizedDescription ?: @"该路径已存在且不是目录。未覆盖任何数据。"] ; return;
     }
-    NSString *codeConfig = CodeConfigPath(sender.tag);
+    NSString *codeConfig = CodeConfigPath(account);
     if (codeConfig && ![NSFileManager.defaultManager fileExistsAtPath:codeConfig] && ![NSFileManager.defaultManager createDirectoryAtPath:codeConfig withIntermediateDirectories:NO attributes:@{NSFilePosixPermissions:@0700} error:&error]) {
         [self alert:@"无法创建 Claude Code 独立配置目录" detail:error.localizedDescription]; return;
     }
-    storageFailure = ValidateProfile(sender.tag);
+    storageFailure = ValidateProfileRoot(ProfilePath(account),ProfilePath(account));
+    if (!storageFailure && codeConfig) storageFailure = ValidateProfileRoot(codeConfig,codeConfig);
     if (storageFailure) { [self alert:@"创建后隔离检查未通过" detail:storageFailure]; return; }
+    [self refresh];
+    if ([self openingBlocker:account expectedPID:0] || self.processes[key].count) {
+        self.message.stringValue = @"进程或登录保护状态已变化，未启动新实例，请重试。"; return;
+    }
     self.starting[key] = [NSDate date]; [self refresh];
-    self.message.stringValue = [NSString stringWithFormat:@"正在启动账号 %02ld…",(long)sender.tag];
+    self.message.stringValue = [NSString stringWithFormat:@"正在启动账号 %02ld…",(long)account];
     NSWorkspaceOpenConfiguration *config = [NSWorkspaceOpenConfiguration configuration];
     config.createsNewApplicationInstance = YES; config.activates = YES;
-    config.arguments = sender.tag == 1 ? @[] : @[[ @"--user-data-dir=" stringByAppendingString:ProfilePath(sender.tag)]];
+    config.arguments = account == 1 ? @[] : @[[ @"--user-data-dir=" stringByAppendingString:ProfilePath(account)]];
     if (codeConfig) config.environment = @{@"CLAUDE_CONFIG_DIR":codeConfig};
+    NSDate *requested = [NSDate date];
+    [self.pendingLaunches addObject:key];
     [NSWorkspace.sharedWorkspace openApplicationAtURL:[NSURL fileURLWithPath:bundlePath] configuration:config completionHandler:^(NSRunningApplication *app, NSError *launchError) {
         dispatch_async(dispatch_get_main_queue(), ^{
+            [self.pendingLaunches removeObject:key];
+            if (!launchError) [self.errors removeObjectForKey:key];
             if (launchError) { [self.starting removeObjectForKey:key]; self.errors[key] = launchError.localizedDescription; self.message.stringValue = [@"启动失败：" stringByAppendingString:launchError.localizedDescription]; }
+            // A returned pre-existing app is not evidence that the requested environment took effect.
+            if (!launchError && codeConfig && app.launchDate && [app.launchDate compare:requested] != NSOrderedAscending && !app.terminated) {
+                NSArray *args = Arguments(app.processIdentifier); char path[PROC_PIDPATHINFO_MAXSIZE] = {0};
+                if (args && AccountForArguments(args) == account && proc_pidpath(app.processIdentifier,path,sizeof(path)) > 0 && IsMainExecutable(@(path))) self.configuredApps[key] = app;
+            }
             [self refresh];
         });
     }];
@@ -730,6 +875,32 @@ static int SelfTest(void) {
         NSCAssert(LoginConflict(@{@1:@[@123]},2),@"other account blocks login");
         NSCAssert(LoginConflict(@{@0:@[@123]},2),@"unmanaged official instance blocks login");
         NSCAssert(!LoginConflict(@{@2:@[@123]},2),@"own instance allowed");
+        NSCAssert(LoginBlocker(@{@0:@[@123]},@[],2),@"unmanaged instance blocks protected login");
+        NSCAssert(LoginBlocker(@{@2:@[@123,@124]},@[],2),@"duplicate target blocks protected login");
+        NSCAssert(LoginBlocker(@{},@[@3],2),@"other in-flight operation blocks protected login even before a PID exists");
+        NSCAssert(!LoginBlocker(@{@2:@[@123]},@[@2],2),@"protected target may complete its own check or launch");
+        NSCAssert([CodeStatus(2,YES,NO) isEqual:@"Code 未确认"],@"existing or external instance is not proven isolated");
+        NSCAssert([CodeStatus(2,YES,YES) isEqual:@"Code 已指定"],@"launch evidence means configured, not verified storage");
+        NSCAssert([CodeStatus(2,NO,YES) isEqual:@"Code 待启动"],@"exited process loses running configuration claim");
+        NSCAssert([CodeStatus(1,YES,YES) isEqual:@"Code 默认"],@"default remains shared with CLI");
+        Launcher *state = [Launcher new];
+        state.processes = @{}; [state.checking addObject:@2];
+        NSCAssert([state deletionBlocker:2] && ![state deletionBlocker:3],@"in-flight check blocks deletion only for that account");
+        state.loginAccount = 3;
+        NSCAssert([state deletionBlocker:3],@"protected account cannot be deleted");
+        [state.checking removeObject:@2];
+        NSCAssert(![state deletionBlocker:2],@"other idle account is not blocked by protection");
+        NSCAssert([state openingBlocker:2 expectedPID:0],@"protection changed during check blocks a different account");
+        state.loginAccount = 0; state.processes = @{@2:@[@123]};
+        NSCAssert(![state openingBlocker:2 expectedPID:123],@"same live PID remains eligible");
+        state.processes = @{};
+        NSCAssert([state openingBlocker:2 expectedPID:123],@"original PID exited during check: do not restart");
+        state.processes = @{@2:@[@124]};
+        NSCAssert([state openingBlocker:2 expectedPID:123],@"replacement PID during check: do not switch silently");
+        state.processes = @{@2:@[@123,@124]};
+        NSCAssert([state openingBlocker:2 expectedPID:0],@"duplicate PIDs still block opening after check");
+        state.processes = @{}; state.scanError = @"synthetic scan failure";
+        NSCAssert([state openingBlocker:2 expectedPID:0],@"unknown process state still blocks launching");
         NSCAssert(DeleteBlocker(1,@[],NO),@"default profile never deleted");
         NSCAssert(DeleteBlocker(3,@[@123],NO) && DeleteBlocker(3,@[],YES),@"running or starting profile not deleted");
         NSCAssert(DeleteBlocker(11,@[],NO),@"out-of-range account rejected");
@@ -752,10 +923,31 @@ static int SelfTest(void) {
         NSCAssert([@"synthetic-test-only" writeToFile:marker atomically:YES encoding:NSUTF8StringEncoding error:nil],@"synthetic marker");
         NSCAssert(linkat(AT_FDCWD,marker.fileSystemRepresentation,AT_FDCWD,[[a stringByAppendingPathComponent:@"Cookies"] fileSystemRepresentation],0)==0,@"hardlink fixture");
         NSCAssert(ValidateProfileAtPath(a,a),@"hardlinked cookie store rejected");
+        // Exercise concurrent checks and main-queue completion without opening or launching any application.
+        __block NSUInteger completed = 0;
+        ValidateProfileAsync(a, ^(NSString *failure) {
+            NSCAssert(NSThread.isMainThread && failure,@"unsafe account fails on main queue"); completed++;
+        });
+        ValidateProfileAsync(b, ^(NSString *failure) {
+            NSCAssert(NSThread.isMainThread && !failure,@"other account passes independently on main queue"); completed++;
+        });
+        NSCAssert(completed == 0,@"storage validation does not synchronously block its caller");
+        NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:10];
+        while (completed < 2 && deadline.timeIntervalSinceNow > 0) [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+        NSCAssert(completed == 2,@"both background checks complete");
+        NSCAssert([fm removeItemAtPath:[a stringByAppendingPathComponent:@"Cookies"] error:nil],@"remove generated hardlink only");
+        NSString *nested = [a stringByAppendingPathComponent:@"ClaudeCodeConfig/projects"];
+        NSCAssert([fm createDirectoryAtPath:nested withIntermediateDirectories:YES attributes:nil error:nil],@"nested Code fixture");
+        NSString *nestedLink = [nested stringByAppendingPathComponent:@"shared"];
+        NSCAssert([fm createSymbolicLinkAtPath:nestedLink withDestinationPath:b error:nil],@"nested shared-storage fixture");
+        NSCAssert(ValidateProfileAtPath(a,a),@"recursive background policy still rejects deeply nested links");
+        NSCAssert([fm removeItemAtPath:nestedLink error:nil],@"remove generated nested link only");
+        NSCAssert(!ValidateProfileAtPath(a,a),@"safe nested profile remains usable");
         NSCAssert([[NSString stringWithContentsOfFile:marker encoding:NSUTF8StringEncoding error:nil] isEqual:@"synthetic-test-only"],@"other fixture untouched");
         NSCAssert([fm removeItemAtPath:root error:nil],@"clean generated fixtures only");
         puts("PASS: login conflict guard, delete guards, duplicate overrides, exact paths, symlink and hardlink rejection; synthetic fixtures only");
         puts("PASS: profile mapping, helper/CLI filtering, malformed arguments, kernel argv");
+        puts("PASS: login admission, per-account operation guards, conservative Code status, concurrent metadata checks with main-queue completion");
     } return 0;
 }
 int main(int argc, const char *argv[]) {
@@ -770,8 +962,9 @@ int main(int argc, const char *argv[]) {
         if (argc > 2 && strcmp(argv[1],"--snapshot") == 0) {
             // Development aid: render the window offscreen to PNG without taking the instance lock or launching Claude.
             [NSApplication sharedApplication];
-            Launcher *launcher = [Launcher new]; launcher.starting = [NSMutableDictionary dictionary]; launcher.errors = [NSMutableDictionary dictionary];
-            [launcher makeWindow]; if (argc > 3) [launcher showPage:atoi(argv[3])]; [launcher refresh];
+            Launcher *launcher = [Launcher new];
+            if (argc > 3) launcher.page = atoi(argv[3]);
+            [launcher makeWindow]; [launcher refresh];
             NSView *view = launcher.window.contentView; [view layoutSubtreeIfNeeded];
             NSBitmapImageRep *bitmap = [view bitmapImageRepForCachingDisplayInRect:view.bounds];
             [view cacheDisplayInRect:view.bounds toBitmapImageRep:bitmap];

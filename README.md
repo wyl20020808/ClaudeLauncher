@@ -1,6 +1,8 @@
 # Claude 启动器
 
-非官方工具，与 Anthropic 无关联。原生 macOS 桌面账号启动器。源码版本：1.6（build 7，仅开发构建，未交付）；日常交付版本仍为 1.5（build 6）。Objective-C / AppKit。
+非官方工具，与 Anthropic 无关联。原生 macOS 桌面账号启动器。源码与本机 build/：1.6（build 7，未发布）；历史交付版本为 1.5（build 6）。Objective-C / AppKit。
+
+2026-10-28：在 `feature/isolation-hardening` 加固 macOS 账号隔离，基于 `origin/dev` 的 `ad91581`。本轮不修改 Windows 或构建脚本，版本号仍为 1.6 / build 7；功能差异与验证结果以 [当前状态](docs/STATUS.md) 的最新记录为准。
 
 管理本机的 Claude 桌面账号（最多 10 个，只显示已有的）。水墨风界面：左侧导航（实例管理、账号管理、日志记录、系统设置），右侧账号卡片；运行中显示棕色“打开”，已有目录未运行显示“启动”，无目录显示“创建”，“+ 新建实例”创建第一个未使用的编号。使用同一份官方 Claude.app，通过不同数据目录启动，不复制、修改或重签官方应用。
 
@@ -32,7 +34,7 @@ AGENTS.md                   后续开发约束
 开发需要 macOS、Xcode Command Line Tools 和 `/Applications/Claude.app` 或 `~/Applications/Claude.app`。在项目根目录执行：
 
 ```sh
-/bin/zsh scripts/build.sh
+SIGN_IDENTITY="ClaudeLauncher Local Signing" /bin/zsh scripts/build.sh
 /bin/zsh scripts/package.sh
 ```
 
@@ -42,8 +44,14 @@ AGENTS.md                   后续开发约束
 
 01 使用 Claude 默认目录；02 使用 Claude-Second；03～10 使用 Claude-Profile-03 至 Claude-Profile-10，均位于用户 Library/Application Support 下。已有目录直接复用。
 
-1.6 起，02～10 启动时额外设置 `CLAUDE_CONFIG_DIR=<账号目录>/ClaudeCodeConfig`，Code 标签页的会话记录、设置、插件、记忆和 `.claude.json` 不再与 01 共用 `~/.claude`。01 保持默认 `~/.claude`。只对启动器新启动的实例生效。
+1.6 起，02～10 新启动时设置 `CLAUDE_CONFIG_DIR=<账号目录>/ClaudeCodeConfig`，请求 Code 使用独立的用户配置、记录和插件目录。01 保持默认 `~/.claude`，与普通终端 CLI 共用默认用户配置。旧实例不自动重启，旧记录不迁移、不删除；Code 实际写入位置仍需真实实例验证。
 
-独立数据目录不等于多台电脑，不保证隔离钥匙串、浏览器登录回调、日志目录（~/Library/Logs/Claude）、用户项目文件、后台服务或文件权限。需要“两台电脑”级别的隔离，请使用两个 macOS 用户账户。两个真实账号是否串号尚未验证。删除实例会把账号目录移到废纸篓，01 不可删。
+卡片显示“Code 待启动”“Code 未确认”或“Code 已指定”。“已指定”仅表示本次启动器向核实的新进程指定了独立配置，不代表实际存储已验证。重开启动器后，对已有进程保守显示“未确认”；不读取进程环境变量来恢复状态。
 
-当前主要待办是稳定应用签名并完成最新版本的最小化恢复验证，详见 [项目状态](docs/STATUS.md)。
+从账号“···”菜单进入“登录 / 重新登录保护…”。新建账号时弹出提醒，可选“直接创建”（其他 Claude 保持运行）或“进入登录保护”。进入保护需要其他 Claude 已正常退出且没有其他账号正在检查或启动。保护保存在启动器偏好中，用户核对身份后确认结束；不会自动退出、登出任何账号，也不能拦截外部启动或系统回调。
+
+存储元数据检查在后台执行，各账号独立等待。检查完成后重新核对进程和路径；原实例在检查期间退出时不会被自动重启。删除仍仅经菜单确认后移到废纸篓，01、运行中、启动中、检查中和受登录保护的账号不可删。
+
+独立目录不是安全沙箱。系统权限、应用身份和加密设施、浏览器登录回调、日志目录（~/Library/Logs/Claude）、网络与本地服务仍可能共享。不同账号共同操作同一项目时，项目文件、规则和工具配置也会互相影响，建议使用各自项目副本和端口。两个真实账号登录、重登录及相互登出的影响尚未验证。
+
+签名身份已稳定；新版 GUI 操作和真实账号隔离的验收结果分别记录，详见 [项目状态](docs/STATUS.md)。
