@@ -38,7 +38,13 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 <key>NSPrincipalClass</key><string>NSApplication</string>
 </dict></plist>
 PLIST
-/usr/bin/codesign --force --sign - "$APP"
+# SIGN_IDENTITY 为钥匙串中的代码签名证书名；留空用 ad-hoc（每次重建身份都会变，辅助功能授权失效）。
+SIGN="${SIGN_IDENTITY:--}"
+KEYCHAIN_ARGS=()
+[[ -n "${SIGN_KEYCHAIN:-}" ]] && KEYCHAIN_ARGS=(--keychain "$SIGN_KEYCHAIN")
+/usr/bin/codesign --force --sign "$SIGN" "${KEYCHAIN_ARGS[@]}" "$APP"
+[[ "$SIGN" == - ]] && print -u2 '提示：未设置 SIGN_IDENTITY，使用 ad-hoc 签名，重建后需重新授权辅助功能。'
+/usr/bin/codesign -d -r- "$APP" 2>&1 | grep designated
 /usr/bin/plutil -lint "$APP/Contents/Info.plist"
 /usr/bin/codesign --verify --strict "$APP"
 "$APP/Contents/MacOS/ClaudeLauncher" --self-test

@@ -36,4 +36,19 @@
 
 `scripts/package.sh` 仅校验并压缩已构建应用，不重新签名或启动应用。修改应用后先重新构建，验证后再打包。
 
-当前采用 ad-hoc 签名，designated requirement 依赖代码哈希。代码变化可能使 macOS 辅助功能授权失效。不要通过修改 TCC 数据库、放宽签名要求或绕过权限解决。稳定签名方案需要另行设计与用户正常授权；不可把重启 Mac 当作已证实的解决办法。
+未设置 `SIGN_IDENTITY` 时使用 ad-hoc 签名，designated requirement 是代码哈希（cdhash），每次代码变化都会使辅助功能授权失效。
+
+稳定签名：用固定证书签名后，requirement 变为 `identifier "local.claude.profile-launcher" and certificate leaf = H"<证书指纹>"`，与代码无关，重建后授权仍匹配。
+
+一次性准备（用户自己操作，启动器和脚本不会创建证书或修改钥匙串）：
+
+1. 打开「钥匙串访问」→ 菜单「钥匙串访问」→「证书助理」→「创建证书…」。
+2. 名称填 `ClaudeLauncher Local Signing`，身份类型「自签名根证书」，证书类型「代码签名」，创建到「登录」钥匙串。
+3. 构建：`SIGN_IDENTITY="ClaudeLauncher Local Signing" /bin/zsh scripts/build.sh`。首次签名时系统询问是否允许 codesign 使用该密钥，选「始终允许」。
+4. 在系统设置中给这个构建授权一次辅助功能（需移除旧的 ad-hoc 条目）。以后用同一证书重建不应再需要授权。
+
+检查授权须经 LaunchServices 启动，否则系统按终端等父进程判断：`open -W -n --stdout /tmp/diag.txt "build/Claude 启动器.app" --args --diagnose`，查看输出中的 `accessibility=`。
+
+`security find-identity -v` 会把自签名证书列为不受信任，这不影响 codesign 签名，无需改信任设置。构建输出会打印 designated requirement，应看到 `certificate leaf` 而不是 `cdhash`。证书丢失或更换后需重新授权。`SIGN_KEYCHAIN` 可指定证书所在的钥匙串文件，通常不需要。
+
+不要通过修改 TCC 数据库、放宽签名要求或绕过权限解决授权问题。

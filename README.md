@@ -35,7 +35,7 @@ AGENTS.md                   后续开发约束
 /bin/zsh scripts/package.sh
 ```
 
-开发应用位于 `build/Claude 启动器.app`，发布 ZIP 位于 `build/Claude启动器.zip`。构建不会替换原交付应用。支持 `SDKROOT` 指定 SDK，默认优先本机兼容的 MacOSX15.4.sdk。当前仅在本机 Apple Silicon 验证，未做 Apple 公证。
+设置 `SIGN_IDENTITY` 可用固定证书签名，重建后辅助功能授权不失效，步骤见 [开发流程](docs/DEVELOPMENT.md#打包与签名)。开发应用位于 `build/Claude 启动器.app`，发布 ZIP 位于 `build/Claude启动器.zip`。构建不会替换原交付应用。支持 `SDKROOT` 指定 SDK，默认优先本机兼容的 MacOSX15.4.sdk。当前仅在本机 Apple Silicon 验证，未做 Apple 公证。
 
 ## 隔离范围
 
