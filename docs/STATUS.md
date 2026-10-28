@@ -15,6 +15,8 @@
 
 - 原独立 Windows 启动器（发布版 1.2.0，C# WPF）源码并入 `windows/`，按 SPEC 补齐：`CLAUDE_CONFIG_DIR`、严格参数解析、同账号多主进程报错、35 秒启动超时、存储元数据校验、`--self-test`；删除入口隐藏。
 - 构建、自动检查（241 项）和 `--self-test`（60 项）在 Windows 11 实机通过。GUI 与真实实例未验证。实测差异见 `windows/README.md` 和 SPEC 中的 [Windows 差异] 标注。
+- 2026-10-28 规格定稿：6 项差异按 SPEC 当前文字确认。Windows 待适配：托盘重启动须使用该 PID 自身的可执行文件（当前用扫描到的首个实例路径），并在重启动后重新扫描，同账号出现第二个主进程时报错（当前未单独检查）。
+- 待用户决定：公开仓库含自建更新服务地址（Updates.cs、updates/维护说明.md）和官方图标 windows/assets/claude.ico。
 
 ## 已实现
 
