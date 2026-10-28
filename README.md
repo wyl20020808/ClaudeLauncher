@@ -1,5 +1,7 @@
 # Claude 启动器
 
+本地开发分支 `feature/local-settings`：系统设置六个分类已接通，账号搜索／筛选／别名／多选复制、日志筛选／搜索／分页可用。管理功能只操作本地；禁止向 Claude／Anthropic 发请求。默认关闭联网，取消后台更新，仅允许保存开启后手动检查本项目 GitHub 更新。详见 [当前规则](docs/SPEC.md) 与 [验收记录](docs/STATUS.md)。开发构建仍为 1.7.4 / build 11，不替换已安装版本。
+
 非官方工具，与 Anthropic 无关联。原生 macOS 桌面账号启动器，Objective-C / AppKit。当前 macOS 版本号为 1.7.3 / build 10；新增本机项目识别与批量导入，发布进度见 docs/STATUS.md。
 
 2026-10-28：`feature/project-import` 基于 dev `5cb6626`，保留手动项目管理，新增所有已创建账号的本机目录识别与批量导入；账号隔离机制保持不变。本轮只修改 macOS 实现、发布构建和文档，不修改 Windows；Windows 1.7.2 的清单和安装包原样沿用。验证结果见 [当前状态](docs/STATUS.md)。

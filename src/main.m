@@ -11,6 +11,8 @@
 #import "Projects.h"
 #import "ProjectImport.h"
 #import "UsageHistory.h"
+#import "Settings.h"
+#import <ServiceManagement/ServiceManagement.h>
 
 static NSString * const BundleID = @"local.claude.profile-launcher";
 static NSString * const WakeNotification = @"local.claude.profile-launcher.show";
@@ -174,10 +176,10 @@ static NSDictionary *VerifyManifest(NSData *data, NSArray *keys, NSString **fail
 }
 // Set only by the --update-test development mode: print each request and redirect decision.
 static BOOL TraceNetwork;
-// Only GitHub may redirect, and only to its own download hosts; the self-hosted source may not redirect at all.
+static BOOL NetworkEnabled; // Only saved opt-in plus an explicit update action permits requests.
+// Only this project release path and GitHub download hosts may receive update redirects.
 static BOOL RedirectAllowed(NSURL *url, BOOL github) {
-    if (!github || ![url.scheme isEqual:@"https"]) return NO;
-    return [@[@"github.com",@"objects.githubusercontent.com",@"release-assets.githubusercontent.com"] containsObject:url.host.lowercaseString];
+    return github && AllowedUpdateURL(url,YES);
 }
 // The running app may replace itself only from a normal, writable .app location (not App Translocation or a mounted image).
 static NSString *InstallBlocker(NSString *bundlePath) {
@@ -200,16 +202,18 @@ static NSString *SameSigner(NSString *candidate) {
 @end
 @implementation RedirectGuard
 - (void)URLSession:(NSURLSession *)session task:(NSURLSessionTask *)task willPerformHTTPRedirection:(NSHTTPURLResponse *)response newRequest:(NSURLRequest *)request completionHandler:(void (^)(NSURLRequest *))completionHandler {
-    BOOL allowed = RedirectAllowed(request.URL,self.github);
+    BOOL allowed = NetworkEnabled && RedirectAllowed(request.URL,self.github);
     if (TraceNetwork) printf("[network] redirect -> %s %s\n",request.URL.host.UTF8String,allowed ? "allowed" : "blocked");
     completionHandler(allowed ? request : nil);
 }
 @end
 static void Fetch(NSURL *url, BOOL github, long long limit, NSTimeInterval timeout, void (^done)(NSData *data, NSString *failure)) {
-    if (![url.scheme isEqual:@"https"]) { done(nil,@"更新地址必须使用 HTTPS。"); return; }
+    if (!NetworkEnabled || !github || !AllowedUpdateURL(url,NO)) { done(nil,@"本地安全策略已阻止此请求；仅允许主动检查本项目的 GitHub 更新。"); return; }
     RedirectGuard *guard = [RedirectGuard new]; guard.github = github;
     NSURLSessionConfiguration *config = NSURLSessionConfiguration.ephemeralSessionConfiguration;
     config.timeoutIntervalForRequest = 15; config.timeoutIntervalForResource = timeout; config.requestCachePolicy = NSURLRequestReloadIgnoringLocalCacheData;
+    config.HTTPCookieStorage = nil; config.URLCredentialStorage = nil; config.URLCache = nil;
+    config.HTTPShouldSetCookies = NO;
     config.HTTPAdditionalHeaders = @{@"User-Agent":[@"ClaudeProfileLauncher/" stringByAppendingString:[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"0"]};
     NSURLSession *session = [NSURLSession sessionWithConfiguration:config delegate:guard delegateQueue:nil];
     [[session dataTaskWithURL:url completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
@@ -425,24 +429,7 @@ static void DrawPanel(NSRect rect, CGFloat radius, CGFloat alpha) {
     [[Hex(0xFFFDFA) colorWithAlphaComponent:alpha] setFill]; [path fill];
     [Hex(0xEDE4D8) setStroke]; path.lineWidth = 1; [path stroke];
 }
-// Static input lookalike: optional leading symbol, text, optional trailing chevron. Visual placeholder only.
-static void DrawField(NSRect rect, NSString *symbol, NSString *text, NSColor *color, BOOL chevron) {
-    DrawPanel(rect, 10, 0.92);
-    CGFloat x = NSMinX(rect)+14;
-    if (symbol) { NSImage *icon = Tinted(symbol, 13, Hex(0x6E655C)); [icon drawInRect:NSMakeRect(x,NSMidY(rect)-icon.size.height/2,icon.size.width,icon.size.height) fromRect:NSZeroRect operation:NSCompositingOperationSourceOver fraction:1 respectFlipped:YES hints:nil]; x += 26; }
-    NSDictionary *attributes = @{NSFontAttributeName:[NSFont systemFontOfSize:13],NSForegroundColorAttributeName:color};
-    NSMutableParagraphStyle *clip = [NSMutableParagraphStyle new]; clip.lineBreakMode = NSLineBreakByTruncatingMiddle;
-    NSMutableDictionary *clipped = [attributes mutableCopy]; clipped[NSParagraphStyleAttributeName] = clip;
-    CGFloat height = [text sizeWithAttributes:attributes].height;
-    [text drawInRect:NSMakeRect(x,NSMidY(rect)-height/2,NSMaxX(rect)-x-(chevron ? 34 : 12),height) withAttributes:clipped];
-    if (chevron) { NSImage *down = Tinted(@"chevron.down", 10, Hex(0x6E655C)); [down drawInRect:NSMakeRect(NSMaxX(rect)-28,NSMidY(rect)-down.size.height/2,down.size.width,down.size.height) fromRect:NSZeroRect operation:NSCompositingOperationSourceOver fraction:1 respectFlipped:YES hints:nil]; }
-}
-static void DrawToggle(NSRect rect, BOOL on) {
-    [(on ? Hex(0xA8765A) : Hex(0xE6DED4)) setFill]; [[NSBezierPath bezierPathWithRoundedRect:rect xRadius:NSHeight(rect)/2 yRadius:NSHeight(rect)/2] fill];
-    CGFloat knob = NSHeight(rect)-4;
-    [NSColor.whiteColor setFill]; [[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(on ? NSMaxX(rect)-knob-2 : NSMinX(rect)+2,NSMinY(rect)+2,knob,knob)] fill];
-}
-
+// Native action button with the existing ink-and-paper treatment.
 @interface ActionButton : NSButton
 @property NSString *symbol;   // Optional leading SF Symbol.
 @property CGFloat fontSize;   // 0 keeps the card-button default.
@@ -477,29 +464,23 @@ static void DrawToggle(NSRect rect, BOOL on) {
 static const unsigned BadgePalette[4][2] = {{0xFCE7D4,0xC0743A},{0xE9E3FA,0x6A55C8},{0xDDF0E6,0x3C8A68},{0xFCE3DD,0xC75F47}};
 static const unsigned CardFill = 0xFFFCF7;
 
-// One row of the account table. Text lives in subviews; the row paints checkbox, badge, status dot and action boxes.
+// Account rows paint the badge and status; native subviews handle selection and actions.
 @interface AccountRow : NSView
 @property NSInteger number;
 @property NSColor *dot;
-@property NSTextField *status, *recent;
+@property NSTextField *status, *recent, *nameLabel;
+@property NSButton *selection;
 @end
 @implementation AccountRow
 - (BOOL)isFlipped { return YES; }
 - (void)drawRect:(NSRect)dirtyRect {
     [Hex(0xEFE7DC) setFill]; NSRectFill(NSMakeRect(0,NSHeight(self.bounds)-1,NSWidth(self.bounds),1));
-    NSBezierPath *box = [NSBezierPath bezierPathWithRoundedRect:NSMakeRect(24,18,16,16) xRadius:4 yRadius:4];
-    [NSColor.whiteColor setFill]; [box fill]; [Hex(0xD9CFC3) setStroke]; [box stroke];
     const unsigned *palette = BadgePalette[(self.number-1)%4];
     NSRect badge = NSMakeRect(64,12,28,28);
     [Hex(palette[0]) setFill]; [[NSBezierPath bezierPathWithRoundedRect:badge xRadius:8 yRadius:8] fill];
     DrawCentered([NSString stringWithFormat:@"%02ld",(long)self.number], badge, @{NSFontAttributeName:[NSFont systemFontOfSize:12 weight:NSFontWeightSemibold],NSForegroundColorAttributeName:Hex(palette[1])});
     [self.dot setFill]; [[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(478,22,8,8)] fill];
-    NSBezierPath *edit = [NSBezierPath bezierPathWithRoundedRect:NSMakeRect(652,11,30,30) xRadius:8 yRadius:8];
-    [NSColor.whiteColor setFill]; [edit fill]; [Hex(0xE6DCCF) setStroke]; [edit stroke];
-    NSImage *pencil = Tinted(@"pencil", 12, Hex(0x8A7F74));
-    [pencil drawInRect:NSMakeRect(667-pencil.size.width/2,26-pencil.size.height/2,pencil.size.width,pencil.size.height) fromRect:NSZeroRect operation:NSCompositingOperationSourceOver fraction:1 respectFlipped:YES hints:nil];
-    NSBezierPath *more = [NSBezierPath bezierPathWithRoundedRect:NSMakeRect(690,11,30,30) xRadius:8 yRadius:8];
-    [NSColor.whiteColor setFill]; [more fill]; [Hex(0xE6DCCF) setStroke]; [more stroke];
+
 }
 @end
 @interface AccountCard : NSView
@@ -507,7 +488,7 @@ static const unsigned CardFill = 0xFFFCF7;
 @property NSImage *art;
 @property NSArray<NSString *> *chips;
 @property NSColor *dot;
-@property NSTextField *status;
+@property NSTextField *status, *nameLabel;
 @property ActionButton *button;
 @property NSArray<NSTextField *> *usageLabels;
 @property NSTextField *usageSource;
@@ -551,7 +532,7 @@ static const unsigned CardFill = 0xFFFCF7;
 }
 @end
 
-@interface Launcher : NSObject <NSApplicationDelegate, NSWindowDelegate, NSMenuDelegate>
+@interface Launcher : NSObject <NSApplicationDelegate, NSWindowDelegate, NSMenuDelegate, NSSearchFieldDelegate, NSTableViewDataSource, NSTableViewDelegate>
 @property NSWindow *window;
 @property NSMutableArray<NSButton *> *buttons;
 @property NSMutableArray<NSTextField *> *statuses;
@@ -564,7 +545,21 @@ static const unsigned CardFill = 0xFFFCF7;
 @property NSTextField *emptyHint;
 @property NSButton *createButton;
 @property NSMutableArray<NSDictionary *> *logEntries; // Newest first: time, level, instance, text.
-@property NSView *logTable;
+@property NSTableView *logTable;
+@property NSSearchField *logSearch, *accountSearch;
+@property NSPopUpButton *logInstance, *logLevel, *logPeriod, *accountFilter;
+@property NSTextField *logSummary, *settingsFeedback, *toast;
+@property NSButton *previousLogs, *nextLogs, *selectAllAccounts, *selectedPathsButton;
+@property NSArray *visibleLogs;
+@property NSInteger logPage, settingsSection;
+@property NSUInteger toastGeneration;
+@property NSMutableSet<NSNumber *> *selectedAccounts;
+@property NSMutableDictionary *accountNames, *settingsDraft;
+@property NSDictionary *settings;
+@property NSUserDefaults *preferences;
+@property NSView *settingsContent, *mainCanvas;
+@property NSArray<NSButton *> *settingsTabs;
+@property ActionButton *saveSettingsButton;
 @property NSMutableArray<AccountRow *> *rows;
 @property NSView *rowsView;
 @property NSArray<NSTextField *> *stats;
@@ -578,7 +573,6 @@ static const unsigned CardFill = 0xFFFCF7;
 @property BOOL snapshotMode;
 @property BOOL updating;
 @property BOOL headless;         // --update-test: no dialogs, accept the offered update, print results.
-@property BOOL skipSelfHosted;
 @property NSStatusItem *statusItem;
 @property NSString *lastLogged;
 @property NSTextField *accessibilityStatus;
@@ -603,6 +597,16 @@ static const unsigned CardFill = 0xFFFCF7;
 @implementation Launcher
 - (instancetype)init {
     if ((self = [super init])) {
+        self.preferences = NSUserDefaults.standardUserDefaults;
+        self.settings = ValidatedSettings([self.preferences objectForKey:@"localSettings"]);
+        self.settingsDraft = self.settings.mutableCopy;
+        self.accountNames = [NSMutableDictionary dictionary];
+        id savedNames = [self.preferences objectForKey:@"accountDisplayNames"];
+        if ([savedNames isKindOfClass:NSDictionary.class]) for (NSInteger n = 1; n <= 10; n++) {
+            NSString *key = @(n).stringValue, *name = ValidatedAccountName(savedNames[key]);
+            if (name.length) self.accountNames[key] = name;
+        }
+        self.selectedAccounts = [NSMutableSet set];
         self.starting = [NSMutableDictionary dictionary]; self.errors = [NSMutableDictionary dictionary];
         self.pendingLaunches = [NSMutableSet set];
         self.checking = [NSMutableSet set]; self.configuredApps = [NSMutableDictionary dictionary];
@@ -629,14 +633,12 @@ static const unsigned CardFill = 0xFFFCF7;
     self.loginAccount = savedLogin >= 1 && savedLogin <= 10 ? savedLogin : 0;
     self.projectStore = [[ProjectStore alloc] initWithDirectory:support home:NSHomeDirectory() applicationPaths:@[NSBundle.mainBundle.bundlePath,@"/Applications/Claude 启动器.app",[NSHomeDirectory() stringByAppendingPathComponent:@"Applications/Claude 启动器.app"]]];
     [self.projectStore load];
-    [self makeWindow]; [self refresh]; [self show:nil];
-    [self makeStatusItem];
+    self.page = [self.settings[@"rememberPage"] boolValue] ? [self.preferences integerForKey:@"lastLauncherPage"] : [self.settings[@"startPage"] integerValue];
+    [self makeWindow]; [self applySettings]; [self refresh]; [self show:nil];
     if (self.projectStore.notice) [self alert:@"项目清单提示" detail:self.projectStore.notice];
     [self finishPendingUpdate];
-    NSDate *lastCheck = [NSUserDefaults.standardUserDefaults objectForKey:@"lastUpdateCheck"];
-    if (![lastCheck isKindOfClass:NSDate.class] || -lastCheck.timeIntervalSinceNow > 24*3600)
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(8*NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ [self runUpdateCheck:NO]; });
-    self.timer = [NSTimer scheduledTimerWithTimeInterval:1.0 target:self selector:@selector(refresh) userInfo:nil repeats:YES];
+    // No scheduled network requests. Updates require saved opt-in and an explicit click.
+
 }
 - (void)alert:(NSString *)title detail:(NSString *)detail {
     if (self.headless) { printf("[result] %s：%s\n",title.UTF8String,detail.UTF8String); exit(3); }
@@ -648,7 +650,7 @@ static const unsigned CardFill = 0xFFFCF7;
     AccountCard *card = [[AccountCard alloc] initWithFrame:frame];
     card.number = n; card.art = art; card.dot = Hex(0xB9B1A7);
     card.chips = @[(n == 1 ? @"默认目录" : [ProfilePath(n).lastPathComponent stringByReplacingOccurrencesOfString:@"Claude-" withString:@""]),CodeStatus(n,NO,NO)];
-    [card addSubview:Text([NSString stringWithFormat:@"账号 %02ld",(long)n], NSMakeRect(84,18,150,24), [NSFont systemFontOfSize:18 weight:NSFontWeightSemibold], ink)];
+    card.nameLabel = Text([self accountName:n], NSMakeRect(84,18,270,24), [NSFont systemFontOfSize:18 weight:NSFontWeightSemibold], ink); [card addSubview:card.nameLabel];
     card.status = Text(@"读取状态…", NSMakeRect(102,44,160,20), [NSFont systemFontOfSize:13], muted); [card addSubview:card.status];
     NSArray *rows = @[@[@"clock",@"5小时限额"],@[@"calendar",@"周限额"]];
     NSMutableArray *usageLabels = [NSMutableArray array];
@@ -681,8 +683,9 @@ static const unsigned CardFill = 0xFFFCF7;
     };
     [item addSubview:Symbol(symbol, NSMakeRect(20,14,21,21), Hex(0x3A332D))];
     [item addSubview:Text(title, NSMakeRect(56,13,160,22), [NSFont systemFontOfSize:16 weight:NSFontWeightMedium], Hex(0x2B2622))];
-    [item addGestureRecognizer:[[NSClickGestureRecognizer alloc] initWithTarget:self action:@selector(navClicked:)]];
-    item.accessibilityElement = YES; item.accessibilityRole = NSAccessibilityButtonRole; item.accessibilityLabel = title;
+    NSButton *hit = [NSButton buttonWithTitle:title target:self action:@selector(navigate:)];
+    hit.frame = item.bounds; hit.tag = index; hit.bordered = NO; hit.title = @""; hit.focusRingType = NSFocusRingTypeExterior; hit.accessibilityLabel = title; [item addSubview:hit];
+    item.accessibilityElement = NO;
     return item;
 }
 - (Canvas *)pageTitled:(NSString *)title subtitle:(NSString *)subtitle frame:(NSRect)frame {
@@ -701,14 +704,10 @@ static const unsigned CardFill = 0xFFFCF7;
     Canvas *page = [self pageTitled:@"账号管理" subtitle:@"统一管理本机 Claude 账号空间，查看对应实例、运行状态与最近使用记录。" frame:frame];
     page.paint = ^(NSRect bounds) {
         for (NSInteger i = 0; i < 3; i++) DrawPanel(NSMakeRect(36+i*248,140,240,84), 16, 0.86);
-        DrawField(NSMakeRect(36,240,268,38), @"magnifyingglass", @"搜索账号名称或目录…", Hex(0xA59B90), NO);
-        DrawField(NSMakeRect(316,240,130,38), nil, @"全部状态", ink, YES);
         DrawPanel(NSMakeRect(36,292,736,404), 16, 0.86);
         [Hex(0xEFE7DC) setFill]; NSRectFill(NSMakeRect(37,336,734,1)); NSRectFill(NSMakeRect(37,655,734,1));
-        NSBezierPath *box = [NSBezierPath bezierPathWithRoundedRect:NSMakeRect(60,306,16,16) xRadius:4 yRadius:4];
-        [NSColor.whiteColor setFill]; [box fill]; [Hex(0xD9CFC3) setStroke]; [box stroke];
         NSDictionary *head = @{NSFontAttributeName:[NSFont systemFontOfSize:13 weight:NSFontWeightSemibold],NSForegroundColorAttributeName:Hex(0x7A6F64)};
-        NSArray *columns = @[@[@"账号名称",@100],@[@"登录邮箱",@250],@[@"对应实例",@416],@[@"状态",@478],@[@"最近使用",@566],@[@"操作",@660]];
+        NSArray *columns = @[@[@"账号名称",@100],@[@"登录身份",@250],@[@"对应实例",@416],@[@"状态",@478],@[@"最近使用",@566],@[@"操作",@660]];
         for (NSArray *column in columns) [column[0] drawAtPoint:NSMakePoint(36+[column[1] doubleValue],305) withAttributes:head];
     };
     ActionButton *add = [ActionButton buttonWithTitle:@"+  添加账号" target:self action:@selector(newInstance:)];
@@ -724,6 +723,10 @@ static const unsigned CardFill = 0xFFFCF7;
         [page addSubview:Text(statInfo[i][1], NSMakeRect(x+80,190,150,16), [NSFont systemFontOfSize:11], muted)];
     }
     self.stats = stats;
+    self.accountSearch = [[NSSearchField alloc] initWithFrame:NSMakeRect(36,242,268,32)]; self.accountSearch.placeholderString = @"搜索账号名称或目录…"; self.accountSearch.accessibilityLabel = @"搜索账号"; self.accountSearch.delegate = self; [page addSubview:self.accountSearch];
+    self.accountFilter = [self filter:@[@"全部状态",@"运行中",@"未运行",@"处理中",@"异常"] frame:NSMakeRect(316,242,130,32) label:@"账号状态" action:@selector(accountFilterChanged:)]; [page addSubview:self.accountFilter];
+    self.selectedPathsButton = [self toolButton:@"复制选中路径" symbol:nil frame:NSMakeRect(470,240,176,38) action:@selector(copySelectedAccounts:)]; [page addSubview:self.selectedPathsButton];
+    self.selectAllAccounts = [NSButton checkboxWithTitle:@"" target:self action:@selector(selectVisibleAccounts:)]; self.selectAllAccounts.frame = NSMakeRect(58,302,24,24); self.selectAllAccounts.accessibilityLabel = @"全选当前筛选账号"; self.selectAllAccounts.allowsMixedState = YES; [page addSubview:self.selectAllAccounts];
     NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(37,337,734,318)];
     scroll.drawsBackground = NO; scroll.contentView.drawsBackground = NO; scroll.hasVerticalScroller = YES; scroll.autohidesScrollers = YES; scroll.scrollerStyle = NSScrollerStyleOverlay;
     Canvas *rowsView = [[Canvas alloc] initWithFrame:NSMakeRect(0,0,734,10*52)];
@@ -731,7 +734,9 @@ static const unsigned CardFill = 0xFFFCF7;
     for (NSInteger n = 1; n <= 10; n++) {
         AccountRow *row = [[AccountRow alloc] initWithFrame:NSMakeRect(0,(n-1)*52,734,52)];
         row.number = n; row.dot = Hex(0xB9B1A7);
-        [row addSubview:Text([NSString stringWithFormat:@"账号 %02ld",(long)n], NSMakeRect(100,16,110,20), [NSFont systemFontOfSize:14 weight:NSFontWeightMedium], ink)];
+        row.nameLabel = Text([self accountName:n], NSMakeRect(100,16,140,20), [NSFont systemFontOfSize:14 weight:NSFontWeightMedium], ink); [row addSubview:row.nameLabel];
+        row.selection = [NSButton checkboxWithTitle:@"" target:self action:@selector(selectAccountRow:)]; row.selection.frame = NSMakeRect(22,14,24,24); row.selection.tag = n; row.selection.accessibilityLabel = [NSString stringWithFormat:@"选择账号 %02ld",(long)n]; [row addSubview:row.selection];
+        NSButton *edit = [NSButton buttonWithTitle:@"" image:[NSImage imageWithSystemSymbolName:@"pencil" accessibilityDescription:@"编辑本地别名"] target:self action:@selector(editAccountName:)]; edit.frame = NSMakeRect(652,11,30,30); edit.tag = n; edit.bezelStyle = NSBezelStyleRounded; [row addSubview:edit];
         NSTextField *email = Text(@"不读取", NSMakeRect(250,17,150,18), [NSFont systemFontOfSize:13], Hex(0xA59B90));
         email.toolTip = @"启动器不读取登录凭据或账号邮箱。"; [row addSubview:email];
         [row addSubview:Text([NSString stringWithFormat:@"Claude %ld",(long)n], NSMakeRect(416,17,90,18), [NSFont systemFontOfSize:13], muted)];
@@ -1048,113 +1053,255 @@ static const unsigned CardFill = 0xFFFCF7;
         return YES;
     }];
 }
+- (NSPopUpButton *)filter:(NSArray *)titles frame:(NSRect)frame label:(NSString *)label action:(SEL)action {
+    NSPopUpButton *button = [[NSPopUpButton alloc] initWithFrame:frame pullsDown:NO]; [button addItemsWithTitles:titles];
+    button.target = self; button.action = action; button.accessibilityLabel = label; return button;
+}
 - (NSView *)logsPage:(NSRect)frame {
-    Canvas *page = [self pageTitled:@"日志记录" subtitle:@"查看实例启动、关闭与异常信息，便于追踪运行情况和排查问题。" frame:frame];
-    page.paint = ^(NSRect bounds) {
-        NSColor *ink = Hex(0x2B2622);
-        DrawField(NSMakeRect(36,140,170,40), @"calendar", @"本次运行", ink, YES);
-        DrawField(NSMakeRect(216,140,150,40), nil, @"全部实例", ink, YES);
-        DrawField(NSMakeRect(376,140,150,40), nil, @"全部级别", ink, YES);
-        DrawField(NSMakeRect(552,140,220,40), @"magnifyingglass", @"搜索日志内容…", Hex(0xA59B90), NO);
-    };
-    [page addSubview:[self toolButton:@"导出日志" symbol:@"square.and.arrow.down" frame:NSMakeRect(502,56,128,44) action:@selector(exportLogs:)]];
-    [page addSubview:[self toolButton:@"清空日志" symbol:@"trash" frame:NSMakeRect(640,56,132,44) action:@selector(clearLogs:)]];
-    __weak Launcher *weakSelf = self;
-    Canvas *table = [[Canvas alloc] initWithFrame:NSMakeRect(36,196,736,494)];
-    table.paint = ^(NSRect bounds) {
-        DrawPanel(NSInsetRect(bounds,0.5,0.5), 16, 0.86);
-        NSDictionary *head = @{NSFontAttributeName:[NSFont systemFontOfSize:13 weight:NSFontWeightSemibold],NSForegroundColorAttributeName:Hex(0x7A6F64)};
-        NSArray *columns = @[@[@"时间",@24],@[@"级别",@196],@[@"实例",@290],@[@"事件内容",@404]];
-        for (NSArray *column in columns) [column[0] drawAtPoint:NSMakePoint([column[1] doubleValue],14) withAttributes:head];
-        [Hex(0xEFE7DC) setFill]; NSRectFill(NSMakeRect(1,44,734,1)); NSRectFill(NSMakeRect(1,444,734,1));
-        NSArray *entries = weakSelf.logEntries;
-        NSDictionary *body = @{NSFontAttributeName:[NSFont systemFontOfSize:13],NSForegroundColorAttributeName:Hex(0x2B2622)};
-        NSDictionary *faint = @{NSFontAttributeName:[NSFont systemFontOfSize:13],NSForegroundColorAttributeName:Hex(0x8A7F74)};
-        NSMutableParagraphStyle *clip = [NSMutableParagraphStyle new]; clip.lineBreakMode = NSLineBreakByTruncatingTail;
-        if (!entries.count) DrawCentered(@"暂无日志", NSMakeRect(0,44,NSWidth(bounds),400), faint);
-        for (NSUInteger i = 0; i < MIN(entries.count,(NSUInteger)10); i++) {
-            NSDictionary *entry = entries[i]; CGFloat y = 45+i*40;
-            if (i) { [Hex(0xF3ECE3) setFill]; NSRectFill(NSMakeRect(1,y,734,1)); }
-            [entry[@"time"] drawAtPoint:NSMakePoint(24,y+11) withAttributes:faint];
-            NSDictionary *tones = @{@"信息":@[@0xE3F3EA,@0x3C8A68],@"警告":@[@0xFBEFD9,@0xB7832A],@"错误":@[@0xFBE3DF,@0xC9604A]};
-            NSArray *tone = tones[entry[@"level"]];
-            NSRect pill = NSMakeRect(196,y+9,44,22);
-            [Hex([tone[0] unsignedIntValue]) setFill]; [[NSBezierPath bezierPathWithRoundedRect:pill xRadius:6 yRadius:6] fill];
-            DrawCentered(entry[@"level"], pill, @{NSFontAttributeName:[NSFont systemFontOfSize:11 weight:NSFontWeightSemibold],NSForegroundColorAttributeName:Hex([tone[1] unsignedIntValue])});
-            [entry[@"instance"] drawAtPoint:NSMakePoint(290,y+11) withAttributes:body];
-            NSMutableDictionary *text = [body mutableCopy]; text[NSParagraphStyleAttributeName] = clip;
-            [entry[@"text"] drawInRect:NSMakeRect(404,y+11,310,18) withAttributes:text];
-        }
-        NSUInteger pages = MAX((NSUInteger)1,(entries.count+9)/10);
-        for (NSUInteger i = 0; i < MIN(pages,(NSUInteger)4); i++) {
-            NSRect box = NSMakeRect(24+i*40,456,30,28);
-            NSBezierPath *path = [NSBezierPath bezierPathWithRoundedRect:box xRadius:7 yRadius:7];
-            [(i == 0 ? Hex(0xA8765A) : NSColor.whiteColor) setFill]; [path fill];
-            if (i) { [Hex(0xE3D9CD) setStroke]; [path stroke]; }
-            DrawCentered([NSString stringWithFormat:@"%lu",(unsigned long)i+1], box, @{NSFontAttributeName:[NSFont systemFontOfSize:12],NSForegroundColorAttributeName:i == 0 ? NSColor.whiteColor : Hex(0x6E655C)});
-        }
-        NSString *summary = [NSString stringWithFormat:@"共 %lu 条日志 · 每页显示 10 条",(unsigned long)entries.count];
-        NSDictionary *small = @{NSFontAttributeName:[NSFont systemFontOfSize:12],NSForegroundColorAttributeName:Hex(0x6E655C)};
-        [summary drawAtPoint:NSMakePoint(NSWidth(bounds)-24-[summary sizeWithAttributes:small].width,462) withAttributes:small];
-    };
-    [page addSubview:table]; self.logTable = table;
-    return page;
+    NSView *page = [self pageTitled:@"日志记录" subtitle:@"仅记录启动器本次运行；搜索、筛选后可导出当前结果。" frame:frame];
+    [page addSubview:[self toolButton:@"导出结果…" symbol:@"square.and.arrow.down" frame:NSMakeRect(502,56,128,44) action:@selector(exportLogs:)]];
+    [page addSubview:[self toolButton:@"清空日志…" symbol:@"trash" frame:NSMakeRect(640,56,132,44) action:@selector(clearLogs:)]];
+    self.logPeriod = [self filter:@[@"本次运行",@"最近 5 分钟",@"最近 1 小时"] frame:NSMakeRect(36,142,150,32) label:@"日志时间范围" action:@selector(logFilterChanged:)]; [page addSubview:self.logPeriod];
+    NSMutableArray *instances = [@[@"全部实例",@"系统"] mutableCopy]; for (NSInteger n=1;n<=10;n++) [instances addObject:[NSString stringWithFormat:@"Claude %ld",(long)n]];
+    self.logInstance = [self filter:instances frame:NSMakeRect(196,142,136,32) label:@"日志实例" action:@selector(logFilterChanged:)]; [page addSubview:self.logInstance];
+    self.logLevel = [self filter:@[@"全部级别",@"信息",@"警告",@"错误"] frame:NSMakeRect(342,142,126,32) label:@"日志级别" action:@selector(logFilterChanged:)]; [page addSubview:self.logLevel];
+    self.logSearch = [[NSSearchField alloc] initWithFrame:NSMakeRect(482,142,290,32)]; self.logSearch.placeholderString = @"搜索日志内容…"; self.logSearch.accessibilityLabel = @"搜索日志"; self.logSearch.delegate = self; [page addSubview:self.logSearch];
+    NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(36,196,736,434)]; scroll.hasVerticalScroller = YES; scroll.hasHorizontalScroller = NO; scroll.borderType = NSBezelBorder;
+    self.logTable = [[NSTableView alloc] initWithFrame:scroll.bounds]; self.logTable.rowHeight = 36; self.logTable.usesAlternatingRowBackgroundColors = YES;
+    self.logTable.dataSource = self; self.logTable.delegate = self;
+    NSArray *columns = @[@[@"time",@"时间",@158],@[@"level",@"级别",@64],@[@"instance",@"实例",@88],@[@"text",@"事件内容",@398]];
+    for (NSArray *column in columns) { NSTableColumn *c = [[NSTableColumn alloc] initWithIdentifier:column[0]]; c.title = column[1]; c.width = [column[2] doubleValue]; [self.logTable addTableColumn:c]; }
+    scroll.documentView = self.logTable; [page addSubview:scroll];
+    self.previousLogs = [self toolButton:@"上一页" symbol:nil frame:NSMakeRect(36,650,90,34) action:@selector(previousLogPage:)]; [page addSubview:self.previousLogs];
+    self.nextLogs = [self toolButton:@"下一页" symbol:nil frame:NSMakeRect(136,650,90,34) action:@selector(nextLogPage:)]; [page addSubview:self.nextLogs];
+    self.logSummary = Text(@"暂无日志",NSMakeRect(246,656,526,24),[NSFont systemFontOfSize:13],Hex(0x6E655C)); [page addSubview:self.logSummary];
+    [self reloadLogs]; return page;
+}
+- (NSArray *)filteredLogEntries {
+    NSInteger period = self.logPeriod.indexOfSelectedItem;
+    NSDate *since = period > 0 ? [NSDate dateWithTimeIntervalSinceNow:period == 1 ? -300 : -3600] : nil;
+    return FilteredLogs(self.logEntries,self.logSearch.stringValue,self.logInstance.indexOfSelectedItem > 0 ? self.logInstance.titleOfSelectedItem : nil,self.logLevel.indexOfSelectedItem > 0 ? self.logLevel.titleOfSelectedItem : nil,since);
+}
+- (void)trimLogs {
+    NSUInteger limit = [self.settings[@"logLimit"] unsignedIntegerValue];
+    if (self.logEntries.count > limit) [self.logEntries removeObjectsInRange:NSMakeRange(limit,self.logEntries.count-limit)];
+}
+- (void)reloadLogs {
+    NSArray *filtered = [self filteredLogEntries]; NSInteger pages = MAX(1,(filtered.count+9)/10);
+    self.logPage = MAX(0,MIN(self.logPage,pages-1)); NSUInteger start = self.logPage*10;
+    self.visibleLogs = [filtered subarrayWithRange:NSMakeRange(start,MIN(10,filtered.count-start))]; [self.logTable reloadData];
+    self.previousLogs.enabled = self.logPage > 0; self.nextLogs.enabled = self.logPage+1 < pages;
+    self.logSummary.stringValue = filtered.count ? [NSString stringWithFormat:@"第 %ld / %ld 页 · 匹配 %lu 条 / 共 %lu 条",(long)self.logPage+1,(long)pages,(unsigned long)filtered.count,(unsigned long)self.logEntries.count] : @"没有匹配的日志，可清除搜索或切换筛选条件";
+}
+- (NSInteger)numberOfRowsInTableView:(NSTableView *)tableView { return self.visibleLogs.count; }
+- (NSView *)tableView:(NSTableView *)tableView viewForTableColumn:(NSTableColumn *)column row:(NSInteger)row {
+    NSString *text = self.visibleLogs[row][column.identifier];
+    NSTextField *field = Text(text,NSMakeRect(0,0,column.width,24),[NSFont systemFontOfSize:12],Hex(0x3A332D)); field.selectable = YES; field.toolTip = text; return field;
+}
+- (void)logFilterChanged:(id)sender { self.logPage = 0; [self reloadLogs]; }
+- (void)previousLogPage:(id)sender { self.logPage--; [self reloadLogs]; }
+- (void)nextLogPage:(id)sender { self.logPage++; [self reloadLogs]; }
+- (void)controlTextDidChange:(NSNotification *)note {
+    if (note.object == self.logSearch) [self logFilterChanged:nil];
+    if (note.object == self.accountSearch) [self accountFilterChanged:nil];
 }
 - (NSView *)settingsPage:(NSRect)frame {
-    NSColor *muted = Hex(0x6E655C);
-    Canvas *page = [self pageTitled:@"系统设置" subtitle:@"调整启动行为、窗口管理、界面偏好以及本地数据存储。" frame:frame];
-    NSString *dataPath = @"~/Library/Application Support/Claude Launcher";
-    // Rows: title, subtitle, control kind (toggle on/off, field text, or "button").
-    NSArray *sections = @[
-        @[@"启动与运行",@"管理启动器的常规行为",@[@[@"开机自动启动",@"系统登录后自动运行启动器",@NO],@[@"关闭窗口后继续运行",@"保留在程序坞，不退出启动器",@YES],@[@"启动时恢复上次窗口",@"自动恢复上一次打开的实例",@NO],@[@"辅助功能权限",@"",@"button"]]],
-        @[@"默认行为",@"新实例将沿用这些设置",@[@[@"默认打开方式",@"控制 Claude 实例的窗口行为",@"独立窗口"],@[@"默认浏览器",@"用于登录回调的浏览器",@"系统默认浏览器"],@[@"启动间隔",@"批量启动时的间隔时间",@"3 秒"]]],
-        @[@"界面与存储",@"",@[@[@"应用语言",@"界面显示语言",@"简体中文"],@[@"界面主题",@"当前为水墨浅色",@"浅色 · 水墨风"],@[@"数据存储路径",@"启动器偏好与运行锁的位置",dataPath]]]];
-    NSArray *menu = @[@[@"常规设置",@"gearshape"],@[@"启动行为",@"play"],@[@"外观设置",@"display"],@[@"数据与存储",@"internaldrive"],@[@"消息通知",@"bell"],@[@"关于软件",@"info.circle"]];
+    Canvas *page = [self pageTitled:@"系统设置" subtitle:@"只管理本地启动器。更改不会修改 Claude 登录、会话或账号配置。" frame:frame];
     page.paint = ^(NSRect bounds) {
-        NSRect panel = NSMakeRect(36,140,736,556);
-        DrawPanel(panel, 16, 0.86);
-        [Hex(0xEDE4D8) setFill]; NSRectFill(NSMakeRect(36+170,141,1,554));
-        for (NSUInteger i = 0; i < menu.count; i++) {
-            NSRect item = NSMakeRect(48,154+i*46,146,38);
-            if (i == 0) { [Hex(0xEDDDC9) setFill]; [[NSBezierPath bezierPathWithRoundedRect:item xRadius:10 yRadius:10] fill]; }
-            NSColor *color = i == 0 ? Hex(0x9A6447) : Hex(0x3A332D);
-            NSImage *icon = Tinted(menu[i][1], 13, color);
-            [icon drawInRect:NSMakeRect(NSMinX(item)+14,NSMidY(item)-icon.size.height/2,icon.size.width,icon.size.height) fromRect:NSZeroRect operation:NSCompositingOperationSourceOver fraction:1 respectFlipped:YES hints:nil];
-            NSDictionary *label = @{NSFontAttributeName:[NSFont systemFontOfSize:14 weight:i == 0 ? NSFontWeightSemibold : NSFontWeightRegular],NSForegroundColorAttributeName:color};
-            [menu[i][0] drawAtPoint:NSMakePoint(NSMinX(item)+42,NSMidY(item)-9) withAttributes:label];
-        }
-        CGFloat x = 230, width = 518, y = 156;
-        for (NSArray *section in sections) {
-            [section[0] drawAtPoint:NSMakePoint(x,y) withAttributes:@{NSFontAttributeName:[NSFont systemFontOfSize:15 weight:NSFontWeightSemibold],NSForegroundColorAttributeName:Hex(0x2B2622)}];
-            CGFloat titleWidth = [section[0] sizeWithAttributes:@{NSFontAttributeName:[NSFont systemFontOfSize:15 weight:NSFontWeightSemibold]}].width;
-            [section[1] drawAtPoint:NSMakePoint(x+titleWidth+10,y+3) withAttributes:@{NSFontAttributeName:[NSFont systemFontOfSize:11],NSForegroundColorAttributeName:Hex(0x8A7F74)}];
-            NSArray *rows = section[2];
-            NSRect group = NSMakeRect(x,y+26,width,rows.count*36);
-            DrawPanel(group, 10, 0.95);
-            for (NSUInteger r = 0; r < rows.count; r++) {
-                CGFloat top = NSMinY(group)+r*36;
-                if (r) { [Hex(0xF0E8DE) setFill]; NSRectFill(NSMakeRect(x+14,top,width-28,1)); }
-                [rows[r][0] drawAtPoint:NSMakePoint(x+16,top+3) withAttributes:@{NSFontAttributeName:[NSFont systemFontOfSize:13 weight:NSFontWeightSemibold],NSForegroundColorAttributeName:Hex(0x2B2622)}];
-                [rows[r][1] drawAtPoint:NSMakePoint(x+16,top+19) withAttributes:@{NSFontAttributeName:[NSFont systemFontOfSize:10],NSForegroundColorAttributeName:Hex(0x8A7F74)}];
-                id control = rows[r][2];
-                if ([control isKindOfClass:NSNumber.class]) DrawToggle(NSMakeRect(x+width-58,top+8,40,20), [control boolValue]);
-                else if ([control isKindOfClass:NSString.class] && ![control isEqual:@"button"]) DrawField(NSMakeRect(x+width-226,top+4,210,28), nil, control, Hex(0x2B2622), ![control isEqual:dataPath] && ![control isEqual:@"3 秒"]);
-            }
-            y = NSMaxY(group)+16;
-        }
-        [@"更改仅作用于本地启动器" drawAtPoint:NSMakePoint(x,652) withAttributes:@{NSFontAttributeName:[NSFont systemFontOfSize:12],NSForegroundColorAttributeName:Hex(0x8A7F74)}];
+        DrawPanel(NSMakeRect(36,140,736,556),16,0.9);
+        [Hex(0xEDE4D8) setFill]; NSRectFill(NSMakeRect(206,154,1,524));
     };
-    // Accessibility is the one live setting: status text plus a real button into System Settings.
-    self.accessibilityStatus = Text(@"", NSMakeRect(246,309,330,14), [NSFont systemFontOfSize:10], muted); [page addSubview:self.accessibilityStatus];
-    ActionButton *ax = [self toolButton:@"打开设置" symbol:nil frame:NSMakeRect(664,295,84,26) action:@selector(openAccessibility:)];
-    ax.fontSize = 12; [page addSubview:ax];
-    NSButton *reveal = [NSButton buttonWithTitle:@"" target:self action:@selector(revealSupport:)];
-    reveal.frame = NSMakeRect(522,594,210,28); reveal.bordered = NO; reveal.transparent = YES; reveal.toolTip = @"在 Finder 中显示";
-    [page addSubview:reveal];
-    ActionButton *reset = [self toolButton:@"恢复默认" symbol:nil frame:NSMakeRect(530,642,100,38) action:nil]; [page addSubview:reset];
-    [page addSubview:[self toolButton:@"检查更新" symbol:@"arrow.down.circle" frame:NSMakeRect(640,56,132,44) action:@selector(checkForUpdates:)]];
-    ActionButton *save = [self toolButton:@"保存设置" symbol:@"checkmark.circle" frame:NSMakeRect(640,642,116,38) action:nil]; save.primary = YES; [page addSubview:save];
-    return page;
+    NSArray *titles = @[@"常规设置",@"启动行为",@"外观设置",@"数据与存储",@"消息通知",@"关于软件"];
+    NSMutableArray *tabs = [NSMutableArray array];
+    for (NSInteger i=0;i<(NSInteger)titles.count;i++) {
+        ActionButton *tab = [self toolButton:titles[i] symbol:nil frame:NSMakeRect(48,156+i*48,146,38) action:@selector(settingsTabChanged:)];
+        tab.tag = i; [page addSubview:tab]; [tabs addObject:tab];
+    }
+    self.settingsTabs = tabs;
+    self.settingsContent = [[Canvas alloc] initWithFrame:NSMakeRect(230,158,518,448)]; [page addSubview:self.settingsContent];
+    self.settingsFeedback = Text(@"更改后点击保存设置",NSMakeRect(230,609,518,22),[NSFont systemFontOfSize:12],Hex(0x6E655C)); [page addSubview:self.settingsFeedback];
+    [page addSubview:[self toolButton:@"恢复默认…" symbol:nil frame:NSMakeRect(424,646,104,34) action:@selector(resetSettings:)]];
+    [page addSubview:[self toolButton:@"撤销更改" symbol:nil frame:NSMakeRect(536,646,104,34) action:@selector(discardSettings:)]];
+    self.saveSettingsButton = [self toolButton:@"保存设置" symbol:nil frame:NSMakeRect(648,646,108,34) action:@selector(saveSettings:)];
+    self.saveSettingsButton.primary = YES; [page addSubview:self.saveSettingsButton];
+    [self renderSettings]; return page;
+}
+- (void)settingsTabChanged:(NSButton *)sender { self.settingsSection = sender.tag; [self renderSettings]; }
+- (void)settingsText:(NSString *)text y:(CGFloat)y height:(CGFloat)height bold:(BOOL)bold {
+    NSTextField *label = Text(text,NSMakeRect(0,y,518,height),[NSFont systemFontOfSize:bold ? 17 : 13 weight:bold ? NSFontWeightSemibold : NSFontWeightRegular],Hex(bold ? 0x2B2622 : 0x6E655C));
+    label.maximumNumberOfLines = 0; label.lineBreakMode = NSLineBreakByWordWrapping; [self.settingsContent addSubview:label];
+}
+- (void)settingToggle:(NSString *)key title:(NSString *)title detail:(NSString *)detail y:(CGFloat)y {
+    NSButton *check = [NSButton checkboxWithTitle:title target:self action:@selector(settingChanged:)];
+    check.identifier = key; check.state = [self.settingsDraft[key] boolValue] ? NSControlStateValueOn : NSControlStateValueOff;
+    check.frame = NSMakeRect(0,y,518,28); check.font = [NSFont systemFontOfSize:14]; [self.settingsContent addSubview:check];
+    [self settingsText:detail y:y+30 height:38 bold:NO];
+}
+- (void)settingChoice:(NSString *)key title:(NSString *)title choices:(NSArray *)titles values:(NSArray *)values y:(CGFloat)y {
+    [self settingsText:title y:y+5 height:24 bold:NO];
+    NSPopUpButton *popup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(270,y,248,30) pullsDown:NO];
+    for (NSUInteger i=0;i<titles.count;i++) { [popup addItemWithTitle:titles[i]]; popup.lastItem.representedObject = values[i]; }
+    NSUInteger index = [values indexOfObject:self.settingsDraft[key]]; [popup selectItemAtIndex:index == NSNotFound ? 0 : index];
+    popup.enabled = ![key isEqual:@"startPage"] || ![self.settingsDraft[@"rememberPage"] boolValue];
+    popup.identifier = key; popup.accessibilityLabel = title; popup.target = self; popup.action = @selector(settingChanged:); [self.settingsContent addSubview:popup];
+}
+- (void)settingsAction:(NSString *)title action:(SEL)action y:(CGFloat)y {
+    [self.settingsContent addSubview:[self toolButton:title symbol:nil frame:NSMakeRect(0,y,250,34) action:action]];
+}
+- (void)renderSettings {
+    for (NSView *view in self.settingsContent.subviews.copy) [view removeFromSuperview];
+    self.accessibilityStatus = nil;
+    for (ActionButton *tab in self.settingsTabs) { tab.primary = tab.tag == self.settingsSection; tab.needsDisplay = YES; }
+    switch (self.settingsSection) {
+        case 0:
+            [self settingsText:@"常规设置" y:0 height:28 bold:YES];
+            [self settingToggle:@"closeToBackground" title:@"关闭窗口后继续运行" detail:@"关闭窗口后仍可从 Dock 重新打开；退出启动器不退出 Claude。" y:48];
+            [self settingToggle:@"showMenuBar" title:@"显示菜单栏图标" detail:@"从 macOS 菜单栏查看账号状态、显示启动器窗口。" y:134];
+            [self settingsText:@"辅助功能权限" y:232 height:26 bold:YES];
+            self.accessibilityStatus = Text(AXIsProcessTrusted() ? @"已授权：可恢复最小化窗口。" : @"未授权：仍可激活账号，无法恢复最小化窗口。",NSMakeRect(0,266,518,24),[NSFont systemFontOfSize:12],Hex(0x6E655C));
+            [self.settingsContent addSubview:self.accessibilityStatus];
+            [self settingsAction:@"打开辅助功能设置" action:@selector(openAccessibility:) y:304];
+            [self settingsText:@"权限由你在系统设置中管理，启动器不会自动授权。" y:352 height:48 bold:NO]; break;
+        case 1:
+            [self settingsText:@"启动行为" y:0 height:28 bold:YES];
+            [self settingsAction:@"管理登录启动…" action:@selector(manageLoginItem:) y:42];
+            [self settingsText:[self loginItemDescription] y:84 height:42 bold:NO];
+            [self settingToggle:@"rememberPage" title:@"恢复启动器上次页面" detail:@"只恢复本管理器的页面，不自动启动或激活任何 Claude。" y:136];
+            [self settingChoice:@"startPage" title:@"未恢复时的启动页面" choices:@[@"实例管理",@"账号管理",@"项目管理",@"日志记录",@"系统设置"] values:@[@0,@1,@2,@3,@4] y:218];
+            [self settingChoice:@"refreshInterval" title:@"本地进程状态刷新间隔" choices:@[@"1 秒",@"3 秒",@"5 秒"] values:@[@1,@3,@5] y:270];
+            [self settingToggle:@"restoreMinimized" title:@"点击账号时恢复最小化窗口" detail:@"只处理经过核对的目标 PID；需辅助功能权限。" y:324]; break;
+        case 2:
+            [self settingsText:@"外观设置" y:0 height:28 bold:YES];
+            [self settingToggle:@"showArtwork" title:@"显示水墨插画" detail:@"关闭后保留浅色纸张背景和原有文字布局。" y:48];
+            [self settingToggle:@"showUsageHistory" title:@"显示本地用量历史" detail:@"仅读取官方已保存的历史；不查询、不刷新远端用量。" y:144];
+            [self settingsText:@"界面语言：简体中文\n主题：浅色水墨\n\n这两项为当前版本的固定样式。Claude 自身的外观、浏览器和登录方式由官方客户端管理。" y:252 height:152 bold:NO]; break;
+        case 3:
+            [self settingsText:@"数据与存储" y:0 height:28 bold:YES];
+            [self settingsText:@"项目清单与运行锁\n~/Library/Application Support/Claude Launcher\n\n偏好与账号别名保存在本机用户偏好中。账号目录固定，不迁移、不合并。" y:42 height:108 bold:NO];
+            [self settingsAction:@"在 Finder 中显示管理器数据" action:@selector(revealSupport:) y:164];
+            [self settingsAction:@"复制管理器数据路径" action:@selector(copySupportPath:) y:208];
+            [self settingsAction:@"导出已保存的设置…" action:@selector(exportSettings:) y:252];
+            [self settingChoice:@"logLimit" title:@"本次运行日志保留上限" choices:@[@"100 条",@"500 条",@"1000 条"] values:@[@100,@500,@1000] y:304];
+            [self settingsText:@"日志只留在内存；退出即清空，导出由你选择位置。恢复默认只重置启动器偏好，保留项目、别名和登录保护。" y:352 height:76 bold:NO]; break;
+        case 4:
+            [self settingsText:@"消息通知" y:0 height:28 bold:YES];
+            [self settingToggle:@"localNotifications" title:@"显示窗口内提示" detail:@"在启动器中显示操作警告；不推送、不上传、不读取 Claude 消息。" y:48];
+            [self settingToggle:@"notificationSound" title:@"警告时播放提示音" detail:@"仅在窗口内提示开启时生效，使用系统提示音。" y:144];
+            [self settingsAction:@"测试已保存的通知设置" action:@selector(testNotification:) y:254];
+            [self settingsText:@"安全确认和错误弹窗始终保留，不受通知开关影响。" y:308 height:66 bold:NO]; break;
+        default:
+            [self settingsText:[NSString stringWithFormat:@"Claude 启动器 %@",[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"开发版"] y:0 height:28 bold:YES];
+            [self settingsText:@"非官方本地管理工具，与 Anthropic 无关联。\n不向 Claude / Anthropic 发请求，不读取凭据，不修改官方应用。" y:42 height:70 bold:NO];
+            [self settingToggle:@"allowUpdates" title:@"允许手动检查 GitHub 更新" detail:@"默认关闭。启用后仍需主动点击；仅访问本项目下载地址。" y:124];
+            [self settingsAction:@"检查启动器更新…" action:@selector(checkForUpdates:) y:214];
+            [self settingsAction:@"查看本地使用帮助" action:@selector(localHelp:) y:258];
+            [self settingsAction:@"复制基础诊断信息" action:@selector(copyDiagnostics:) y:302];
+            [self settingsText:@"不会自动联网检查。诊断仅包含版本、系统版本和权限状态，不包含账号、路径、日志或凭据。" y:354 height:70 bold:NO]; break;
+    }
+    self.saveSettingsButton.enabled = ![self.settingsDraft isEqual:self.settings];
+}
+- (void)settingChanged:(NSControl *)sender {
+    id value = [sender isKindOfClass:NSPopUpButton.class] ? [(NSPopUpButton *)sender selectedItem].representedObject : @([(NSButton *)sender state] == NSControlStateValueOn);
+    self.settingsDraft[sender.identifier] = value;
+    if ([sender.identifier isEqual:@"rememberPage"]) for (NSView *view in self.settingsContent.subviews) if ([view.identifier isEqual:@"startPage"]) [(NSControl *)view setEnabled:![value boolValue]];
+    self.saveSettingsButton.enabled = ![self.settingsDraft isEqual:self.settings];
+    self.settingsFeedback.stringValue = self.saveSettingsButton.enabled ? @"有未保存的更改" : @"与已保存设置一致";
+}
+- (void)discardSettings:(id)sender {
+    self.settingsDraft = self.settings.mutableCopy; [self renderSettings]; self.settingsFeedback.stringValue = @"已撤销未保存更改";
+}
+- (void)saveSettings:(id)sender {
+    NSDictionary *next = ValidatedSettings(self.settingsDraft);
+    if (self.updating && [next[@"allowUpdates"] boolValue] != [self.settings[@"allowUpdates"] boolValue]) {
+        [self alert:@"更新正在进行" detail:@"请等待当前更新结束后再改变联网选项。其余更改仍保留在草稿中。"]; return;
+    }
+    NSDictionary *previous = [self.preferences objectForKey:@"localSettings"];
+    [self.preferences setObject:next forKey:@"localSettings"];
+    if (![self.preferences synchronize]) {
+        if (previous) [self.preferences setObject:previous forKey:@"localSettings"]; else [self.preferences removeObjectForKey:@"localSettings"];
+        [self alert:@"保存设置失败" detail:@"本机偏好未能写入，运行设置保持原样，请稍后重试。"]; return;
+    }
+    self.settings = next; self.settingsDraft = next.mutableCopy; [self applySettings]; [self renderSettings];
+    self.settingsFeedback.stringValue = @"设置已保存并生效，仅作用于本地启动器"; [self addLog:@"本地设置已保存"];
+}
+- (void)resetSettings:(id)sender {
+    NSAlert *alert = [NSAlert new]; alert.messageText = @"恢复启动器默认设置？";
+    alert.informativeText = @"将默认值填入草稿，点击保存后生效。不会移除账号、项目、别名、登录保护或系统登录项。";
+    [alert addButtonWithTitle:@"取消"]; [alert addButtonWithTitle:@"恢复到草稿"];
+    if ([alert runModal] != NSAlertSecondButtonReturn) return;
+    self.settingsDraft = DefaultSettings().mutableCopy; [self renderSettings]; self.settingsFeedback.stringValue = @"默认值已填入，请保存或撤销";
+}
+- (void)applySettings {
+    if (!self.snapshotMode) {
+        NetworkEnabled = [self.settings[@"allowUpdates"] boolValue];
+        [self.timer invalidate];
+        self.timer = [NSTimer scheduledTimerWithTimeInterval:[self.settings[@"refreshInterval"] doubleValue] target:self selector:@selector(refresh) userInfo:nil repeats:YES];
+        if ([self.settings[@"showMenuBar"] boolValue] && !self.statusItem) [self makeStatusItem];
+        if (![self.settings[@"showMenuBar"] boolValue] && self.statusItem) { [NSStatusBar.systemStatusBar removeStatusItem:self.statusItem]; self.statusItem = nil; }
+    }
+    for (AccountCard *card in self.cards) { card.art = [self.settings[@"showArtwork"] boolValue] ? Art([NSString stringWithFormat:@"card-%ld",(long)(card.number-1)%4+1]) : nil; card.needsDisplay = YES; }
+    self.sidebar.needsDisplay = YES; self.mainCanvas.needsDisplay = YES;
+    if (![self.settings[@"localNotifications"] boolValue]) self.toast.hidden = YES;
+    if (![self.settings[@"showUsageHistory"] boolValue]) self.usageHistory = nil;
+    else [self readLocalUsage];
+    [self updateUsageCards]; [self trimLogs]; [self reloadLogs];
+}
+- (NSString *)loginItemDescription {
+    if (@available(macOS 13.0, *)) {
+        switch (SMAppService.mainAppService.status) {
+            case SMAppServiceStatusEnabled: return @"登录启动已启用，只打开启动器，不启动 Claude。";
+            case SMAppServiceStatusRequiresApproval: return @"等待系统批准，请到登录项设置中允许启动器。";
+            case SMAppServiceStatusNotFound: return @"系统未找到此应用的登录项，请使用已安装版本。";
+            default: return @"登录启动未启用。此项由 macOS 单独保存，立即生效。";
+        }
+    }
+    return @"macOS 12 请在系统「用户与群组 → 登录项」中手动管理启动器。";
+}
+- (void)manageLoginItem:(id)sender {
+    if (@available(macOS 13.0, *)) {
+        if (SMAppService.mainAppService.status == SMAppServiceStatusRequiresApproval) { [SMAppService openSystemSettingsLoginItems]; return; }
+        NSString *path = NSBundle.mainBundle.bundlePath;
+        if (![path isEqual:@"/Applications/Claude 启动器.app"] && ![path isEqual:[NSHomeDirectory() stringByAppendingPathComponent:@"Applications/Claude 启动器.app"]]) {
+            [self alert:@"请使用已安装的启动器" detail:@"登录启动只为应用程序文件夹中的正式副本启用，避免登录时运行临时开发版本。请安装后再设置。"]; return;
+        }
+        BOOL enabled = SMAppService.mainAppService.status == SMAppServiceStatusEnabled;
+        NSAlert *alert = [NSAlert new]; alert.messageText = enabled ? @"关闭启动器登录启动？" : @"开启启动器登录启动？";
+        alert.informativeText = @"只更改本启动器在 macOS 中的登录项，立即生效。不自动启动任何 Claude 账号。";
+        [alert addButtonWithTitle:@"取消"]; [alert addButtonWithTitle:enabled ? @"关闭登录启动" : @"开启登录启动"];
+        if ([alert runModal] != NSAlertSecondButtonReturn) return;
+        NSError *error = nil; BOOL ok = enabled ? [SMAppService.mainAppService unregisterAndReturnError:&error] : [SMAppService.mainAppService registerAndReturnError:&error];
+        if (!ok) [self alert:@"登录启动设置失败" detail:error.localizedDescription ?: @"请到 macOS 登录项中核对授权状态。"];
+        [self renderSettings]; self.settingsFeedback.stringValue = [self loginItemDescription];
+    } else [NSWorkspace.sharedWorkspace openURL:[NSURL URLWithString:@"x-apple.systempreferences:com.apple.preferences.users"]];
+}
+- (void)copySupportPath:(id)sender {
+    [NSPasteboard.generalPasteboard clearContents]; [NSPasteboard.generalPasteboard setString:[NSHomeDirectory() stringByAppendingPathComponent:@"Library/Application Support/Claude Launcher"] forType:NSPasteboardTypeString];
+    self.settingsFeedback.stringValue = @"管理器数据路径已复制";
+}
+- (void)exportSettings:(id)sender {
+    NSSavePanel *panel = NSSavePanel.savePanel; panel.nameFieldStringValue = @"启动器设置.json";
+    if ([panel runModal] != NSModalResponseOK) return;
+    NSError *error = nil; NSData *data = [NSJSONSerialization dataWithJSONObject:@{@"version":@1,@"settings":self.settings} options:NSJSONWritingPrettyPrinted|NSJSONWritingSortedKeys error:&error];
+    if (!data || ![data writeToURL:panel.URL options:NSDataWritingAtomic error:&error]) [self alert:@"导出失败" detail:error.localizedDescription ?: @"无法写入目标文件。"];
+    else self.settingsFeedback.stringValue = @"已导出保存的设置，不含账号或凭据";
+}
+- (void)localHelp:(id)sender {
+    [self alert:@"本地使用帮助" detail:@"实例管理：手动启动或打开指定账号；更多菜单可复制路径及管理登录保护。\n账号管理：搜索、筛选、设置本地别名，勾选后复制路径。\n项目管理：维护公共目录入口；所有写入均需明确操作。\n日志记录：筛选、搜索、翻页、导出当前结果；仅保留本次运行。\n系统设置：编辑后保存，恢复默认不会处理账号数据。\n\n启动器不查询 Claude 服务、不读取凭据，不控制官方客户端自身正常联网。"];
+}
+- (void)copyDiagnostics:(id)sender {
+    NSString *text = [NSString stringWithFormat:@"Claude Launcher %@ (%@)\nmacOS %@\nAccessibility: %@\nNetwork: manual GitHub updates %@\nClaude/Anthropic requests: prohibited",[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"],[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleVersion"],NSProcessInfo.processInfo.operatingSystemVersionString,AXIsProcessTrusted() ? @"granted" : @"not granted",[self.settings[@"allowUpdates"] boolValue] ? @"enabled" : @"disabled"];
+    [NSPasteboard.generalPasteboard clearContents]; [NSPasteboard.generalPasteboard setString:text forType:NSPasteboardTypeString]; self.settingsFeedback.stringValue = @"基础诊断已复制，不含账号、路径或日志";
+}
+- (void)showLocalNotice:(NSString *)text {
+    if (![self.settings[@"localNotifications"] boolValue]) return;
+    NSUInteger generation = ++self.toastGeneration;
+    self.toast.stringValue = text; self.toast.toolTip = text; self.toast.hidden = NO;
+    if ([self.settings[@"notificationSound"] boolValue] && !self.snapshotMode) NSBeep();
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,5*NSEC_PER_SEC),dispatch_get_main_queue(),^{ if (generation == self.toastGeneration) self.toast.hidden = YES; });
+}
+- (void)testNotification:(id)sender {
+    [self showLocalNotice:@"本地通知测试：设置已生效，没有发送网络请求。"];
+    self.settingsFeedback.stringValue = [self.settings[@"localNotifications"] boolValue] ? @"已按保存的设置显示提示" : @"窗口内提示已关闭；启用并保存后可测试";
 }
 - (void)addLog:(NSString *)text {
     if (self.headless) printf("[log] %s\n",text.UTF8String);
@@ -1166,28 +1313,37 @@ static const unsigned CardFill = 0xFFFCF7;
     NSString *instance = @"系统";
     NSRange match = [text rangeOfString:@"账号 [0-9]{2}" options:NSRegularExpressionSearch];
     if (match.location != NSNotFound) instance = [NSString stringWithFormat:@"Claude %ld",(long)[text substringWithRange:NSMakeRange(match.location+3,2)].integerValue];
-    [self.logEntries insertObject:@{@"time":[clock stringFromDate:[NSDate date]],@"level":level,@"instance":instance,@"text":text} atIndex:0];
-    self.logTable.needsDisplay = YES;
+    [self.logEntries insertObject:@{@"date":NSDate.date,@"time":[clock stringFromDate:[NSDate date]],@"level":level,@"instance":instance,@"text":text} atIndex:0];
+    [self trimLogs]; [self reloadLogs];
+    if (![level isEqual:@"信息"]) [self showLocalNotice:text];
 }
-- (void)clearLogs:(id)sender { [self.logEntries removeAllObjects]; self.logTable.needsDisplay = YES; }
+- (void)clearLogs:(id)sender {
+    NSAlert *alert = [NSAlert new]; alert.messageText = @"清空本次运行日志？"; alert.informativeText = @"仅清空启动器内存中的记录，不读取或删除 Claude 日志。";
+    [alert addButtonWithTitle:@"取消"]; [alert addButtonWithTitle:@"清空"];
+    if ([alert runModal] != NSAlertSecondButtonReturn) return;
+    [self.logEntries removeAllObjects]; self.logPage = 0; [self reloadLogs];
+}
 - (void)exportLogs:(id)sender {
     NSSavePanel *panel = [NSSavePanel savePanel]; panel.nameFieldStringValue = @"Claude 启动器日志.txt";
     if ([panel runModal] != NSModalResponseOK) return;
     NSMutableString *out = [NSMutableString string];
-    for (NSDictionary *entry in self.logEntries.reverseObjectEnumerator) [out appendFormat:@"%@\t%@\t%@\t%@\n",entry[@"time"],entry[@"level"],entry[@"instance"],entry[@"text"]];
+    for (NSDictionary *entry in [self filteredLogEntries].reverseObjectEnumerator) [out appendFormat:@"%@\t%@\t%@\t%@\n",entry[@"time"],entry[@"level"],entry[@"instance"],entry[@"text"]];
     NSError *error = nil;
     if (![out writeToURL:panel.URL atomically:YES encoding:NSUTF8StringEncoding error:&error]) [self alert:@"导出失败" detail:error.localizedDescription];
 }
-// ---- Updates: self-hosted first, then GitHub Releases, then manual download. ----
+// ---- Updates: explicit opt-in, fixed GitHub source, then manual download. ----
 - (NSArray<NSDictionary *> *)updateSources {
-    NSMutableArray *sources = [NSMutableArray array];
-    NSString *base = [NSBundle.mainBundle objectForInfoDictionaryKey:@"ClaudeLauncherUpdateBaseURL"];
-    if ([base isKindOfClass:NSString.class] && [base hasPrefix:@"https://"] && !self.skipSelfHosted) [sources addObject:@{@"name":@"自建更新服务",@"base":[base hasSuffix:@"/"] ? base : [base stringByAppendingString:@"/"],@"github":@NO}];
-    [sources addObject:@{@"name":@"GitHub",@"base":GitHubDownloads,@"github":@YES}];
-    return sources;
+    return @[@{@"name":@"GitHub",@"base":GitHubDownloads,@"github":@YES}];
 }
-- (void)checkForUpdates:(id)sender { [self runUpdateCheck:YES]; }
+- (void)checkForUpdates:(id)sender {
+    if (![self.settingsDraft isEqual:self.settings]) { [self showPage:4]; [self alert:@"请先处理未保存设置" detail:@"保存或撤销设置后，再检查启动器更新。"]; return; }
+    [self runUpdateCheck:YES];
+}
 - (void)runUpdateCheck:(BOOL)manual {
+    if (!manual || !NetworkEnabled) {
+        if (manual) [self alert:@"联网更新未启用" detail:@"如需检查启动器更新，请在系统设置 → 关于软件中启用 GitHub 更新并保存，然后再次点击检查更新。不会访问 Claude 或 Anthropic。"];
+        return;
+    }
     if (self.updating) { if (manual) [self alert:@"正在检查更新" detail:@"请稍候。"]; return; }
     self.updating = YES;
     [NSUserDefaults.standardUserDefaults setObject:[NSDate date] forKey:@"lastUpdateCheck"];
@@ -1267,6 +1423,10 @@ static const unsigned CardFill = 0xFFFCF7;
         if (failure) [fm removeItemAtPath:staged error:nil];
         dispatch_async(dispatch_get_main_queue(), ^{
             if (failure) { [fm removeItemAtPath:work error:nil]; [self updateFailed:@[failure] manual:YES]; return; }
+            if (![self.settingsDraft isEqual:self.settings]) {
+                [fm removeItemAtPath:staged error:nil]; [fm removeItemAtPath:work error:nil]; self.updating = NO;
+                [self alert:@"更新安装已取消" detail:@"下载期间设置发生了更改。请先保存或撤销，再重新检查更新；当前应用保持原样。"]; return;
+            }
             NSTask *task = [NSTask new]; task.executableURL = [NSURL fileURLWithPath:@"/bin/zsh"];
             task.arguments = @[script,[NSString stringWithFormat:@"%d",getpid()],current,staged,backup];
             NSError *error = nil;
@@ -1307,7 +1467,7 @@ static const unsigned CardFill = 0xFFFCF7;
     sidebar.paint = ^(NSRect bounds) {
         NSColor *base = Hex(0xF3ECE2);
         [base setFill]; NSRectFill(bounds);
-        if (mountains) {
+        if (mountains && [weakSelf.settings[@"showArtwork"] boolValue]) {
             CGFloat height = NSWidth(bounds)*mountains.size.height/mountains.size.width;
             NSRect art = NSMakeRect(0,NSHeight(bounds)-height,NSWidth(bounds),height);
             [mountains drawInRect:art fromRect:NSZeroRect operation:NSCompositingOperationSourceOver fraction:1 respectFlipped:YES hints:nil];
@@ -1333,11 +1493,11 @@ static const unsigned CardFill = 0xFFFCF7;
     NSImage *backdrop = Art(@"background");
     main.paint = ^(NSRect bounds) {
         [paper setFill]; NSRectFill(bounds);
-        DrawFill(backdrop, bounds, 1);
+        if ([weakSelf.settings[@"showArtwork"] boolValue]) DrawFill(backdrop, bounds, 1);
         // Wash the painting toward paper on the left so text stays readable; the right side keeps more colour.
         [[[NSGradient alloc] initWithStartingColor:[paper colorWithAlphaComponent:0.93] endingColor:[paper colorWithAlphaComponent:0.72]] drawInRect:bounds angle:0];
     };
-    [root addSubview:main];
+    [root addSubview:main]; self.mainCanvas = main;
 
     Canvas *instances = [[Canvas alloc] initWithFrame:main.bounds];
     instances.paint = ^(NSRect bounds) {
@@ -1381,6 +1541,8 @@ static const unsigned CardFill = 0xFFFCF7;
     NSView *settings = [self settingsPage:main.bounds];
     for (NSView *page in @[accounts,projects,logs,settings]) [main addSubview:page];
     self.pages = @[instances,accounts,projects,logs,settings];
+    self.toast = Text(@"",NSMakeRect(308,20,736,26),[NSFont systemFontOfSize:12 weight:NSFontWeightMedium],Hex(0x795539));
+    self.toast.hidden = YES; [root addSubview:self.toast];
     [self addLog:@"启动器已完成初始化"];
     self.message.accessibilityIdentifier = @"launcher-feedback";
     [self showPage:self.page];
@@ -1396,14 +1558,14 @@ static const unsigned CardFill = 0xFFFCF7;
 - (void)applicationDidBecomeActive:(NSNotification *)note { [self readLocalUsage]; }
 - (void)windowDidBecomeKey:(NSNotification *)note { if (note.object == self.window) [self readLocalUsage]; }
 - (void)readLocalUsage {
-    if (self.snapshotMode || !NSApp.isActive || !self.window.visible || self.page != 0 || self.readingUsageHistory ||
+    if (![self.settings[@"showUsageHistory"] boolValue] || self.snapshotMode || !NSApp.isActive || !self.window.visible || self.page != 0 || self.readingUsageHistory ||
         NSProcessInfo.processInfo.systemUptime-self.lastUsageRead < 1) return;
     self.readingUsageHistory = YES; self.lastUsageRead = NSProcessInfo.processInfo.systemUptime;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY,0), ^{
         NSMutableDictionary *results = [NSMutableDictionary dictionary]; NSDate *now = NSDate.date;
         for (NSInteger n=1;n<=10;n++) results[@(n)] = ReadUsageHistory(ProfilePath(n),now);
         dispatch_async(dispatch_get_main_queue(), ^{
-            self.usageHistory = results; self.readingUsageHistory = NO; [self updateUsageCards];
+            self.usageHistory = [self.settings[@"showUsageHistory"] boolValue] ? results : nil; self.readingUsageHistory = NO; [self updateUsageCards];
         });
     });
 }
@@ -1415,6 +1577,7 @@ static const unsigned CardFill = 0xFFFCF7;
         if ([status isEqual:@"本地记录"] && -date.timeIntervalSinceNow > 15*60) status = @"记录已过期";
         if (self.loginAccount == card.number) status = @"登录保护中";
         if (self.scanError) status = @"进程待核对";
+        if (![self.settings[@"showUsageHistory"] boolValue]) status = @"本地用量显示已关闭";
         BOOL available = [status isEqual:@"本地记录"];
         card.usageValues = @[(available ? record[@"fh"] : nil) ?: NSNull.null,(available ? record[@"sd"] : nil) ?: NSNull.null];
         NSString *detail = @"仅显示此账号目录中官方保存的历史用量，不是实时查询，无法证明当前登录身份。超过 15 分钟或含多组织记录时隐藏百分比。请在官方 Claude 的「用量」中核对；本程序不发送查询、不触发刷新、不读取凭据。";
@@ -1460,7 +1623,16 @@ static const unsigned CardFill = 0xFFFCF7;
 }
 - (void)openFromMenu:(NSMenuItem *)item { [self selectAccount:self.buttons[item.tag-1]]; }
 - (BOOL)applicationShouldHandleReopen:(NSApplication *)app hasVisibleWindows:(BOOL)visible { [self show:nil]; return YES; }
-- (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)app { return NO; }
+- (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)app {
+    if ([self.settingsDraft isEqual:self.settings]) return NSTerminateNow;
+    NSAlert *alert = [NSAlert new]; alert.messageText = @"设置尚未保存"; alert.informativeText = @"保存后退出，或放弃这次更改。Claude 实例会继续运行。";
+    [alert addButtonWithTitle:@"返回设置"]; [alert addButtonWithTitle:@"放弃并退出"]; [alert addButtonWithTitle:@"保存并退出"];
+    NSModalResponse response = [alert runModal];
+    if (response == NSAlertSecondButtonReturn) return NSTerminateNow;
+    if (response == NSAlertThirdButtonReturn) { [self saveSettings:nil]; return [self.settingsDraft isEqual:self.settings] ? NSTerminateNow : NSTerminateCancel; }
+    [self showPage:4]; [self show:nil]; return NSTerminateCancel;
+}
+- (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)app { return ![self.settings[@"closeToBackground"] boolValue]; }
 - (void)refresh {
     NSString *failure = nil; NSDictionary *snapshot = Scan(&failure);
     self.scanError = failure; if (snapshot) self.processes = snapshot;
@@ -1502,6 +1674,7 @@ static const unsigned CardFill = 0xFFFCF7;
         NSArray *pids = self.processes[@(n)]; if (pids.count) running++;
         BOOL visible = pids.count || self.starting[@(n)] || [self.checking containsObject:@(n)] || [NSFileManager.defaultManager fileExistsAtPath:ProfilePath(n)];
         self.cards[n-1].hidden = !visible;
+        self.cards[n-1].nameLabel.stringValue = [self accountName:n];
         if (visible) { [self.cards[n-1] setFrameOrigin:NSMakePoint(0,y)]; y += 136; shown++; }
     }
     [self.cardsView setFrameSize:NSMakeSize(776,MAX(y-12,0))];
@@ -1516,39 +1689,88 @@ static const unsigned CardFill = 0xFFFCF7;
         self.lastLogged = text; [self addLog:text];
     }
     [self refreshAccountTable];
+    if (self.page == 3) [self reloadLogs];
     [self updateUsageCards];
 }
 - (void)refreshAccountTable {
-    NSUInteger shown = 0, running = 0, attention = 0; CGFloat y = 0;
+    NSUInteger shown = 0, total = 0, running = 0, attention = 0, selected = 0; CGFloat y = 0;
     NSDateFormatter *day = [NSDateFormatter new]; day.dateFormat = @"M 月 d 日";
     NSDateFormatter *clock = [NSDateFormatter new]; clock.dateFormat = @"HH:mm";
-    for (NSInteger n = 1; n <= 10; n++) {
+    for (NSInteger n = 1; n <= (NSInteger)self.rows.count; n++) {
         NSNumber *key = @(n); AccountRow *row = self.rows[n-1];
-        BOOL visible = !self.cards[n-1].hidden;
-        row.hidden = !visible; if (!visible) continue;
+        BOOL exists = !self.cards[n-1].hidden;
+        NSArray *pids = self.processes[key]; BOOL busy = self.starting[key] || [self.checking containsObject:key];
+        NSString *status = self.scanError ? @"未知" : self.errors[key] ? @"异常" : busy ? @"处理中" : pids.count ? @"运行中" : @"未运行";
+        if (exists) { total++; if (!self.scanError && pids.count) running++; if (self.errors[key] || self.scanError) attention++; }
+        NSString *searchable = [NSString stringWithFormat:@"%@ 账号 %02ld %@",[self accountName:n],(long)n,ProfilePath(n)];
+        BOOL matches = (!self.accountSearch.stringValue.length || [searchable localizedCaseInsensitiveContainsString:self.accountSearch.stringValue]) && (self.accountFilter.indexOfSelectedItem <= 0 || [status isEqual:self.accountFilter.titleOfSelectedItem]);
+        row.hidden = !exists || !matches;
+        if (row.hidden) { [self.selectedAccounts removeObject:key]; continue; }
         [row setFrameOrigin:NSMakePoint(0,y)]; y += 52; shown++;
-        NSArray *pids = self.processes[key];
-        BOOL busy = self.starting[key] || [self.checking containsObject:key];
-        if (pids.count) running++;
-        if (self.errors[key]) attention++;
-        row.status.stringValue = self.errors[key] ? @"异常" : busy ? @"处理中" : pids.count ? @"运行中" : @"未运行";
-        row.dot = self.errors[key] ? NSColor.systemRedColor : busy ? Hex(0xE0A23A) : pids.count ? Hex(0x3BAA6E) : Hex(0xB9B1A7);
-        row.status.textColor = self.errors[key] ? NSColor.systemRedColor : busy ? Hex(0xB7832A) : pids.count ? Hex(0x3C8A68) : Hex(0x8A7F74);
+        row.selection.state = [self.selectedAccounts containsObject:key] ? NSControlStateValueOn : NSControlStateValueOff; if (row.selection.state == NSControlStateValueOn) selected++;
+        row.nameLabel.stringValue = [self accountName:n]; row.nameLabel.toolTip = row.nameLabel.stringValue;
+        row.status.stringValue = status;
+        row.dot = self.errors[key] || self.scanError ? NSColor.systemRedColor : busy ? Hex(0xE0A23A) : pids.count ? Hex(0x3BAA6E) : Hex(0xB9B1A7);
+        row.status.textColor = self.errors[key] || self.scanError ? NSColor.systemRedColor : busy ? Hex(0xB7832A) : pids.count ? Hex(0x3C8A68) : Hex(0x6E655C);
         // Directory modification time is metadata only; it approximates last use without opening account files.
-        NSDate *modified = [NSFileManager.defaultManager attributesOfItemAtPath:ProfilePath(n) error:nil].fileModificationDate;
+        NSDate *modified = self.snapshotMode ? nil : [NSFileManager.defaultManager attributesOfItemAtPath:ProfilePath(n) error:nil].fileModificationDate;
         NSCalendar *calendar = NSCalendar.currentCalendar;
         row.recent.stringValue = !modified ? @"—" : [calendar isDateInToday:modified] ? [@"今天 " stringByAppendingString:[clock stringFromDate:modified]] : [calendar isDateInYesterday:modified] ? [@"昨天 " stringByAppendingString:[clock stringFromDate:modified]] : [day stringFromDate:modified];
         row.needsDisplay = YES;
     }
     [self.rowsView setFrameSize:NSMakeSize(734,MAX(y,1))];
-    NSArray *values = @[@(shown),@(running),@(attention)];
+    NSArray *values = @[@(total),@(running),@(attention)];
     for (NSUInteger i = 0; i < self.stats.count; i++) self.stats[i].stringValue = [NSString stringWithFormat:@"%02lu",[values[i] unsignedLongValue]];
-    self.tableFooter.stringValue = [NSString stringWithFormat:@"共 %lu 个账号 · 选中 0 项",(unsigned long)shown];
+    self.tableFooter.stringValue = [NSString stringWithFormat:@"显示 %lu / %lu 个 · 选中 %lu 项",(unsigned long)shown,(unsigned long)total,(unsigned long)selected];
+    self.selectedPathsButton.enabled = selected > 0; self.selectAllAccounts.enabled = shown > 0;
+    self.selectAllAccounts.state = selected == 0 ? NSControlStateValueOff : selected == shown ? NSControlStateValueOn : NSControlStateValueMixed;
+}
+- (NSString *)accountName:(NSInteger)account {
+    return self.accountNames[@(account).stringValue] ?: [NSString stringWithFormat:@"账号 %02ld",(long)account];
+}
+- (void)accountFilterChanged:(id)sender { [self refreshAccountTable]; }
+- (void)selectAccountRow:(NSButton *)sender {
+    if (sender.state == NSControlStateValueOn) [self.selectedAccounts addObject:@(sender.tag)]; else [self.selectedAccounts removeObject:@(sender.tag)];
+    [self refreshAccountTable];
+}
+- (void)selectVisibleAccounts:(NSButton *)sender {
+    for (AccountRow *row in self.rows) if (!row.hidden) {
+        if (sender.state != NSControlStateValueOff) [self.selectedAccounts addObject:@(row.number)]; else [self.selectedAccounts removeObject:@(row.number)];
+    }
+    [self refreshAccountTable];
+}
+- (void)copySelectedAccounts:(id)sender {
+    NSMutableArray *paths = [NSMutableArray array];
+    for (AccountRow *row in self.rows) if (!row.hidden && [self.selectedAccounts containsObject:@(row.number)]) [paths addObject:ProfilePath(row.number)];
+    if (!paths.count) return;
+    [NSPasteboard.generalPasteboard clearContents]; [NSPasteboard.generalPasteboard setString:[paths componentsJoinedByString:@"\n"] forType:NSPasteboardTypeString];
+    [self showLocalNotice:[NSString stringWithFormat:@"已复制 %lu 个账号的目录路径",(unsigned long)paths.count]];
+}
+- (void)editAccountName:(NSButton *)sender {
+    NSInteger account = sender.tag; if (account < 1 || account > 10) return;
+    NSAlert *alert = [NSAlert new]; alert.messageText = [NSString stringWithFormat:@"账号 %02ld 的本地别名",(long)account];
+    alert.informativeText = @"只修改启动器内的显示名称，不改目录、邮箱或 Claude 身份。最多 24 字，留空恢复默认名称。";
+    NSTextField *field = [[NSTextField alloc] initWithFrame:NSMakeRect(0,0,360,28)]; field.stringValue = self.accountNames[@(account).stringValue] ?: @""; field.accessibilityLabel = @"本地账号别名";
+    alert.accessoryView = field; [alert addButtonWithTitle:@"保存别名"]; [alert addButtonWithTitle:@"取消"];
+    [alert.window setInitialFirstResponder:field];
+    while ([alert runModal] == NSAlertFirstButtonReturn) {
+        NSString *name = ValidatedAccountName(field.stringValue);
+        if (!name) { alert.informativeText = @"请输入不超过 24 字、不含换行或控制字符的别名；留空恢复默认。"; continue; }
+        NSMutableDictionary *names = self.accountNames.mutableCopy;
+        if (name.length) names[@(account).stringValue] = name; else [names removeObjectForKey:@(account).stringValue];
+        [self.preferences setObject:names forKey:@"accountDisplayNames"];
+        if (![self.preferences synchronize]) { [self.preferences setObject:self.accountNames forKey:@"accountDisplayNames"]; [self alert:@"别名保存失败" detail:@"本地偏好无法写入，原名称保持不变。"]; return; }
+        self.accountNames = names;
+        for (AccountCard *card in self.cards) card.nameLabel.stringValue = [self accountName:card.number];
+        [self refreshAccountTable]; return;
+    }
 }
 - (void)showPage:(NSInteger)page {
     if (page < 0 || page >= (NSInteger)self.pages.count) page = 0;
     self.page = page;
+    if (!self.snapshotMode) [self.preferences setInteger:page forKey:@"lastLauncherPage"];
     if (page == 2) [self refreshProjects:nil];
+    if (page == 3) [self reloadLogs];
     for (NSUInteger i = 0; i < self.pages.count; i++) self.pages[i].hidden = (NSInteger)i != page;
     self.createButton.hidden = page != 0;
     if (page != 0) self.emptyHint.hidden = YES;
@@ -1556,7 +1778,7 @@ static const unsigned CardFill = 0xFFFCF7;
     for (NSView *item in self.navItems) item.needsDisplay = YES;
     if (page == 0) [self readLocalUsage];
 }
-- (void)navClicked:(NSClickGestureRecognizer *)recognizer { [self showPage:recognizer.view.identifier.integerValue]; }
+- (void)navigate:(NSButton *)sender { [self showPage:sender.tag]; }
 - (void)newInstance:(id)sender {
     [self refresh];
     if (self.scanError || self.loginAccount) return;
@@ -1637,7 +1859,7 @@ static const unsigned CardFill = 0xFFFCF7;
     });
 }
 - (void)revealSupport:(id)sender {
-    [NSWorkspace.sharedWorkspace openURL:[NSURL fileURLWithPath:[NSHomeDirectory() stringByAppendingPathComponent:@"Library/Application Support"]]];
+    [NSWorkspace.sharedWorkspace activateFileViewerSelectingURLs:@[[NSURL fileURLWithPath:[NSHomeDirectory() stringByAppendingPathComponent:@"Library/Application Support/Claude Launcher"]]]];
 }
 - (void)openAccessibility:(id)sender {
     NSDictionary *options = @{(__bridge NSString *)kAXTrustedCheckOptionPrompt:@YES}; AXIsProcessTrustedWithOptions((__bridge CFDictionaryRef)options);
@@ -1797,6 +2019,9 @@ static const unsigned CardFill = 0xFFFCF7;
     } else {
         [app activateWithOptions:NSApplicationActivateAllWindows | NSApplicationActivateIgnoringOtherApps];
     }
+    if (![self.settings[@"restoreMinimized"] boolValue]) {
+        self.message.stringValue = [NSString stringWithFormat:@"已激活账号 %02ld；按设置保留窗口最小化状态。",(long)account]; return;
+    }
     if (AXIsProcessTrusted()) {
         AXUIElementRef target = AXUIElementCreateApplication(pid); CFTypeRef value = NULL;
         AXError read = AXUIElementCopyAttributeValue(target, kAXWindowsAttribute, &value);
@@ -1836,6 +2061,7 @@ static const unsigned CardFill = 0xFFFCF7;
 
 static int SelfTest(void) {
     @autoreleasepool {
+        TestSettings();
         TestProjects();
         TestProjectImport();
         TestProjectRegistration();
@@ -1997,8 +2223,81 @@ static int SelfTest(void) {
         puts("PASS: update manifest signature and tampering, two accepted keys (shared/macOS) and unknown-key rejection, XML key import, version order, redirect allowlist, install location, bundled RSA-3072 keys");
     } return 0;
 }
+// Native target/action checks and offscreen renders use an isolated preference suite and synthetic accounts only.
+static int UISettingsTest(NSString *output) {
+    [NSApplication sharedApplication];
+    NSString *suite = [@"local.claude.settings-test." stringByAppendingString:NSUUID.UUID.UUIDString];
+    NSUserDefaults *preferences = [[NSUserDefaults alloc] initWithSuiteName:suite];
+    Launcher *launcher = [Launcher new]; launcher.snapshotMode = YES; launcher.preferences = preferences;
+    launcher.settings = DefaultSettings(); launcher.settingsDraft = launcher.settings.mutableCopy; launcher.accountNames = [NSMutableDictionary dictionary];
+    @try {
+        NSCAssert([NSFileManager.defaultManager createDirectoryAtPath:output withIntermediateDirectories:YES attributes:nil error:nil],@"snapshot folder");
+        [launcher makeWindow]; [launcher applySettings];
+        void (^capture)(NSString *) = ^(NSString *name) {
+            NSView *view = launcher.window.contentView; [view layoutSubtreeIfNeeded];
+            NSBitmapImageRep *bitmap = [view bitmapImageRepForCachingDisplayInRect:view.bounds]; [view cacheDisplayInRect:view.bounds toBitmapImageRep:bitmap];
+            NSCAssert([[bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:[output stringByAppendingPathComponent:name] atomically:YES],@"snapshot saved");
+        };
+        [launcher showPage:4];
+        for (NSInteger section=0;section<6;section++) {
+            [launcher.settingsTabs[section] performClick:nil]; NSCAssert(launcher.settingsSection == section,@"settings tab action");
+            capture([NSString stringWithFormat:@"settings-%ld.png",(long)section]);
+        }
+        [launcher.settingsTabs[0] performClick:nil];
+        NSButton *toggle = nil;
+        for (NSView *view in launcher.settingsContent.subviews) if ([view.identifier isEqual:@"closeToBackground"]) toggle = (NSButton *)view;
+        NSCAssert(toggle && toggle.state == NSControlStateValueOn,@"real preference control");
+        [toggle performClick:nil];
+        NSCAssert(![launcher.settingsDraft[@"closeToBackground"] boolValue] && [launcher.settings[@"closeToBackground"] boolValue],@"draft does not apply before save");
+        [launcher.saveSettingsButton performClick:nil];
+        NSCAssert([launcher applicationShouldTerminateAfterLastWindowClosed:NSApp],@"close-window preference takes effect");
+        NSUserDefaults *reopened = [[NSUserDefaults alloc] initWithSuiteName:suite];
+        NSCAssert(![ValidatedSettings([reopened objectForKey:@"localSettings"])[@"closeToBackground"] boolValue],@"saved preference reload");
+        [launcher.settingsTabs[2] performClick:nil];
+        for (NSView *view in launcher.settingsContent.subviews) if ([view.identifier isEqual:@"showArtwork"]) [(NSButton *)view performClick:nil];
+        [launcher discardSettings:nil]; NSCAssert([launcher.settingsDraft isEqual:launcher.settings],@"cancel unsaved edits");
+        [preferences setInteger:3 forKey:@"loginProtectionAccount"]; [preferences setObject:@{@"2":@"本地别名"} forKey:@"accountDisplayNames"];
+        launcher.settingsDraft = DefaultSettings().mutableCopy; [launcher saveSettings:nil];
+        NSCAssert([preferences integerForKey:@"loginProtectionAccount"] == 3 && [[preferences objectForKey:@"accountDisplayNames"] count] == 1,@"reset settings preserves unrelated local state");
+        launcher.settingsDraft[@"showArtwork"] = @NO; launcher.settingsDraft[@"showUsageHistory"] = @NO; launcher.settingsDraft[@"logLimit"] = @100;
+        [launcher saveSettings:nil]; NSCAssert(!launcher.cards[0].art && !launcher.usageHistory,@"appearance and local history settings applied");
+        launcher.settingsDraft[@"localNotifications"] = @NO; [launcher saveSettings:nil]; [launcher testNotification:nil]; NSCAssert(launcher.toast.hidden,@"notification off");
+        launcher.settingsDraft[@"localNotifications"] = @YES; [launcher saveSettings:nil]; [launcher testNotification:nil]; NSCAssert(!launcher.toast.hidden,@"notification on"); launcher.toast.hidden = YES;
+        [launcher.logEntries removeAllObjects];
+        for (NSInteger i=0;i<125;i++) [launcher addLog:[NSString stringWithFormat:@"账号 02 本地测试 %ld",(long)i]];
+        NSCAssert(launcher.logEntries.count == 100 && launcher.visibleLogs.count == 10,@"bounded logs and first page");
+        [launcher.nextLogs performClick:nil]; NSCAssert(launcher.logPage == 1,@"next page action");
+        [launcher.previousLogs performClick:nil]; NSCAssert(launcher.logPage == 0,@"previous page action");
+        launcher.logSearch.stringValue = @"测试 124"; [launcher controlTextDidChange:[NSNotification notificationWithName:NSControlTextDidChangeNotification object:launcher.logSearch]];
+        NSCAssert(launcher.visibleLogs.count == 1 && !launcher.nextLogs.enabled,@"search resets and clamps paging");
+        [launcher.logLevel selectItemWithTitle:@"错误"]; [launcher logFilterChanged:nil]; NSCAssert(!launcher.visibleLogs.count,@"combined empty filter");
+        [launcher.logLevel selectItemAtIndex:0]; launcher.logSearch.stringValue = @""; [launcher logFilterChanged:nil]; [launcher showPage:3]; capture(@"logs.png");
+        for (NSInteger n=1;n<=10;n++) launcher.cards[n-1].hidden = n > 3;
+        launcher.processes = @{@2:@[@123]}; launcher.accountNames[@"2"] = @"开发工作账号"; [launcher refreshAccountTable];
+        [launcher.selectAllAccounts performClick:nil]; NSCAssert(launcher.selectedAccounts.count == 3,@"select visible accounts");
+        [launcher.rows[0].selection performClick:nil]; NSCAssert(launcher.selectedAccounts.count == 2 && launcher.selectAllAccounts.state == NSControlStateValueMixed,@"row selection and mixed state");
+        [launcher.accountFilter selectItemWithTitle:@"运行中"]; [launcher accountFilterChanged:nil];
+        NSCAssert(launcher.rows[0].hidden && !launcher.rows[1].hidden && launcher.rows[2].hidden && launcher.selectedAccounts.count == 1,@"status filtering removes hidden selection");
+        launcher.accountSearch.stringValue = @"missing"; [launcher controlTextDidChange:[NSNotification notificationWithName:NSControlTextDidChangeNotification object:launcher.accountSearch]];
+        NSCAssert(launcher.rows[1].hidden && !launcher.selectedPathsButton.enabled,@"empty search disables batch copy");
+        launcher.accountSearch.stringValue = @"开发"; [launcher accountFilterChanged:nil]; NSCAssert(!launcher.rows[1].hidden,@"local alias searchable");
+        launcher.accountSearch.stringValue = @""; [launcher.accountFilter selectItemAtIndex:0]; [launcher refreshAccountTable]; [launcher showPage:1]; capture(@"accounts.png");
+        NetworkEnabled = NO; __block BOOL refused = NO;
+        Fetch([NSURL URLWithString:[GitHubDownloads stringByAppendingString:@"latest-macos.json"]],YES,100,1,^(NSData *data,NSString *failure) { refused = !data && failure.length; });
+        NSCAssert(refused,@"disabled network rejected before session creation");
+        NetworkEnabled = YES; refused = NO;
+        Fetch([NSURL URLWithString:@"https://api.anthropic.com/v1/messages"],YES,100,1,^(NSData *data,NSString *failure) { refused = !data && failure.length; });
+        NSCAssert(refused,@"Claude requests rejected even with update opt-in"); NetworkEnabled = NO;
+        NSCAssert(!launcher.timer && !launcher.statusItem && !launcher.projectStore,@"UI checks do not start normal lifecycle or load projects");
+        puts("PASS: native settings controls, isolated save/reload, draft cancellation, reset scope, artwork/history/notifications, log retention/filter/paging, account search/status/selection, network rejection before session creation; 8 offscreen renders");
+    } @finally {
+        NetworkEnabled = NO; [preferences removePersistentDomainForName:suite]; [preferences synchronize];
+    }
+    return 0;
+}
 int main(int argc, const char *argv[]) {
     @autoreleasepool {
+        if (argc > 2 && strcmp(argv[1],"--ui-self-test") == 0) return UISettingsTest(@(argv[2]));
         if (argc > 1 && strcmp(argv[1],"--self-test") == 0) return SelfTest();
         if (argc > 1 && strcmp(argv[1],"--usage-history-check") == 0) {
             // Only statuses/timing, never organization identifiers or credential contents.
@@ -2017,10 +2316,10 @@ int main(int argc, const char *argv[]) {
         }
         if (argc > 1 && strcmp(argv[1],"--update-test") == 0) {
             // Development aid: run the real update path without dialogs (accepts the offer). Use on a test copy, not the daily app.
-            setvbuf(stdout,NULL,_IOLBF,0); TraceNetwork = YES;
+            if (argc < 3 || strcmp(argv[2],"--allow-updates") != 0) { fputs("Explicit --allow-updates required; no request sent.\n",stderr); return 2; }
+            setvbuf(stdout,NULL,_IOLBF,0); TraceNetwork = YES; NetworkEnabled = YES;
             NSApplication *app = NSApplication.sharedApplication; app.activationPolicy = NSApplicationActivationPolicyProhibited;
             Launcher *launcher = [Launcher new]; launcher.headless = YES;
-            launcher.skipSelfHosted = argc > 2 && strcmp(argv[2],"--github-only") == 0;
             printf("[test] %s %s\n",NSBundle.mainBundle.bundlePath.UTF8String,[[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] UTF8String]);
             dispatch_async(dispatch_get_main_queue(), ^{ [launcher runUpdateCheck:YES]; });
             [app run]; return 0;
@@ -2065,7 +2364,7 @@ int main(int argc, const char *argv[]) {
                 @{@"name":@"网站项目",@"group":@"工作",@"path":@"/Users/example/Projects/Website",@"lastAccount":@2,@"previewStatus":@"正常"},
                 @{@"name":@"较长的项目名称用于检查表格截断",@"group":@"个人学习资料",@"path":@"/Users/example/Documents/一个很长的目录名称/研究项目/Notes",@"lastAccount":@1,@"previewStatus":@"不存在"},
                 @{@"name":@"归档资料",@"group":@"",@"path":@"/Volumes/Archive/Research",@"lastAccount":@0,@"previewStatus":@"无权限"}];
-            [launcher makeWindow]; [launcher refresh];
+            [launcher makeWindow]; [launcher applySettings]; [launcher refresh];
             if (argc > 4 && strcmp(argv[4],"--usage-demo") == 0) {
                 launcher.usageHistory = @{@1:@{@"status":@"本地记录",@"date":NSDate.date,@"fh":@62,@"sd":@70},@2:@{@"status":@"身份待核对"}};
                 [launcher updateUsageCards];
