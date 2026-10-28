@@ -36,11 +36,23 @@
 
 - `ProjectStore` 只管理启动器自身的 JSON：`load`、`save:error:`、`normalizeDirectory:error:`、`statusForPath:`、`containsDirectory:`。格式、上限与取舍见 SPEC“项目清单”。最多 1000 条，文件最多 1 MiB，名称／分组最多 200 字。
 - 写入使用同目录 0600 独占临时文件，写完并 fsync 后 rename 原子替换；失败不提交内存模型。读取前检查各级目录，文件以 O_NOFOLLOW 打开并 fstat 拒绝非本人所有、链接或开放权限的文件。已有不安全文件不 chmod、不读取内容。
-- 损坏内容以唯一名字改名保留，恢复失败或未知版本使存储只读；绝不把清单里的路径当成要删除的目录。添加只用 NSOpenPanel 和元数据检查，状态检查不递归读取项目。
+- 损坏内容以唯一名字改名保留，恢复失败或未知版本使存储只读；绝不把清单里的路径当成要删除的目录。手动添加使用 NSOpenPanel 和元数据检查，状态检查不递归读取项目。
 - `selectAccount:` 委托给 `selectAccount:prepare:`，普通账号操作传 nil；项目入口传一个准备回调，经原有后台检查、PID／保护复核后执行。新建账号的“进入登录保护”也传递同一回调。回调再次核对项目仍存在且目录可用，持久化 lastAccount，再复制路径、显示 Finder，随后由原流程激活／启动账号。lastAccount 是已请求操作，不是加载成功凭证。
 - 编辑对话框期间后台账号检查可能完成；保存编辑时只更新名称／分组，保留最新 lastAccount。移除按稳定 UUID 定位，避免后台状态更新导致移除失效。
 - `TestProjects` 集成进 `--self-test`：仅在当前工作目录的随机 `.claude-project-tests-*` 中生成假主目录、假账号／配置目录与假应用包；覆盖路径、别名、重复、权限、JSON 往返、编辑排序与账号记录、损坏保留、未知版本保留、链接清单拒绝和移除不删文件。测试结束清理。chmod 仅用于随机合成目录的无权限用例，不修改真实账号或系统权限。
 - GUI 手工验收：添加／取消、主目录确认／取消、重名与重复目录、编辑排序、移除后文件仍在；正常／缺失／无权限目录；在已有账号间选择、默认上次编号、保护拒绝、后台检查失败、取消创建；确认失败分支不改变剪贴板或打开 Finder。保存工作后仅用少量实例，不测试真实账号删除或登出。
+
+## 项目导入实现与验证
+
+- `src/ProjectImport.h` / `.m` 编译进同一个原生应用，不增加运行时依赖。`DiscoverProjects` 从固定账号目录枚举三层；不依赖账号进程，覆盖未运行账号。后台使用独立的只读 `ProjectStore` 路径校验对象，不跨线程读写界面清单。
+- 数据来源由官方 4.29 的只读包内代码调查确定：序列化记录开头依次为 `sessionId`、可选 `cliSessionId`、`cwd`、`originCwd`，目录为 `claude-code-sessions/<account UUID>/<org UUID>/local_<UUID>.json`。`ReadPathPrefix` 每次 read 1 字节，最多 32768 字节，读完 originCwd 后的分隔符立即停止。未知字段连值都不读；不整文件 JSON 反序列化，不进入正文或配置。不扫描 CLI 的 projects、JSONL、.claude.json、浏览器数据库或日志。
+- 安全打开：逐层 openat + O_NOFOLLOW，目录和普通源文件归属当前用户且不可被其他用户写入；源文件必须单硬链接。读取前后核对大小与修改时间，变化则跳过。目录项总数 20000、记录总数 5000 的上限明确报告。官方格式变化时保守跳过，不扩展到任意字段搜索。
+- `PrepareProjectImport` 只构造追加后的清单，不写磁盘。确认时复核路径未重定向、可访问且未重复，名称来自目录名，lastAccount=0；上限与原子保存复用 `ProjectStore`。取消、全部重复、无选择不写入，保存失败保留原清单。
+- `TestProjectImport` 只生成随机 `.claude-import-tests-*` 假主目录／假账号记录。覆盖：多账号离线记录、跨账号去重、来源合并、originCwd 优先、缺省 CLI ID、Unicode 与转义路径、未知字段与坏前缀、读取偏移恰好停在正文前、输入上限、符号／硬链接及开放写权限拒绝、路径消失后复核、取消不写入、批量往返、保留编辑和非破坏移除。合成权限用例不修改系统或真实账号权限。
+- 只读真实兼容性诊断：`ClaudeLauncher --project-import-check`。不载入／写入真实 projects.json，只输出各账号计数和失败类别；不输出目录、账号 UUID、记录 ID 或正文。不启动 GUI，不请求更新或官方接口。此项与合成自检、GUI 分开报告。
+- 离屏截图：`ClaudeLauncher --snapshot build/project-import-check/projects.png 2 --projects-demo` 核对主页面；`--snapshot build/project-import-check/import.png 2 --import-demo` 使用合成来源与目录绘制导入预览，不读真实账号。系统弹窗的部分原生控件不能由离屏缓存完整捕获，不能把附件区域截图当作完整弹窗 GUI 验证。
+- GUI 待验收：识别时页面仍可操作、取消／取消全选不写入、确认批量保存、重复导入、路径在预览期间失效、容量不足／写入失败；核对各账号来源和滚动长列表。识别与导入不应启动／激活 Claude，不应改变剪贴板或打开 Finder。
+- 本轮基于 dev `5cb6626`，保持 1.7.2 / build 9；固定证书构建到 `build/project-import-check/`，不覆盖顶层 build/ 或 /Applications，不打包发布。
 
 ## GUI 验收
 
@@ -99,3 +111,7 @@ arch -x86_64 "build/Claude 启动器.app/Contents/MacOS/ClaudeLauncher" --self-t
 - `ClaudeLauncher --check-signer <应用路径>`：开发用，判断该应用能否作为更新被接受。
 - `scripts/dmg.sh` 输出发布机签名清单需要的 `file`、`size`、`sha256`。
 - `ClaudeLauncher --update-test [--github-only]`：开发用。不弹对话框、自动接受更新，打印每个请求、跳转主机和结果，然后走真实下载与替换。只在临时目录的测试副本上运行（可把副本 Info.plist 的版本调低、改 `ClaudeLauncherUpdateBaseURL` 后用同一证书重签），不要对日常应用运行。
+
+## macOS 1.7.3 发布交接
+
+应用构建与 DMG 签名在 Mac 执行，自动更新清单仍使用 Windows 发布机的原 RSA 私钥；Windows 软件不更新、不构建。具体产物、验签原文、只切换 macOS 清单及失败回滚要求见 [RELEASE-macos-1.7.3.md](RELEASE-macos-1.7.3.md)。签名清单和两端附件齐全且验签通过后才将草稿设为 Latest。

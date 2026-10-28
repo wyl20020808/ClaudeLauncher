@@ -9,6 +9,7 @@
 #import <Security/Security.h>
 #import <CommonCrypto/CommonDigest.h>
 #import "Projects.h"
+#import "ProjectImport.h"
 
 static NSString * const BundleID = @"local.claude.profile-launcher";
 static NSString * const WakeNotification = @"local.claude.profile-launcher.show";
@@ -527,7 +528,8 @@ static const unsigned CardFill = 0xFFFCF7;
 @property ProjectStore *projectStore;
 @property NSView *projectRowsView;
 @property NSTextField *projectFooter, *projectFeedback;
-@property NSButton *addProjectButton;
+@property NSButton *addProjectButton, *importProjectsButton;
+@property BOOL discoveringProjects;
 @property NSArray<NSDictionary *> *snapshotProjects;
 @property BOOL snapshotMode;
 @property BOOL updating;
@@ -712,6 +714,8 @@ static const unsigned CardFill = 0xFFFCF7;
     [page addSubview:Text(@"同一项目请轮流使用；启动器无法检测同时编辑，不复制、同步或合并文件。",NSMakeRect(54,182,694,18),[NSFont systemFontOfSize:12],Hex(0x6E655C))];
     self.addProjectButton = [self toolButton:@"添加目录" symbol:@"folder.badge.plus" frame:NSMakeRect(640,56,132,44) action:@selector(addProject:)];
     [page addSubview:self.addProjectButton];
+    self.importProjectsButton = [self toolButton:@"识别并导入" symbol:@"square.and.arrow.down" frame:NSMakeRect(484,56,146,44) action:@selector(importProjects:)];
+    [page addSubview:self.importProjectsButton];
     [page addSubview:Text(@"项目仅保存在本机 · 移除记录不会删除文件",NSMakeRect(38,238,470,20),[NSFont systemFontOfSize:13],Hex(0x6E655C))];
     [page addSubview:[self toolButton:@"刷新状态" symbol:@"arrow.clockwise" frame:NSMakeRect(660,228,112,38) action:@selector(refreshProjects:)]];
     NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(37,319,734,281)];
@@ -730,6 +734,7 @@ static const unsigned CardFill = 0xFFFCF7;
     for (NSView *view in self.projectRowsView.subviews.copy) [view removeFromSuperview];
     NSArray *projects = [self projectRecords];
     self.addProjectButton.enabled = self.snapshotMode || self.projectStore.writable;
+    self.importProjectsButton.enabled = !self.discoveringProjects && (self.snapshotMode || self.projectStore.writable);
     [self.projectRowsView setFrameSize:NSMakeSize(734,MAX(281,projects.count*64))];
     if (!projects.count) {
         [self.projectRowsView addSubview:Text(@"还没有项目",NSMakeRect(270,86,200,28),[NSFont systemFontOfSize:20 weight:NSFontWeightMedium],Hex(0x6E655C))];
@@ -784,6 +789,61 @@ static const unsigned CardFill = 0xFFFCF7;
     NSString *title = [name.stringValue stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
     if (!title.length || title.length > 200 || group.stringValue.length > 200) { [self alert:@"名称或分组无效" detail:@"名称不能为空；名称和分组最多 200 字。请重新编辑。"] ; return nil; }
     NSMutableDictionary *edited = project.mutableCopy; edited[@"name"] = title; edited[@"group"] = [group.stringValue stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet]; return edited;
+}
+- (NSAlert *)projectImportAlert:(NSDictionary *)result checks:(NSMutableArray<NSButton *> *)checks {
+    NSAlert *alert = [NSAlert new]; alert.messageText = @"确认要加入公共清单的目录";
+    alert.informativeText = @"识别范围：全部已创建账号（含未运行账号）的本机历史记录。\n只添加目录入口，不同步会话或文件，也不修改 Claude 的项目列表。\n历史识别可能不完整；记录可能来自远程会话，请核对本机目录是否正确。";
+    [alert addButtonWithTitle:@"导入所选"]; [alert addButtonWithTitle:@"取消"];
+    NSArray *candidates = result[@"candidates"], *summaries = result[@"summaries"];
+    NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(0,0,660,360)];
+    scroll.hasVerticalScroller = YES; scroll.autohidesScrollers = YES; scroll.borderType = NSBezelBorder;
+    Canvas *content = [[Canvas alloc] initWithFrame:NSMakeRect(0,0,640,MAX(360,summaries.count*24+48+candidates.count*58))];
+    CGFloat y = 10;
+    for (NSString *summary in summaries) {
+        NSTextField *line = Text(summary,NSMakeRect(10,y,620,20),[NSFont systemFontOfSize:11],Hex(0x6E655C));
+        line.toolTip = summary; [content addSubview:line]; y += 24;
+    }
+    [content addSubview:Text([NSString stringWithFormat:@"识别到 %lu 个目录候选 · 已在清单中的项目不重复添加",(unsigned long)candidates.count],NSMakeRect(10,y+2,620,22),[NSFont systemFontOfSize:12 weight:NSFontWeightMedium],Hex(0x795539))]; y += 34;
+    for (NSDictionary *candidate in candidates) {
+        NSString *path = candidate[@"path"]; BOOL exists = [self.projectStore containsDirectory:path];
+        NSMutableArray *accounts = [NSMutableArray array];
+        for (NSNumber *account in candidate[@"accounts"]) [accounts addObject:[NSString stringWithFormat:@"%02ld",(long)account.integerValue]];
+        NSButton *check = [NSButton checkboxWithTitle:[NSString stringWithFormat:@"%@  ·  来源账号 %@%@",path.lastPathComponent,[accounts componentsJoinedByString:@"、"],exists ? @" · 已在清单" : @""] target:nil action:nil];
+        check.frame = NSMakeRect(10,y,620,24); check.state = exists ? NSControlStateValueOff : NSControlStateValueOn;
+        check.enabled = !exists; check.toolTip = path; check.accessibilityLabel = [@"导入目录：" stringByAppendingString:path];
+        [checks addObject:check]; [content addSubview:check];
+        NSTextField *label = Text(path,NSMakeRect(30,y+26,600,20),[NSFont systemFontOfSize:12],Hex(0x6E655C));
+        label.lineBreakMode = NSLineBreakByTruncatingMiddle; label.toolTip = path; label.selectable = YES; [content addSubview:label]; y += 58;
+    }
+    scroll.documentView = content; alert.accessoryView = scroll;
+    alert.buttons.firstObject.enabled = candidates.count > 0;
+    return alert;
+}
+- (void)importProjects:(id)sender {
+    if (!self.projectStore.writable || self.discoveringProjects) return;
+    self.discoveringProjects = YES; self.importProjectsButton.title = @"正在识别…"; [self refreshProjects:nil];
+    [self projectNotice:@"正在只读检查所有已创建账号的目录记录，包含未运行账号；完成后可选择要导入的目录。"];
+    NSMutableArray *profiles = [NSMutableArray array];
+    for (NSInteger n = 1; n <= 10; n++) [profiles addObject:ProfilePath(n)];
+    // A separate immutable validator avoids reading the UI's mutable store from the worker queue.
+    ProjectStore *validator = [[ProjectStore alloc] initWithDirectory:[NSHomeDirectory() stringByAppendingPathComponent:@"Library/Application Support/Claude Launcher"] home:NSHomeDirectory() applicationPaths:@[NSBundle.mainBundle.bundlePath,@"/Applications/Claude 启动器.app",[NSHomeDirectory() stringByAppendingPathComponent:@"Applications/Claude 启动器.app"]]];
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0), ^{
+        NSDictionary *result = DiscoverProjects(profiles,validator,NSHomeDirectory());
+        dispatch_async(dispatch_get_main_queue(), ^{
+            NSMutableArray<NSButton *> *checks = [NSMutableArray array];
+            NSAlert *preview = [self projectImportAlert:result checks:checks];
+            NSModalResponse response = [preview runModal];
+            self.discoveringProjects = NO; self.importProjectsButton.title = @"识别并导入"; [self refreshProjects:nil];
+            if (response != NSAlertFirstButtonReturn) { [self projectNotice:@"已取消导入，清单和客户端数据未改动。"] ; return; }
+            NSMutableArray *selected = [NSMutableArray array]; NSArray *candidates = result[@"candidates"];
+            for (NSUInteger i = 0; i < checks.count; i++) if (checks[i].enabled && checks[i].state == NSControlStateValueOn) [selected addObject:candidates[i][@"path"]];
+            NSUInteger skipped = 0; NSArray *rows = PrepareProjectImport(self.projectStore,selected,NSHomeDirectory(),&skipped);
+            NSUInteger added = rows.count-self.projectStore.projects.count;
+            if (rows.count > 1000) { [self alert:@"项目清单容量不足" detail:@"最多保存 1000 项，本次没有写入。请减少选择或移除不需要的记录。"] ; return; }
+            if (added && ![self saveProjects:rows]) return;
+            [self projectNotice:[NSString stringWithFormat:@"已导入 %lu 个目录；跳过 %lu 个重复或状态已变化的目录。仅更新公共清单，客户端数据未改动。",(unsigned long)added,(unsigned long)skipped]];
+        });
+    });
 }
 - (void)addProject:(id)sender {
     if (!self.projectStore.writable) return;
@@ -1635,6 +1695,7 @@ static const unsigned CardFill = 0xFFFCF7;
 static int SelfTest(void) {
     @autoreleasepool {
         TestProjects();
+        TestProjectImport();
         NSCAssert(AccountForArguments(@[@"Claude"]) == 1, @"default");
         for (NSInteger n=1;n<=10;n++) {
             NSCAssert(AccountForArguments(@[@"Claude",[@"--user-data-dir=" stringByAppendingString:ProfilePath(n)]]) == n,@"equals");
@@ -1796,6 +1857,15 @@ int main(int argc, const char *argv[]) {
             NSString *failure = SameSigner(@(argv[2]));
             puts(failure ? failure.UTF8String : "same signer"); return failure ? 1 : 0;
         }
+        if (argc > 1 && strcmp(argv[1],"--project-import-check") == 0) {
+            NSMutableArray *profiles = [NSMutableArray array];
+            for (NSInteger n = 1; n <= 10; n++) [profiles addObject:ProfilePath(n)];
+            ProjectStore *validator = [[ProjectStore alloc] initWithDirectory:[NSHomeDirectory() stringByAppendingPathComponent:@"Library/Application Support/Claude Launcher"] home:NSHomeDirectory() applicationPaths:@[NSBundle.mainBundle.bundlePath,@"/Applications/Claude 启动器.app",[NSHomeDirectory() stringByAppendingPathComponent:@"Applications/Claude 启动器.app"]]];
+            NSDictionary *result = DiscoverProjects(profiles,validator,NSHomeDirectory());
+            printf("created=%lu candidates=%lu limited=%s\n",[result[@"created"] unsignedLongValue],(unsigned long)[result[@"candidates"] count],[result[@"limited"] boolValue] ? "yes" : "no");
+            for (NSString *line in result[@"summaries"]) puts(line.UTF8String);
+            return 0;
+        }
         if (argc > 2 && strcmp(argv[1],"--snapshot") == 0) {
             // Development aid: render the window offscreen to PNG without taking the instance lock or launching Claude.
             [NSApplication sharedApplication];
@@ -1808,7 +1878,15 @@ int main(int argc, const char *argv[]) {
                 @{@"name":@"较长的项目名称用于检查表格截断",@"group":@"个人学习资料",@"path":@"/Users/example/Documents/一个很长的目录名称/研究项目/Notes",@"lastAccount":@1,@"previewStatus":@"不存在"},
                 @{@"name":@"归档资料",@"group":@"",@"path":@"/Volumes/Archive/Research",@"lastAccount":@0,@"previewStatus":@"无权限"}];
             [launcher makeWindow]; [launcher refresh];
-            NSView *view = launcher.window.contentView; [view layoutSubtreeIfNeeded];
+            NSView *view = launcher.window.contentView;
+            NSAlert *importPreview = nil;
+            if (argc > 4 && strcmp(argv[4],"--import-demo") == 0) {
+                importPreview = [launcher projectImportAlert:@{@"summaries":@[@"账号 01：路径 5 · 格式跳过 1 · 读取失败 0 · 失效/受限 1",@"账号 02：路径 3 · 格式跳过 0 · 读取失败 0 · 失效/受限 0",@"账号 03：未找到支持的本地记录，不代表没有项目"],@"candidates":@[
+                    @{@"path":@"/Users/example/Projects/Website",@"accounts":@[@1,@2]},
+                    @{@"path":@"/Users/example/Documents/一个较长的本地项目目录/Notes",@"accounts":@[@2]}]} checks:[NSMutableArray array]];
+                [importPreview layout]; view = importPreview.window.contentView;
+            }
+            [view layoutSubtreeIfNeeded];
             NSBitmapImageRep *bitmap = [view bitmapImageRepForCachingDisplayInRect:view.bounds];
             [view cacheDisplayInRect:view.bounds toBitmapImageRep:bitmap];
             return [[bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:@(argv[2]) atomically:YES] ? 0 : 1;
