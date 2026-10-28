@@ -7,7 +7,9 @@
 - `ProfilePath`：固定编号到目录的映射。
 - `CodeConfigPath`：02～10 的 Claude Code 配置目录，启动时作为 `CLAUDE_CONFIG_DIR` 传入；01 返回 nil，沿用 `~/.claude`。
 - `Scan`、`AccountForArguments`、`IsMainExecutable`：区分官方主进程、辅助进程及 CLI。
-- `ValidateProfile`：路径和核心存储元数据检查。
+- `ValidateProfileAtPath` / `ValidateProfileAsync`：完整递归元数据检查及后台调度；回调返回主线程。`ValidateProfileRoot` 用于操作前快速复核固定根路径。
+- `LoginBlocker` / `openingBlocker:expectedPID:`：登录准入、检查完成后的进程与保护状态复核；`checking` 集合按账号防止检查期间重复操作。
+- `configuredApps`：仅保留本次启动器返回的、启动时间与主程序/账号参数已核对的新进程对象。它证明已指定配置，不证明 Code 实际写入，不能持久化 PID 后冒充已验证状态。
 - `Launcher`：界面、启动状态与单实例管理。
 - `activatePID:account:`：校验 PID 后激活、尝试恢复窗口。
 - `SelfTest`：合成数据测试，不读取真实凭据。
@@ -25,6 +27,10 @@
 ```
 
 自检在当前工作目录创建随机合成目录并清理，仅覆盖参数解析、路径及存储校验等逻辑。不能代替真实窗口测试。
+
+隔离加固自检增加登录准入、检查中删除拦截、保护状态变化、原 PID 退出/替换、保守 Code 状态、并行后台检查的主线程回调，以及深层 Code 存储链接拒绝。并发测试只检查随机合成目录，失败不会污染另一个合成账号的结果；不创建真实账号，不读写登录数据。
+
+先在独立目录验证：`SIGN_IDENTITY="ClaudeLauncher Local Signing" /bin/zsh scripts/build.sh build/isolation-hardening-check`。需要更新日常 build/ 时，先提醒用户退出并重开启动器才使用新版，再执行同一签名命令且不传输出目录。本轮按用户限定不修改构建脚本，版本号仍为 1.6 / build 7，以分支和提交区分。
 
 ## GUI 验收
 
