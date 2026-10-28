@@ -19,6 +19,8 @@ C# 5 / .NET Framework 4.8 WPF（系统自带），无 NuGet 依赖。构建脚�
 
 ## 待办：Setup 安装程序
 
+更新与安装的完整规则（来源回退、清单签名、先卸载再安装、回滚）见 [SPEC 更新与安装](../docs/SPEC.md#更新与安装)，以此为准。
+
 与 macOS DMG 对应，Windows 需要提供一个 Setup 安装程序，方便发给客户：
 
 - 推荐 Inno Setup（单个 setup.exe，体积小）；也可用 WiX 生成 MSI。
