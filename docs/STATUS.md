@@ -2,6 +2,46 @@
 
 整理日期：2026-10-28。源码与本机日常 build/：1.6 / build 7（未发布）；历史交付：1.5 / build 6。
 
+## 项目管理与菜单栏合并验证（2026-10-28）
+
+- 按用户要求在 `feature/projects` 先合并 `origin/dev`（`001829f`）。解决 build.sh、main.m 启动初始化、STATUS 和使用说明的冲突：保留 Projects.m 编译、自有 AppIcon／菜单栏图标、构建前清空输出应用、菜单栏初始化以及项目清单损坏提示；双方历史记录保留。
+- 独立验证构建：`SIGN_IDENTITY="ClaudeLauncher Local Signing" /bin/zsh scripts/build.sh build/merge-projects-check`。编译、签名及 Info.plist 校验、arm64／x86_64 五组自检通过；证书要求保持不变，版本仍为 1.7.0 / build 8。没有重建顶层 build/ 中可能正在运行的应用，也没有替换 /Applications。
+- 构建内 AppIcon.icns、menubar.png 与 resources/icon/ 源文件哈希一致，不含旧 Claude.icns。`build/merge-projects-check/projects.png` 离屏截图已查看，新 Logo、五项导航及项目表格正常。
+- 相对 origin/dev 没有 Windows 文件变更；只纳入远端既有 Windows 更新。合成测试目录已清理。真实菜单栏点击、项目入口与 Finder／剪贴板／账号激活 GUI：**未验证**；未启动或退出真实 Claude，未操作登录数据。
+- 本轮仅合并本地 dev，不推送、不打包、不发布。
+
+## macOS 项目管理第一版（2026-10-28，feature/projects）
+
+本节为当前开发状态；下方各轮记录及页首旧版汇总保留历史结论，不代表本轮重新验收。按用户要求先执行 `git pull origin dev`；远端已从用户提到的 `8952a13` 前进到 `604fe55`，从更新后的 dev 创建 `feature/projects`。先新增 SPEC“项目清单”，再实现。只修改 macOS 源码、构建脚本与文档，Windows 不动；版本仍为 1.7.0 / build 8，不打包、不发布、不安装到 /Applications。
+
+### 实现
+
+- 新增“项目管理”表格页，顺序为实例、账号、项目、日志、设置。支持添加已有目录、名称与分组、上移／下移排序、状态刷新、Finder 显示、复制路径、移除记录；长文本省略并提供完整提示。移除只删除清单记录，不删除项目文件。
+- 清单全局共享，不绑定账号；上次账号仅作为选择默认值。选择任意 01～10 账号后复用 `selectAccount` 的 PID、保护、存储与启动检查，通过后复制路径并显示 Finder，再请求激活／启动，提示由用户在 Claude 中选择文件夹。取消或检查失败不交接项目。上次账号是通过检查后的请求记录，不是 Claude 加载成功状态。
+- `src/Projects.h` / `src/Projects.m` 管理 `~/Library/Application Support/Claude Launcher/projects.json`，只保存目录入口；0600 临时文件写完后原子替换。损坏原文件改名保留并提示；未知版本、危险链接／权限或保留失败时停止写入。保存失败保持原清单和内存数据。
+- 添加时规范化真实目录，拒绝账号目录、任何 ClaudeCodeConfig、启动器数据目录与应用包，拒绝链接绕过与重复目录。根目录／主目录需确认；路径失效只标记，不创建或重定向。不读取项目文件内容。
+- SPEC、README、使用说明明确：项目本来就共享，本功能不复制／同步／合并内容，也不跨电脑同步；共享 CLAUDE.md、项目设置和 MCP 配置是用户选择的隔离取舍，同一项目请轮流使用，启动器不检测并发编辑。
+
+### 构建与自检
+
+- 已执行 `SIGN_IDENTITY="ClaudeLauncher Local Signing" /bin/zsh scripts/build.sh`。通用二进制编译、Info.plist 校验、签名校验通过；arm64 与 Rosetta 下 x86_64 的五组自检均通过。
+- 项目合成自检：受保护／普通／相对路径、别名与重复目录、JSON 往返与 0600 权限、名称／分组／排序／上次账号保存、写入失败保持原状态、损坏 JSON 与非法结构改名保留、未知版本不覆盖、链接／硬链接清单拒绝、无权限／失效路径、移除记录不删文件。只使用随机假主目录、假账号目录和假应用包，测试后清理。
+- 原有账号隔离、参数／进程识别、保护互斥、并发存储检查及更新验签自检继续通过。`git diff --check` 通过。
+- designated requirement 仍为 `identifier "local.claude.profile-launcher" and certificate leaf = H"5ce1d074d09ff41a6347a3bbcaff92c8fe25bda5"`，未换证书或改系统权限。没有更改版本号；构建仅增加 Projects.m 编译单元。未设置 UPDATE_BASE_URL，本轮 build/ 依现有脚本默认只用 GitHub 更新来源；已安装版本不受影响。
+
+### 离屏截图核对
+
+- 页码 2：`build/projects-empty.png`（空表）与 `build/projects-demo.png`（三行内存合成记录）已生成并人工查看。
+- 已核对五项导航、共享取舍说明、六列表头、空状态、正常／不存在／无权限状态、上次账号、长名称／分组／路径截断和按钮禁用表现。图中均为演示路径，不读取／写入真实清单，不启动 Claude。图片位于 Git 忽略的 build/，不提交。
+
+### GUI 与未验证项
+
+- 实际 NSOpenPanel 选择、编辑／排序／移除菜单、主目录确认、剪贴板和 Finder 交接：**未验证**。
+- 新入口对真实账号的激活／启动、最小化恢复、登录保护拒绝、检查期间路径变化与失败分支：**未验证**；自检不替代 GUI 验收。
+- 重开图形应用后的清单恢复：**未验证**（独立存储对象读写往返已通过）。真实系统隐私拒绝提示、断开的网络卷及长期使用：**未验证**。
+- 本轮未启动、退出、登出或删除真实 Claude 实例，未读凭据、进程环境或真实项目内容，未创建真实 projects.json；仅重建 build/，日常 /Applications 版本未替换。
+- 当前功能没有待用户决定的阻塞项。后续 GUI 验收需正常退出旧启动器，再打开 build/ 中的开发版；不需要退出已运行的 Claude。Windows 项目管理留待后续按 SPEC 实现。
+
 ## 菜单栏常驻图标（2026-10-28，feature/menubar）
 
 - SPEC 新增“常驻图标”（macOS 菜单栏、Windows 托盘，两端同一菜单）。
