@@ -281,6 +281,8 @@ static const unsigned CardFill = 0xFFFCF7;
 @property NSArray<NSView *> *pages;
 @property NSArray<NSView *> *navItems;
 @property NSView *sidebar;
+@property NSView *cardsView;
+@property NSTextField *emptyHint;
 @property NSButton *createButton;
 @property NSTextView *logView;
 @property NSString *lastLogged;
@@ -427,7 +429,9 @@ static const unsigned CardFill = 0xFFFCF7;
         AccountCard *card = [self cardFor:n frame:NSMakeRect(0,(n-1)*136,776,124) art:art == [NSNull null] ? nil : art];
         [cardsView addSubview:card]; [self.cards addObject:card]; [self.buttons addObject:card.button]; [self.statuses addObject:card.status];
     }
-    list.documentView = cardsView; [main addSubview:list];
+    list.documentView = cardsView; [main addSubview:list]; self.cardsView = cardsView;
+    self.emptyHint = Text(@"本机还没有 Claude 账号目录。点击右上角「+ 新建实例」创建第一个。", NSMakeRect(40,180,700,22), [NSFont systemFontOfSize:15], muted);
+    self.emptyHint.hidden = YES; [main addSubview:self.emptyHint];
 
     Canvas *accounts = [[Canvas alloc] initWithFrame:pageFrame];
     accounts.paint = ^(NSRect bounds) { [Hex(CardFill) setFill]; [[NSBezierPath bezierPathWithRoundedRect:bounds xRadius:14 yRadius:14] fill]; };
@@ -480,9 +484,6 @@ static const unsigned CardFill = 0xFFFCF7;
     self.scanError = failure; if (snapshot) self.processes = snapshot;
     self.endLoginButton.enabled = self.loginAccount != 0;
     self.endLoginButton.hidden = self.loginAccount == 0;
-    NSUInteger running = 0;
-    for (NSInteger i=1;i<=10;i++) if ([self.processes[@(i)] count]) running++;
-    self.summaryLabel.stringValue = failure ? @"状态暂不可用" : [NSString stringWithFormat:@"%lu 个运行中",(unsigned long)running];
     for (NSInteger n = 1; n <= 10; n++) {
         NSNumber *key = @(n); NSArray *pids = self.processes[key];
         NSDate *since = self.starting[key];
@@ -505,6 +506,17 @@ static const unsigned CardFill = 0xFFFCF7;
         self.buttons[n-1].enabled = !failure && !since;
         self.buttons[n-1].accessibilityLabel = [NSString stringWithFormat:@"账号 %02ld，%@",(long)n,state];
     }
+    // Show only accounts present on this Mac (data directory, running or starting), packed top to bottom.
+    CGFloat y = 0; NSUInteger shown = 0, running = 0;
+    for (NSInteger n = 1; n <= 10; n++) {
+        NSArray *pids = self.processes[@(n)]; if (pids.count) running++;
+        BOOL visible = pids.count || self.starting[@(n)] || [NSFileManager.defaultManager fileExistsAtPath:ProfilePath(n)];
+        self.cards[n-1].hidden = !visible;
+        if (visible) { [self.cards[n-1] setFrameOrigin:NSMakePoint(0,y)]; y += 136; shown++; }
+    }
+    [self.cardsView setFrameSize:NSMakeSize(776,MAX(y-12,0))];
+    self.emptyHint.hidden = shown > 0 || self.page != 0;
+    self.summaryLabel.stringValue = failure ? @"状态暂不可用" : [NSString stringWithFormat:@"本机 %lu 个账号 · %lu 个运行中",(unsigned long)shown,(unsigned long)running];
     if (failure) self.message.stringValue = failure;
     else if (self.loginAccount) self.message.stringValue = [NSString stringWithFormat:@"账号 %02ld 登录保护中。%@",(long)self.loginAccount,LoginConflict(snapshot,self.loginAccount) ? @"检测到其他 Claude！请停止登录，并正常退出其他实例。" : @"完成登录并核对身份后，点「结束登录保护」恢复多开。"];
     self.accessibilityStatus.stringValue = AXIsProcessTrusted() ? @"已授权：可恢复最小化的 Claude 窗口。" : @"未授权：无法恢复最小化窗口。授权不会修改账号数据。";
@@ -520,6 +532,7 @@ static const unsigned CardFill = 0xFFFCF7;
     self.page = page;
     for (NSUInteger i = 0; i < self.pages.count; i++) self.pages[i].hidden = (NSInteger)i != page;
     self.createButton.hidden = page != 0;
+    if (page != 0) self.emptyHint.hidden = YES;
     self.sidebar.needsDisplay = YES;
     for (NSView *item in self.navItems) item.needsDisplay = YES;
 }

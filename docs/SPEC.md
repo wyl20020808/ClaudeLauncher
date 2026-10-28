@@ -13,6 +13,7 @@ macOS（`src/main.m`）和 Windows（`windows/`）各自原生实现，共同遵
 - 基础目录：macOS 为 `~/Library/Application Support`；Windows 为 `%APPDATA%`（沿用已有 02/03 数据）。
   - **[Windows 差异，已确认]** MSIX 版 01 的默认 userData 实测为 `%LOCALAPPDATA%\Claude-Data\claude_pzs8sxrjxfjjc`，不在基础目录下；商店版还可能把目录虚拟化到 `%LOCALAPPDATA%\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\<名称>`，Windows 端按同一账号识别和校验。见 `windows/README.md`。
 - 02～10 启动参数 `--user-data-dir=<数据目录>`，环境变量 `CLAUDE_CONFIG_DIR=<数据目录>/ClaudeCodeConfig`。
+- 界面只显示本机已有的账号（数据目录存在、正在运行或正在启动），按编号紧凑排列；没有任何账号时显示空状态提示。“新建实例”创建 01～10 中编号最小的未使用账号。编号与目录映射不变。
 - 已有目录直接复用，不迁移、删除、覆盖、修改权限。新目录仅本人可访问。
   - **[Windows 差异，已确认]** 不设置 ACL，新目录继承 `%APPDATA%` 默认权限（本人、SYSTEM、Administrators），与“仅本人可访问”意图一致。
 - 01 的子进程环境不得带 `CLAUDE_CONFIG_DIR`。Windows 用 `UseShellExecute=false` 会继承启动器环境，因此须显式移除；macOS 经 LaunchServices 启动，不继承启动器环境，只附加显式设置的变量，无需处理。
