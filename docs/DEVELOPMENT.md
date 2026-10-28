@@ -78,3 +78,4 @@
 - 入口：系统设置“检查更新”、应用菜单“检查更新…”；启动 8 秒后若距上次检查超过 24 小时自动检查一次（失败只记日志）。
 - `ClaudeLauncher --check-signer <应用路径>`：开发用，判断该应用能否作为更新被接受。
 - `scripts/dmg.sh` 输出发布机签名清单需要的 `file`、`size`、`sha256`。
+- `ClaudeLauncher --update-test [--github-only]`：开发用。不弹对话框、自动接受更新，打印每个请求、跳转主机和结果，然后走真实下载与替换。只在临时目录的测试副本上运行（可把副本 Info.plist 的版本调低、改 `ClaudeLauncherUpdateBaseURL` 后用同一证书重签），不要对日常应用运行。
