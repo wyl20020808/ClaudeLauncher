@@ -91,7 +91,7 @@ Windows 对应：重解析点（符号链接、junction）等同链接；硬链�
 
 ### 来源与回退
 
-1. **自建服务**：`<自建地址>/latest-<平台>.json` 与同目录安装包。
+1. **自建服务**：`<自建地址>/latest-<平台>.json` 与同目录安装包。macOS 在构建时通过 `UPDATE_BASE_URL` 配置，未配置则直接使用 GitHub。
 2. **GitHub Releases**（自建失败时自动回退）：`https://github.com/wyl20020808/ClaudeLauncher/releases/latest/download/latest-<平台>.json` 与同一 Release 中的安装包。
 3. 两处都失败：提示原因，并提供“前往 GitHub 下载”按钮打开 Releases 页面，由用户手动下载安装。
 
