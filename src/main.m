@@ -710,7 +710,10 @@ static const unsigned CardFill = 0xFFFCF7;
     [self.checking removeObject:key];
     [self refresh];
     if (response != NSAlertSecondButtonReturn) return;
-    failure = [self loginBlocker:account];
+    [self protectAndOpen:account];
+}
+- (void)protectAndOpen:(NSInteger)account {
+    NSString *failure = [self loginBlocker:account];
     if (failure) { [self alert:@"状态已变化，未进入保护" detail:failure]; return; }
     self.loginAccount = account;
     [NSUserDefaults.standardUserDefaults setInteger:account forKey:@"loginProtectionAccount"];
@@ -722,14 +725,26 @@ static const unsigned CardFill = 0xFFFCF7;
     [self refresh];
     NSString *failure = [self openingBlocker:sender.tag expectedPID:0];
     if (failure) { [self alert:@"暂时不能打开账号" detail:failure]; return; }
-    if (!self.loginAccount && !self.processes[key].count && ![NSFileManager.defaultManager fileExistsAtPath:ProfilePath(sender.tag)]) {
-        [self beginLogin:sender]; return;
-    }
     NSInteger account = sender.tag;
+    BOOL create = !self.loginAccount && !self.processes[key].count && ![NSFileManager.defaultManager fileExistsAtPath:ProfilePath(account)];
+    if (create) {
+        NSAlert *choice = [NSAlert new];
+        choice.messageText = [NSString stringWithFormat:@"创建账号 %02ld？",(long)account];
+        choice.informativeText = @"将创建独立的本地数据目录。\n\n直接创建：立即启动，其他 Claude 保持运行。登录时浏览器回调可能打开其他窗口，登录后请核对身份。\n\n进入登录保护：需先正常退出其他 Claude；保护期间只允许打开这个账号，登录更稳妥。";
+        [choice addButtonWithTitle:@"直接创建"]; [choice addButtonWithTitle:@"进入登录保护"]; [choice addButtonWithTitle:@"取消"];
+        [self.checking addObject:key]; // Reserve this account while the modal dialog runs its nested event loop.
+        NSModalResponse response = [choice runModal];
+        [self.checking removeObject:key];
+        [self refresh];
+        if (response == NSAlertSecondButtonReturn) { [self protectAndOpen:account]; return; }
+        if (response != NSAlertFirstButtonReturn) return;
+        failure = [self openingBlocker:account expectedPID:0];
+        if (failure || self.processes[key].count) { [self alert:@"状态已变化，未创建" detail:failure ?: @"该账号已在运行，请重新点击。"]; return; }
+    }
     pid_t expectedPID = self.processes[key].count == 1 ? [self.processes[key].firstObject intValue] : 0;
-    [self checkAccount:account completion:^{ [self openCheckedAccount:account expectedPID:expectedPID]; }];
+    [self checkAccount:account completion:^{ [self openCheckedAccount:account expectedPID:expectedPID create:create]; }];
 }
-- (void)openCheckedAccount:(NSInteger)account expectedPID:(pid_t)expectedPID {
+- (void)openCheckedAccount:(NSInteger)account expectedPID:(pid_t)expectedPID create:(BOOL)create {
     NSNumber *key = @(account);
     [self refresh]; // The background check may outlive a process or a login-protection change.
     NSString *failure = [self openingBlocker:account expectedPID:expectedPID];
@@ -746,8 +761,8 @@ static const unsigned CardFill = 0xFFFCF7;
     if (!bundlePath) { [self alert:@"未找到官方 Claude.app" detail:@"请将官方 Claude.app 安装到 /Applications 或 ~/Applications 后重试。"] ; return; }
     NSError *error = nil; BOOL directory = NO;
     BOOL exists = [NSFileManager.defaultManager fileExistsAtPath:ProfilePath(account) isDirectory:&directory];
-    if (!exists && !self.loginAccount) {
-        self.message.stringValue = @"账号目录已变化，未创建新目录。请重新点击并进入登录保护。"; return;
+    if (!exists && !self.loginAccount && !create) {
+        self.message.stringValue = @"账号目录已变化，未创建新目录。请重新点击。"; return;
     }
     if ((exists && !directory) || (!exists && ![NSFileManager.defaultManager createDirectoryAtPath:ProfilePath(account) withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions:@0700} error:&error])) {
         [self alert:@"无法使用账号目录" detail:error.localizedDescription ?: @"该路径已存在且不是目录。未覆盖任何数据。"] ; return;
