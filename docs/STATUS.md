@@ -2,6 +2,19 @@
 
 整理日期：2026-10-28。源码与本机日常 build/：1.6 / build 7（未发布）；历史交付：1.5 / build 6。
 
+## Windows 同步到 1.6（2026-10-28，feature/windows-sync）
+
+从 dev `5ccb1fc` 创建分支，只改 `windows/` 及 SPEC/STATUS 记录，未改 `src/`、`scripts/` 等 macOS 文件。详细对应与差异见 `windows/README.md`。
+
+- 托盘重启动（使用该 PID 自身程序、5 秒后复查第二个主进程）已在 `c00dc9a` 完成，本轮保留。
+- 存储校验递归到存储项内部（链接、硬链接、所有者），在后台执行；卡片显示“检查中”，完成后重新扫描并核对 PID 与保护状态，原 PID 退出/替换时不自动重启。
+- 只显示本机已有账号、空状态、新建取最小未用编号；新建提醒三选项；“···”菜单（资源管理器显示、复制路径、登录保护、删除/重试删除）；回收站删除按 SPEC 收紧；保守 Code 标签；登录保护（持久化、准入、结束确认）。
+- 界面按 `docs/assets/界面.png` 与 macOS 四页改为水墨浅色：实例管理、账号管理、日志记录（导出/清空可用）、系统设置（日志目录、数据目录、检查更新可用，其余静态占位）。插画构建时由 WebP 转 JPEG 内嵌。
+- 版本 1.6（1.6.0.0）。新增 Inno Setup 安装包脚本，按用户安装到 `%LOCALAPPDATA%\Programs`，卸载不删账号数据；未做代码签名（无证书，SmartScreen 会提示）。安装版继续使用自建更新（单个 exe 原地替换）。
+- 已执行：`build.ps1 -Preview`（241 项断言、`--self-test` 98 项、四页离屏渲染）、`test-install.ps1`（成功/回退/篡改 3 个场景）、`setup.ps1` 及临时目录静默安装/卸载。
+- 未验证：实际 GUI 点击与菜单、登录保护全流程、删除、托盘恢复、真实实例递归检查耗时、“Code 已指定”在真实 MSIX 启动时的表现、Code 实际写入、双账号登录、安装包快捷方式与交互向导、SmartScreen 实际提示。
+- 待用户决定：代码签名证书；公开仓库中的自建更新服务器地址（`windows/src/Updates.cs`）；`windows/assets/claude.ico` 为官方图标，已在公开仓库并用作安装包图标。
+
 ## macOS 隔离加固（2026-10-28，feature/isolation-hardening）
 
 本节是本轮最新状态；下方旧记录按其版本和测试日期解读，不代表本轮重新验证。已执行 `git pull origin dev`，从 `ad91581` 创建 `feature/isolation-hardening`。按用户要求只修改 `src/main.m`、`docs/`、`README.md`，不修改 Windows、构建脚本或 dev/main。版本号仍是 1.6 / build 7，不以版本号区分此次加固。
@@ -46,7 +59,7 @@
 
 - 原独立 Windows 启动器（发布版 1.2.0，C# WPF）源码并入 `windows/`，按 SPEC 补齐：`CLAUDE_CONFIG_DIR`、严格参数解析、同账号多主进程报错、35 秒启动超时、存储元数据校验、`--self-test`；删除入口隐藏。
 - 构建、自动检查（241 项）和 `--self-test`（60 项）在 Windows 11 实机通过。GUI 与真实实例未验证。实测差异见 `windows/README.md` 和 SPEC 中的 [Windows 差异] 标注。
-- 2026-10-28 规格定稿：6 项差异按 SPEC 当前文字确认。Windows 待适配：托盘重启动须使用该 PID 自身的可执行文件（当前用扫描到的首个实例路径），并在重启动后重新扫描，同账号出现第二个主进程时报错（当前未单独检查）。
+- 2026-10-28 规格定稿：6 项差异按 SPEC 当前文字确认。Windows 待适配：托盘重启动须使用该 PID 自身的可执行文件（当前用扫描到的首个实例路径），并在重启动后重新扫描，同账号出现第二个主进程时报错（当前未单独检查）。（已在 `c00dc9a` 完成，见上方 Windows 同步记录。）
 - 待用户决定：公开仓库含自建更新服务地址（Updates.cs、updates/维护说明.md）和官方图标 windows/assets/claude.ico。
 
 ## 界面改版（2026-10-28，feature/ui）

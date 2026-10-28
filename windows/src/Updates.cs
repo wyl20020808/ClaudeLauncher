@@ -10,15 +10,16 @@ using System.Text.RegularExpressions;
 using System.Threading;
 using System.Web.Script.Serialization;
 
-[assembly: AssemblyVersion("1.2.0.0")]
-[assembly: AssemblyFileVersion("1.2.0.0")]
+[assembly: AssemblyVersion("1.6.0.0")]
+[assembly: AssemblyFileVersion("1.6.0.0")]
 namespace ClaudeLauncher {
     public sealed class Release {
         public string version, file, sha256, signature;
         public long size;
     }
     public static class Updates {
-        public const string Version = "1.2.0.0";
+        public const string Version = "1.6.0.0";
+        public const string DisplayVersion = "1.6";
         public const string BaseUrl = "https://www.u4139693.nyat.app:53569/claude-launcher/";
         public static readonly string Cache = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Claude-MultiLauncher", "updates");
         public static string PublicKey() {
