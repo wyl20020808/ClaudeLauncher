@@ -2,6 +2,14 @@
 
 整理日期：2026-10-28。源码与本机日常 build/：1.6 / build 7（未发布）；历史交付：1.5 / build 6。
 
+## macOS 1.7.0 发布准备（2026-10-28，feature/mac-release-name）
+
+- 草稿 Release v1.7.0 上传 DMG 时实测 GitHub 把附件名 `Claude多开启动器-1.7.0.dmg` 改成 `Claude.-1.7.0.dmg`：GitHub 回退下载会 404，Windows 发布脚本也取不到 DMG。macOS 发布文件名改为 ASCII `ClaudeLauncher-<版本>.dmg`（客户端校验、dmg.sh、SPEC 同步），已替换草稿附件。
+- 正式 DMG：`ClaudeLauncher-1.7.0.dmg`，size 2412068，sha256 6fd16b9e8e252d9aa9febef88dc8f18df73c85e242bcf655406e8e9c8a3c6280；签名证书 ClaudeLauncher Local Signing（certificate leaf 5ce1d074…）；构建时设置自建更新地址（UPDATE_BASE_URL，与 Windows BaseUrl 相同）。从草稿回读下载，大小与 SHA-256 一致。
+- 自检四组通过（arm64、x86_64）。
+- 待 Windows：`Updates.FileName("macos")`、`updates/server.py` 白名单、`Storage.cs` 自检中的文件名改为 `ClaudeLauncher-x.y.z.dmg` 后再运行发布脚本。
+- 未验证：真实端到端自动更新（等待 Windows 签名清单并转正式发布）；/Applications 仍为 1.6。
+
 ## Windows 1.7.0 更新协议（2026-10-28，feature/windows-sync）
 
 上一轮交接内容（托盘重启动、递归后台存储检查、只显示已有账号、新建提醒、删除规则、Code 状态、登录保护、四页界面、Setup）已在 `ec71c69` 合入 dev，本轮在其上继续。只改 `windows/` 及 SPEC/STATUS。

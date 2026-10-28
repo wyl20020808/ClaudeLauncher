@@ -150,7 +150,7 @@ static NSDictionary *VerifyManifest(NSData *data, SecKeyRef key, NSString **fail
     if (![m isKindOfClass:NSDictionary.class]) return nil;
     NSString *version = m[@"version"]; NSNumber *size = m[@"size"];
     if (![m[@"platform"] isEqual:@"macos"] || !Matches(version,@"^[0-9]{1,4}\\.[0-9]{1,4}\\.[0-9]{1,4}$")) return nil;
-    if (![m[@"file"] isEqual:[NSString stringWithFormat:@"Claude多开启动器-%@.dmg",version]]) return nil;
+    if (![m[@"file"] isEqual:[NSString stringWithFormat:@"ClaudeLauncher-%@.dmg",version]]) return nil;
     if (![size isKindOfClass:NSNumber.class] || size.doubleValue != size.longLongValue || size.longLongValue < 1024 || size.longLongValue > UpdateSizeLimit) return nil;
     if (!Matches(m[@"sha256"],@"^[a-f0-9]{64}$") || !Matches(m[@"minimumOS"],@"^[0-9]{1,3}(\\.[0-9]{1,3}){0,2}$") || ![m[@"signature"] isKindOfClass:NSString.class]) return nil;
     NSData *signature = [[NSData alloc] initWithBase64EncodedString:m[@"signature"] options:0];
@@ -1497,7 +1497,7 @@ static int SelfTest(void) {
             return [CFBridgingRelease(SecKeyCreateSignature(privateKey,kSecKeyAlgorithmRSASignatureMessagePKCS1v15SHA256,(__bridge CFDataRef)[payload dataUsingEncoding:NSUTF8StringEncoding],NULL)) base64EncodedStringWithOptions:0];
         };
         NSData *(^json)(NSDictionary *) = ^NSData *(NSDictionary *m) { return [NSJSONSerialization dataWithJSONObject:m options:0 error:nil]; };
-        NSMutableDictionary *good = [@{@"platform":@"macos",@"version":@"1.8.0",@"file":@"Claude多开启动器-1.8.0.dmg",@"size":@2048,@"sha256":SHA256Hex([NSData data]),@"minimumOS":@"12.0"} mutableCopy];
+        NSMutableDictionary *good = [@{@"platform":@"macos",@"version":@"1.8.0",@"file":@"ClaudeLauncher-1.8.0.dmg",@"size":@2048,@"sha256":SHA256Hex([NSData data]),@"minimumOS":@"12.0"} mutableCopy];
         good[@"signature"] = sign(good);
         NSString *why = nil;
         NSCAssert(VerifyManifest(json(good),rebuilt,&why) && !why,@"signed manifest accepted");

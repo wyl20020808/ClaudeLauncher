@@ -88,7 +88,7 @@ Windows 对应：重解析点（符号链接、junction）等同链接；硬链�
 |------|------|
 | `platform` | `macos` 或 `windows` |
 | `version` | `1.7.0` |
-| `file` | macOS：`Claude多开启动器-1.7.0.dmg`；Windows：`ClaudeLauncherSetup-1.7.0.exe` |
+| `file` | macOS：`ClaudeLauncher-1.7.0.dmg`；Windows：`ClaudeLauncherSetup-1.7.0.exe`。只用 ASCII：GitHub 会改写附件名中的非 ASCII 字符（实测 `Claude多开启动器-1.7.0.dmg` 变成 `Claude.-1.7.0.dmg`），回退下载会 404。 |
 | `size` | 字节数，上限 50 MB |
 | `sha256` | 小写十六进制 |
 | `minimumOS` | macOS `12.0`；Windows `10.0.19041` |

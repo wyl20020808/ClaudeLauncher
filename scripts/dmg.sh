@@ -5,7 +5,8 @@ cd "${0:A:h}/.."
 APP="${1:-build/Claude 启动器.app}"
 [[ -d "$APP/Contents" ]] || { print -u2 '未找到已构建应用，请先运行 scripts/build.sh'; exit 1; }
 VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")
-DMG="${2:-build/Claude多开启动器-$VERSION.dmg}"
+# 文件名只用 ASCII：GitHub 会把附件名中的非 ASCII 字符替换掉（实测 Claude多开启动器 → Claude.）。
+DMG="${2:-build/ClaudeLauncher-$VERSION.dmg}"
 /usr/bin/codesign --verify --strict "$APP"
 STAGE=$(mktemp -d "${TMPDIR:-/tmp}/claude-launcher-dmg.XXXXXX")
 trap 'rm -rf "$STAGE"' EXIT

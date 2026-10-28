@@ -50,7 +50,7 @@ SIGN_IDENTITY="ClaudeLauncher Local Signing" /bin/zsh scripts/build.sh
 SIGN_IDENTITY="ClaudeLauncher Local Signing" /bin/zsh scripts/dmg.sh
 ```
 
-生成 `build/Claude多开启动器-<版本>.dmg`。打开后把「Claude 启动器」拖到「应用程序」即可安装。应用为通用二进制（Apple 芯片 + Intel），要求 macOS 12 及以上，并需要客户本机已安装官方 Claude 桌面版。
+生成 `build/ClaudeLauncher-<版本>.dmg`。打开后把「Claude 启动器」拖到「应用程序」即可安装。应用为通用二进制（Apple 芯片 + Intel），要求 macOS 12 及以上，并需要客户本机已安装官方 Claude 桌面版。
 
 发给客户前须知：
 
