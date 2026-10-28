@@ -2,6 +2,13 @@
 
 整理日期：2026-10-28。源码与本机日常 build/：1.6 / build 7（未发布）；历史交付：1.5 / build 6。
 
+## macOS 1.7.4 发布（2026-10-28，macos-v1.7.4，Windows 发布机，最后一次由共用密钥签 Mac）
+
+- 草稿目标 `d4cb8a6`；DMG 1686728 字节、SHA-256 与 Mac 端给出一致。Mac 公钥文件只含 Modulus/Exponent，RSA-3072，与共用公钥不同。
+- 共用 DPAPI 密钥在内存中签名 `latest-macos.json`（原文逐字节核对）并验签；Windows 1.7.2 清单与 Setup 从当前 Latest（macos-v1.7.3）下载，验签并核对大小/哈希后原样上传。自建服务放入 DMG 并切换 macOS 清单（旧清单备份 `latest-macos.json.before-1.7.4`），Windows 文件未动。
+- 转正式并设为 Latest；自建与 GitHub 两端清单和包复核：windows 1.7.2、macos 1.7.4 全部通过。之后手动运行一次 `sync.py`：两端均为最新，macOS 信任共用公钥与 `resources/update-public-key-macos.xml`；`tests/sync_test.py` 18 项通过。
+- 此后 Mac 版本由 Mac 发布机用自己的密钥签名，自建服务自动同步。未验证：Mac 1.7.3 → 1.7.4 应用内更新；第一个 Mac 密钥签名版本经同步上线。
+
 ## macOS 独立签名（2026-10-28，feature/mac-signing-key，1.7.4 / build 11）
 
 - 本机生成 Mac 发布私钥（RSA-3072，登录钥匙串，不可导出；用户选择不备份）。首次生成时“不可导出”参数位置错误，检查发现私钥实际可导出（仅在检查程序内存中，未输出或保存），该密钥从未用于签名，已删除并按正确参数重建，工具增加导出自检。公钥提交为 `resources/update-public-key-macos.xml`。
