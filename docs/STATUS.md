@@ -2,6 +2,16 @@
 
 整理日期：2026-10-28。源码与本机日常 build/：1.6 / build 7（未发布）；历史交付：1.5 / build 6。
 
+## macOS 1.7.3 → 1.7.4 界面内更新实测（2026-10-28 10:20）
+
+用户在 /Applications 的 1.7.3 中点击“检查更新”→“立即更新”，完成后核对：
+
+- 版本 1.7.4 / build 11，`codesign --verify --strict` 通过，签名要求不变（certificate leaf 5ce1d074…），内置共用公钥与 `macos-publisher-key.xml` 均在，自建更新地址保留。
+- 旧版备份已清理：/Applications 中无 `.Claude 启动器-backup-*` 或 `-update-*` 残留，`updateBackupPath` 偏好已清除（新版启动后把旧版移到废纸篓这一步此前未验证，本次通过；废纸篓内容受隐私保护未直接读取）。
+- 本次更新未留下临时目录（替换脚本自清理生效）；发现的 05:35 遗留目录来自 1.7.0 的旧替换脚本（当时尚无清理），已删除。
+- 辅助功能授权 accessibility=yes；新版从 /Applications 运行（10:20:13 启动）；Claude 01、02 进程启动于更新前，未受影响。
+- 未验证：“日志记录”页中的“已更新到 1.7.4”记录（日志只在内存中，需用户目视）。
+
 ## macOS 1.7.4 发布（2026-10-28，macos-v1.7.4，Windows 发布机，最后一次由共用密钥签 Mac）
 
 - 草稿目标 `d4cb8a6`；DMG 1686728 字节、SHA-256 与 Mac 端给出一致。Mac 公钥文件只含 Modulus/Exponent，RSA-3072，与共用公钥不同。
