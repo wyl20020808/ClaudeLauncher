@@ -2,6 +2,14 @@
 
 整理日期：2026-10-28。源码与本机日常 build/：1.6 / build 7（未发布）；历史交付：1.5 / build 6。
 
+## Windows 1.7.1 发布（2026-10-28，windows-v1.7.1）
+
+- 起因：用户在已安装的 1.7.0 中删除账号，报 PathTooLongException（Claude 缓存路径超过 260 字符）；删除在确认前的检查阶段停止，未移动任何数据。修复见 `a1e06f5`（声明 .NET 4.8 目标框架、longPathAware、遍历用 `\\?\` 前缀，不依赖系统长路径设置）。
+- 用户决定两端版本不再要求一致（SPEC 已改）。每个正式 Release 仍须同时带两端清单与安装包；`publish-release.ps1` 不给 macOS 参数时只发布 Windows，从上一个最新 Release 验签带入 macOS 1.7.0 清单与 DMG。
+- 已发布 https://github.com/wyl20020808/ClaudeLauncher/releases/tag/windows-v1.7.1 （目标 dev `57f6558`），自建服务 `latest-windows.json` 与 1.2.0 兼容 `latest.json` 切到 1.7.1，macOS 清单未动。脚本两来源复核通过；客户端代码从两个来源取到 1.7.1 并下载成功。
+- 环境说明：Claude Code 运行在 Claude 桌面版（MSIX）中，本会话读到的 HKCU 卸载项被重定向，看不到用户真实安装（D:\Claude 多开启动器）的注册信息；此前的临时目录 Setup 测试也写在该重定向视图里。逻辑测试有效，但真实注册表下的覆盖安装需用户在已安装的 1.7.0 中点“检查更新”验证。
+- 未验证：用户实机 1.7.0 → 1.7.1 应用内更新（下载、静默卸载旧版、安装到原目录、重新打开）；1.7.1 中实际删除长路径账号。
+
 ## macOS 1.7.0 端到端更新验证（2026-10-28，feature/mac-update-e2e）
 
 用 `--update-test`（无对话框、自动接受，开发用）在临时目录的 1.6.0 测试副本上跑真实更新流程，未触碰日常应用：
