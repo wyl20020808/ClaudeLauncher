@@ -18,7 +18,7 @@
 
 运行 `scripts/build.sh`，默认输出到项目 build/。可传入相对项目根目录或绝对输出路径。不要指定日常正在运行或已授权应用所在目录。
 
-构建执行 clang、Info.plist 校验、临时本地签名、签名校验和内置自检。官方图标在构建时从本机 Claude.app 复制。版本号与 build 号位于脚本生成的 Info.plist 内。
+构建执行 clang、Info.plist 校验、临时本地签名、签名校验和内置自检。应用图标与菜单栏图标来自 resources/icon/（用户自有图标，源图 icon-source.webp），构建不再依赖本机 Claude.app 的图标；每次构建先清空输出应用，拒绝直接写入 /Applications。版本号与 build 号位于脚本生成的 Info.plist 内。
 
 单独执行自检：
 

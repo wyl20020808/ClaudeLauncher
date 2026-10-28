@@ -31,7 +31,7 @@ Code 配置状态
 构建
 源码见 src/main.m 和 scripts/build.sh。在项目根目录运行 SIGN_IDENTITY="ClaudeLauncher Local Signing" /bin/zsh scripts/build.sh，可传入独立验证输出目录。依赖 Xcode Command Line Tools，使用原生 AppKit；本机优先 MacOSX15.4.sdk。
 日常打开 build/Claude 启动器.app。重建不会更换正在运行的启动器进程，需要退出启动器后重新打开；这不会退出已有 Claude 实例。旧 Claude 实例要采用新的启动配置，仍需你保存工作后自行正常退出并重新启动。
-构建仅为启动器本身本地签名，复制官方图标，不复制或修改官方 Claude.app。交付面向本机 Apple Silicon，未做 Apple 公证。
+构建仅为启动器本身签名，使用自有图标，不复制或修改官方 Claude.app。交付面向本机 Apple Silicon，未做 Apple 公证。
 历史版本测试记录与当前版本检查分开保留。
 
 1.5：创建按钮蓝色，启动按钮暖棕色，打开按钮绿色；禁用状态灰色。
