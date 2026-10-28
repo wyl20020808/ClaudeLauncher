@@ -8,7 +8,7 @@ $key = Join-Path $fixture 'test-public.xml'
 [IO.File]::WriteAllText($key, $rsa.ToXmlString($false))
 $framework = Join-Path $env:WINDIR 'Microsoft.NET/Framework64/v4.0.30319'
 $compiler = Join-Path $framework 'csc.exe'
-$arguments = @('/nologo','/target:exe','/main:InstallHarness','/reference:System.dll','/reference:System.Core.dll','/reference:System.Management.dll','/reference:System.Xaml.dll','/reference:System.Web.Extensions.dll')
+$arguments = @('/nologo','/target:exe','/main:InstallHarness','/reference:System.dll','/reference:System.Core.dll','/reference:System.Management.dll','/reference:System.Xaml.dll','/reference:System.Web.Extensions.dll','/reference:System.Drawing.dll','/reference:System.Windows.Forms.dll')
 foreach ($name in @('WindowsBase.dll','PresentationCore.dll','PresentationFramework.dll')) { $arguments += '/reference:' + (Join-Path $framework ('WPF/' + $name)) }
 $arguments += '/resource:' + $key + ',ClaudeLauncher.UpdateKey'
 $sources = @('src/ClaudeLauncher.cs','src/ProfileDeletion.cs','src/Updates.cs','src/Diagnostics.cs','src/Storage.cs','src/LauncherUI.cs','tests/InstallHarness.cs') | ForEach-Object { Join-Path $projectRoot $_ }

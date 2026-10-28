@@ -240,6 +240,7 @@ namespace ClaudeLauncher {
         [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr window);
         [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
         [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr FindWindow(string className, string title);
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int RegisterWindowMessage(string name);
         [StructLayout(LayoutKind.Sequential)] struct Rect { public int Left, Top, Right, Bottom; }
         public static IntPtr WindowFor(int processId) {
             IntPtr found = IntPtr.Zero; long area = -1;
@@ -264,6 +265,8 @@ namespace ClaudeLauncher {
     }
 
     public static class Program {
+        // 再次打开启动器时通知已运行的实例显示窗口（窗口可能隐藏在通知区域）。
+        public static string ShowSignalName { get { return @"Local\ClaudeProfileLauncher-show-" + WindowsIdentity.GetCurrent().User.Value; } }
         [STAThread]
         public static int Main(string[] args) {
             Diagnostics.Write("startup", "os=" + Environment.OSVersion + "; runtime=" + Environment.Version);
@@ -278,6 +281,8 @@ namespace ClaudeLauncher {
                 try { owns = mutex.WaitOne(0); } catch (AbandonedMutexException) { owns = true; }
                 if (!owns) {
                     Diagnostics.Write("existing_launcher", "复用已打开的启动器");
+                    try { using (var signal = EventWaitHandle.OpenExisting(ShowSignalName)) signal.Set(); return 0; }
+                    catch (WaitHandleCannotBeOpenedException) { } // 旧版本没有该信号，退回按标题查找窗口。
                     for (int i = 0; i < 15; i++) {
                         IntPtr existing = Native.FindWindow(null, LauncherUI.Title);
                         if (existing != IntPtr.Zero) { Native.Focus(existing); return 0; }

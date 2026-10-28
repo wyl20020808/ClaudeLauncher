@@ -34,7 +34,7 @@ MinVersion=10.0.19041
 ArchitecturesInstallIn64BitMode=x64compatible
 OutputDir={#OutputDir}
 OutputBaseFilename=ClaudeLauncherSetup-{#AppVersion}
-SetupIconFile=..\assets\claude.ico
+SetupIconFile=..\assets\app.ico
 UninstallDisplayIcon={app}\ClaudeLauncher.exe
 UninstallDisplayName=Claude 多开启动器
 Compression=lzma2
@@ -72,7 +72,7 @@ Type: files; Name: "{app}\ClaudeLauncher.exe.failed-*.exe"
 
 [Code]
 // SPEC 更新与安装：已安装时先正常关闭启动器、静默卸载旧版，确认完成后再安装；失败则中止，旧版保持可用。
-// 只关闭启动器本身（按 PID 核对窗口后发送 WM_CLOSE），不结束任何进程，不涉及 Claude。
+// 只关闭启动器本身（按 PID 核对窗口后发送退出消息与 WM_CLOSE），不结束任何进程，不涉及 Claude。
 const
   AppKey = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{7E3C2B5A-4F1D-4C8E-9A61-2D5B8E0C6F14}_is1';
   LauncherTitle = 'Claude 多开启动器';
@@ -85,6 +85,8 @@ function FindWindowEx(Parent, After: HWND; ClassName: Longint; Title: String): H
   external 'FindWindowExW@user32.dll stdcall';
 function GetWindowThreadProcessId(Wnd: HWND; var ProcessId: DWORD): DWORD;
   external 'GetWindowThreadProcessId@user32.dll stdcall';
+function RegisterWindowMessage(Name: String): Cardinal;
+  external 'RegisterWindowMessageW@user32.dll stdcall';
 
 // 返回从旧安装目录运行的启动器 PID，形如 ",12,34,"；没有则为空。
 function RunningLauncherIds(): String;
@@ -105,16 +107,22 @@ begin
   if Result <> '' then Result := Result + ',';
 end;
 
+// 新版启动器关闭窗口只会隐藏到通知区域，需发送专用退出消息；同时发 WM_CLOSE 兼容旧版本。
 procedure CloseLauncherWindows(Ids: String);
 var
   Wnd: HWND;
   Pid: DWORD;
+  ExitMessage: Cardinal;
 begin
+  ExitMessage := RegisterWindowMessage('ClaudeMultiLauncher.Exit');
   Wnd := FindWindowEx(0, 0, 0, LauncherTitle);
   while Wnd <> 0 do begin
     Pid := 0;
     GetWindowThreadProcessId(Wnd, Pid);
-    if Pos(',' + IntToStr(Pid) + ',', Ids) > 0 then PostMessage(Wnd, WM_CLOSE, 0, 0);
+    if Pos(',' + IntToStr(Pid) + ',', Ids) > 0 then begin
+      PostMessage(Wnd, ExitMessage, 0, 0);
+      PostMessage(Wnd, WM_CLOSE, 0, 0);
+    end;
     Wnd := FindWindowEx(0, Wnd, 0, LauncherTitle);
   end;
 end;
