@@ -10,9 +10,11 @@ macOS（`src/main.m`）和 Windows（`windows/`）各自原生实现，共同遵
 | 02 | `<基础目录>/Claude-Second` | `<数据目录>/ClaudeCodeConfig` |
 | 03～10 | `<基础目录>/Claude-Profile-NN` | `<数据目录>/ClaudeCodeConfig` |
 
-- 基础目录：macOS 为 `~/Library/Application Support`；Windows 待确认官方 userData 位置（预期 `%APPDATA%`）。
+- 基础目录：macOS 为 `~/Library/Application Support`；Windows 为 `%APPDATA%`（沿用已有 02/03 数据）。
+  - **[Windows 差异]** MSIX 版 01 的默认 userData 实测为 `%LOCALAPPDATA%\Claude-Data\claude_pzs8sxrjxfjjc`，不在基础目录下；商店版还可能把目录虚拟化到 `%LOCALAPPDATA%\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\<名称>`，Windows 端按同一账号识别和校验。见 `windows/README.md`。
 - 02～10 启动参数 `--user-data-dir=<数据目录>`，环境变量 `CLAUDE_CONFIG_DIR=<数据目录>/ClaudeCodeConfig`。
 - 已有目录直接复用，不迁移、删除、覆盖、修改权限。新目录仅本人可访问。
+  - **[Windows 差异]** 不设置 ACL，新目录继承 `%APPDATA%` 默认权限（本人、SYSTEM、Administrators）。01 启动时从子进程环境移除 `CLAUDE_CONFIG_DIR`，避免继承启动器自身的值。
 
 ## 进程识别
 
@@ -24,6 +26,7 @@ macOS（`src/main.m`）和 Windows（`windows/`）各自原生实现，共同遵
 ## 启动与激活
 
 - 运行中：按 PID 激活。激活前再次核对该 PID 的路径和账号；不以按程序名打开代替。
+  - **[Windows 差异，待 macOS 端/规格决定]** 主进程在托盘中、按 PID 找不到可见窗口时，Windows 端用同一 `--user-data-dir` 再启动一次，由 Claude 单实例锁（4.29 含 `requestSingleInstanceLock`）转交已有进程显示窗口。针对单个账号目录而非按程序名打开，但不是纯 PID 激活。
 - 同一账号多个主进程：报错，不激活、不结束任何实例。
 - 未运行：校验存储后以新实例启动；启动中禁用按钮防重入，35 秒未出现主进程报失败。
 - 启动器单实例；再次打开时唤起已有窗口。关闭启动器不退出 Claude。
@@ -33,7 +36,7 @@ macOS（`src/main.m`）和 Windows（`windows/`）各自原生实现，共同遵
 只检查元数据，从不读取内容。目录及各级上级不得为链接或非目录；以下存储项不得为链接、非本人所有、普通文件硬链接：
 `Cookies`、`Cookies-journal`、`Network`、`Local Storage`、`Session Storage`、`IndexedDB`、`Partitions`、`Local State`、`Preferences`、`config.json`、`Cache`、`Code Cache`、`Service Worker`、`ClaudeCodeConfig`。
 
-Windows 对应：重解析点（符号链接、junction）等同链接；硬链接数通过文件信息查询。
+Windows 对应：重解析点（符号链接、junction）等同链接；硬链接数通过文件信息查询。所有者按 ACL 所有者 SID 判断，以管理员身份创建的文件属于 Administrators 组，会被拒绝。
 
 ## 禁止事项
 
@@ -42,7 +45,10 @@ Windows 对应：重解析点（符号链接、junction）等同链接；硬链�
 - 不强杀 Claude；不修改系统权限或安全设置。
 - 不伪装设备指纹或网络出口。
 - 删除账号功能暂停。
+  - **[Windows 差异]** Windows 1.2.0 已向客户发布回收站删除。开发版已隐藏删除入口，只对此前未完成的删除保留重试（否则该账号无法启动）。
 
 ## 自检
 
 每端提供 `--self-test`：账号映射、Code 配置映射唯一性、参数解析（含 Helper/CLI 排除、异常参数）、路径校验（链接、硬链接拒绝），只用随机合成目录并清理。
+
+Windows 端的 `ClaudeLauncher.exe` 是 GUI 程序，需用 `ClaudeLauncher.exe --self-test | Write-Output` 运行，才会等待退出并显示结果。

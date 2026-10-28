@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
+    <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
+    <ProjectGuid>{E7D9ECE7-B174-4A76-A420-BEB47FBCD624}</ProjectGuid>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>ClaudeLauncher</RootNamespace>
+    <AssemblyName>LauncherTests</AssemblyName>
+    <StartupObject>LauncherTests</StartupObject>
+    <TargetFrameworkVersion>v4.8</TargetFrameworkVersion>
+    <LangVersion>5</LangVersion>
+    <PlatformTarget>AnyCPU</PlatformTarget>
+    <Prefer32Bit>false</Prefer32Bit>
+    <OutputPath>artifacts\vs\tests\$(Configuration)\</OutputPath>
+    <IntermediateOutputPath>artifacts\obj\tests\$(Configuration)\</IntermediateOutputPath>
+    <ApplicationIcon>assets\claude.ico</ApplicationIcon>
+    <ApplicationManifest>src\app.manifest</ApplicationManifest>
+    <DebugSymbols Condition=" '$(Configuration)' == 'Debug' ">true</DebugSymbols>
+    <Optimize Condition=" '$(Configuration)' == 'Release' ">true</Optimize>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="System" />
+    <Reference Include="System.Core" />
+    <Reference Include="System.Management" />
+    <Reference Include="System.Xaml" />
+    <Reference Include="System.Web.Extensions" />
+    <Reference Include="WindowsBase" />
+    <Reference Include="PresentationCore" />
+    <Reference Include="PresentationFramework" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="src\ClaudeLauncher.cs" />
+    <Compile Include="src\ProfileDeletion.cs" />
+    <Compile Include="src\Diagnostics.cs" />
+    <Compile Include="src\Updates.cs" />
+    <Compile Include="src\Storage.cs" />
+    <Compile Include="tests\LauncherTests.cs" />
+    <Compile Include="tests\DeletionTests.cs" />
+    <Compile Include="tests\UpdateTests.cs" />
+    <EmbeddedResource Include="assets\claude.ico"><LogicalName>ClaudeLauncher.Icon</LogicalName></EmbeddedResource>
+    <EmbeddedResource Include="assets\update-public-key.xml"><LogicalName>ClaudeLauncher.UpdateKey</LogicalName></EmbeddedResource>
+  </ItemGroup>
+  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+</Project>

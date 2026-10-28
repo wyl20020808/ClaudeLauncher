@@ -3,3 +3,16 @@ build/
 releases/
 *.zip
 .claude-isolation-tests-*/
+windows/artifacts/
+windows/dist/
+windows/**/bin/
+windows/**/obj/
+windows/.vs/
+windows/updates/public/
+windows/updates/server-state.json
+windows/updates/server-error.txt
+*.dpapi
+*.log
+*.user
+*.suo
+__pycache__/

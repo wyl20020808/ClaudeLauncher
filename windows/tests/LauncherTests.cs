@@ -1,0 +1,147 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Automation;
+using ClaudeLauncher;
+
+public static class LauncherTests {
+    static int checks;
+    static void Check(bool condition, string message) { checks++; if (!condition) throw new Exception(message); }
+    static System.Collections.Generic.IEnumerable<DependencyObject> Children(DependencyObject root) {
+        yield return root;
+        foreach (object child in LogicalTreeHelper.GetChildren(root)) {
+            var node = child as DependencyObject;
+            if (node != null) foreach (var descendant in Children(node)) yield return descendant;
+        }
+    }
+    [STAThread]
+    public static int Main(string[] args) {
+        if (args.Contains("--exit-test-probe")) { System.Threading.Thread.Sleep(600); return 17; }
+        if (args.Contains("--launcher-test-probe")) {
+            Console.WriteLine(Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes("env:" + Environment.GetEnvironmentVariable("CLAUDE_CONFIG_DIR"))));
+            foreach (string arg in args.Where(a => a != "--launcher-test-probe")) Console.WriteLine(Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(arg)));
+            return 0;
+        }
+        // 控制台代码页无法输出中文时，未处理异常连消息都打印不出，这里转为 Base64 以保证可读。
+        try { return Run(); }
+        catch (Exception error) {
+            Console.WriteLine("FAIL (UTF-8 Base64): " + Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(error.GetType().Name + ": " + error.Message + "\n" + error.StackTrace)));
+            return 1;
+        }
+    }
+    static int Run() {
+        string root = @"C:\Users\Other 用户\AppData\Roaming";
+        var paths = new HashSet<string>();
+        for (int i = 1; i <= 10; i++) {
+            string folder = Core.Folder(i, root);
+            Check(paths.Add(folder), "Directories must be unique");
+            string command = "\"" + @"C:\Program Files\WindowsApps\Claude_3_x64__demo\app\Claude.exe" + "\"" +
+                (folder == null ? "" : " --user-data-dir=\"" + folder + "\"");
+            Check(Core.NumberFromCommand(command, root) == i, "Incorrect profile number");
+            Check(Core.NumberFromCommand(command + " --type=renderer", root) == 0, "Renderer counted as account");
+        }
+        Check(Core.Folder(2, root) == Path.Combine(root, "Claude-Second"), "Existing second account changed");
+        Check(Core.NumberFromCommand("Claude.exe --user-data-dir=\"" + @"C:\Unknown" + "\"", root) == 0, "Foreign directory counted");
+        Check(Core.IsDesktop(@"C:\Program Files\WindowsApps\Claude_3_x64__demo\app\Claude.exe"), "Store installation not recognized");
+        Check(!Core.IsDesktop(@"C:\Users\someone\.local\bin\claude.exe"), "CLI mistaken for desktop");
+        var running = new List<Instance> { new Instance { Number=1, ProcessId=111 }, new Instance { Number=2, ProcessId=222 } };
+        Check(!Core.NeedsLaunch(1, running), "Clicking running profile would launch again");
+        Check(!Core.NeedsLaunch(2, running), "Second profile would launch again");
+        Check(Core.NeedsLaunch(3, running), "Missing third profile should launch");
+        bool rejected=false;
+        try { Core.Folder(11, root); } catch (ArgumentOutOfRangeException) { rejected=true; }
+        Check(rejected, "Must reject profile 11");
+        rejected=false;
+        try { Core.NumberFromCommand(null, root); } catch (InvalidOperationException) { rejected=true; }
+        Check(rejected, "Unreadable process must fail closed");
+        string local = @"C:\Users\Other 用户\AppData\Local";
+        for (int n = 1; n <= 10; n++) {
+            foreach (string directory in ProfileDeletion.Candidates(n, root, local)) {
+                Check(Core.NumberFromCommand("Claude.exe --user-data-dir=\"" + directory + "\"", root, local) == n, "Real/virtual directory mapped incorrectly");
+                Check(Core.NumberFromCommand("Claude.exe --user-data-dir \"" + directory.Replace('\\', '/') + "/\"", root, local) == n, "Slash or space argument mapping failed");
+            }
+        }
+        string[] installations = Core.InstallationCandidates(local, @"C:\Program Files", @"C:\Program Files (x86)");
+        Check(installations.Contains(@"C:\Program Files\Claude\Claude.exe"), "Program Files installation missing");
+        Check(installations.Contains(@"C:\Program Files (x86)\Claude\Claude.exe"), "Program Files x86 installation missing");
+        foreach (string path in installations.Where(p => !p.EndsWith("claude-desktop.exe"))) Check(Core.IsDesktop(path), "Discovered install cannot be recognized on restart");
+        Check(Core.IsDesktop(@"C:\Users\Customer\AppData\Local\AnthropicClaude\app-1.2.3\Claude.exe"), "Versioned installation not recognized");
+        SelfTest.Run();
+        DeletionTests.Run(Check);
+        TestLaunches();
+        UpdateTests.Run(Check);
+        using (var watch = new ProcessWatch()) {
+            var info = new System.Diagnostics.ProcessStartInfo(System.Reflection.Assembly.GetExecutingAssembly().Location, "--exit-test-probe") { UseShellExecute=false, CreateNoWindow=true };
+            using (var child = System.Diagnostics.Process.Start(info)) {
+                watch.Refresh(new[] { new Instance { Number=10, ProcessId=child.Id } });
+                Check(child.WaitForExit(5000), "Exit probe did not finish");
+                bool recorded=false;
+                for(int attempt=0;attempt<40;attempt++) {
+                    try { recorded=File.ReadLines(Diagnostics.CurrentFile).Any(line=>line.Contains("account_process_exit") && line.Contains("pid="+child.Id+";") && line.Contains("exitCode=17")); } catch(IOException) { }
+                    if(recorded) break;
+                    System.Threading.Thread.Sleep(50);
+                }
+                Check(recorded, "Process exit code was not logged");
+            }
+        }
+        // 构造原生界面以验证 XAML 和控件，测试不显示窗口、不启动 Claude。
+        new System.Windows.Application();
+        var ui = new LauncherUI();
+        foreach (int n in new[] {1, 3}) {
+            var dialog = ui.BuildDeleteDialog(n, new[] { @"C:\fixture\Claude" });
+            var controls = Children(dialog).ToArray();
+            var confirm = controls.OfType<Button>().Single(b => AutomationProperties.GetAutomationId(b) == "ConfirmDelete");
+            var cancel = controls.OfType<Button>().Single(b => b.IsCancel);
+            Check(cancel.IsDefault && !confirm.IsDefault, "Enter must default to cancel");
+            Check(confirm.IsEnabled == (n != 1), "Default account needs extra acknowledgment");
+            Check(controls.OfType<TextBox>().Single().IsReadOnly, "Deletion paths must be read-only");
+            if (n == 1) {
+                var acknowledge = controls.OfType<CheckBox>().Single();
+                acknowledge.IsChecked = true; Check(confirm.IsEnabled, "Acknowledgment should enable confirmation");
+                acknowledge.IsChecked = false; Check(!confirm.IsEnabled, "Removing acknowledgment should disable confirmation");
+            }
+        }
+        Console.WriteLine("PASS: " + checks + " assertions; WPF layout loaded without showing windows.");
+        return 0;
+    }
+    static void TestLaunches() {
+        string fixture = Path.Combine(Path.GetTempPath(), "claude-launch-test-" + Guid.NewGuid().ToString("N"), "客户 测试 & O'Neil");
+        Directory.CreateDirectory(fixture);
+        string executable = Path.Combine(fixture, "启动探针.exe");
+        File.Copy(System.Reflection.Assembly.GetExecutingAssembly().Location, executable);
+        string roaming = Path.Combine(fixture, "Roaming");
+        try {
+            var running = new List<Instance>();
+            for (int n = 1; n <= 10; n++) {
+                Check(Core.NeedsLaunch(n, running), "New slot blocked by an existing account");
+                var info = Core.PrepareLaunch(n, executable, roaming);
+                info.Arguments += " --launcher-test-probe";
+                info.UseShellExecute = false; info.CreateNoWindow = true; info.RedirectStandardOutput = true;
+                using (var process = System.Diagnostics.Process.Start(info)) {
+                    string[] output = process.StandardOutput.ReadToEnd().Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries).Select(x => System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(x))).ToArray();
+                    Check(process.WaitForExit(10000) && process.ExitCode == 0, "Launch probe failed");
+                    string argument = output.Length < 2 ? "" : output[1];
+                    Check(output.Length == (n == 1 ? 1 : 2) && argument == (n == 1 ? "" : "--user-data-dir=" + Core.Folder(n, roaming)), "Account path was split or altered during process launch");
+                    Check(output[0] == "env:" + (n == 1 ? "" : Core.CodeConfig(Core.Folder(n, roaming))), "CLAUDE_CONFIG_DIR not passed (or leaked into 01)");
+                }
+                if (n > 1) {
+                    string folder = Core.Folder(n, roaming), marker = Path.Combine(folder, "existing-data.txt");
+                    Check(Directory.Exists(folder), "New account directory was not created");
+                    File.WriteAllText(marker, "account-" + n);
+                    Core.PrepareLaunch(n, executable, roaming);
+                    Check(File.ReadAllText(marker) == "account-" + n, "Reopening destroyed account data");
+                    for (int prior = 2; prior < n; prior++) Check(File.ReadAllText(Path.Combine(Core.Folder(prior, roaming), "existing-data.txt")) == "account-" + prior, "Adding account changed an existing account");
+                }
+                running.Add(new Instance { Number=n, ProcessId=1000+n });
+                Check(!Core.NeedsLaunch(n, running), "Repeated click should reuse running account");
+            }
+        } finally {
+            string parent = Path.GetFullPath(Path.GetDirectoryName(fixture));
+            if (!parent.StartsWith(Path.GetFullPath(Path.GetTempPath()), StringComparison.OrdinalIgnoreCase) || !Path.GetFileName(parent).StartsWith("claude-launch-test-")) throw new IOException("Invalid launch fixture cleanup root");
+            RecycleBin.Move(parent);
+        }
+    }
+}
