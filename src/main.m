@@ -505,7 +505,7 @@ static const unsigned CardFill = 0xFFFCF7;
 }
 @end
 
-@interface Launcher : NSObject <NSApplicationDelegate, NSWindowDelegate>
+@interface Launcher : NSObject <NSApplicationDelegate, NSWindowDelegate, NSMenuDelegate>
 @property NSWindow *window;
 @property NSMutableArray<NSButton *> *buttons;
 @property NSMutableArray<NSTextField *> *statuses;
@@ -526,6 +526,7 @@ static const unsigned CardFill = 0xFFFCF7;
 @property BOOL updating;
 @property BOOL headless;         // --update-test: no dialogs, accept the offered update, print results.
 @property BOOL skipSelfHosted;
+@property NSStatusItem *statusItem;
 @property NSString *lastLogged;
 @property NSTextField *accessibilityStatus;
 @property NSTextField *message;
@@ -571,6 +572,7 @@ static const unsigned CardFill = 0xFFFCF7;
     NSInteger savedLogin = [NSUserDefaults.standardUserDefaults integerForKey:@"loginProtectionAccount"];
     self.loginAccount = savedLogin >= 1 && savedLogin <= 10 ? savedLogin : 0;
     [self makeWindow]; [self refresh]; [self show:nil];
+    [self makeStatusItem];
     [self finishPendingUpdate];
     NSDate *lastCheck = [NSUserDefaults.standardUserDefaults objectForKey:@"lastUpdateCheck"];
     if (![lastCheck isKindOfClass:NSDate.class] || -lastCheck.timeIntervalSinceNow > 24*3600)
@@ -1026,6 +1028,35 @@ static const unsigned CardFill = 0xFFFCF7;
     NSApp.mainMenu = menu;
 }
 - (void)show:(id)sender { [self.window deminiaturize:nil]; [self.window makeKeyAndOrderFront:nil]; [NSApp activateIgnoringOtherApps:YES]; }
+// Menu-bar item (SPEC 常驻图标). Placeholder art until the user supplies an icon: resources/ui/menubar.png if bundled, else an SF Symbol.
+- (void)makeStatusItem {
+    self.statusItem = [NSStatusBar.systemStatusBar statusItemWithLength:NSVariableStatusItemLength];
+    NSString *path = [NSBundle.mainBundle pathForResource:@"menubar" ofType:@"png"];
+    NSImage *image = path ? [[NSImage alloc] initWithContentsOfFile:path] : [NSImage imageWithSystemSymbolName:@"square.stack.3d.up" accessibilityDescription:@"Claude 多开启动器"];
+    image.size = NSMakeSize(18,18); image.template = YES;
+    self.statusItem.button.image = image; self.statusItem.button.toolTip = @"Claude 多开启动器";
+    NSMenu *menu = [NSMenu new]; menu.delegate = self; menu.autoenablesItems = NO;
+    self.statusItem.menu = menu;
+}
+// Rebuilt on every open after a fresh scan, so the account states are never stale.
+- (void)menuNeedsUpdate:(NSMenu *)menu {
+    [menu removeAllItems];
+    NSMenuItem *show = [menu addItemWithTitle:@"显示启动器窗口" action:@selector(show:) keyEquivalent:@""]; show.target = self;
+    [menu addItem:NSMenuItem.separatorItem];
+    [self refresh];
+    if (self.scanError) [menu addItemWithTitle:self.scanError action:nil keyEquivalent:@""].enabled = NO;
+    NSUInteger shown = 0;
+    for (NSInteger n = 1; n <= 10; n++) {
+        if (self.cards[n-1].hidden) continue;
+        NSMenuItem *item = [menu addItemWithTitle:[NSString stringWithFormat:@"账号 %02ld · %@",(long)n,self.statuses[n-1].stringValue] action:@selector(openFromMenu:) keyEquivalent:@""];
+        item.target = self; item.tag = n; item.enabled = self.buttons[n-1].enabled; shown++;
+    }
+    if (!shown && !self.scanError) [menu addItemWithTitle:@"本机还没有账号" action:nil keyEquivalent:@""].enabled = NO;
+    [menu addItem:NSMenuItem.separatorItem];
+    NSMenuItem *update = [menu addItemWithTitle:@"检查更新…" action:@selector(checkForUpdates:) keyEquivalent:@""]; update.target = self;
+    [menu addItemWithTitle:@"退出启动器" action:@selector(terminate:) keyEquivalent:@""];
+}
+- (void)openFromMenu:(NSMenuItem *)item { [self selectAccount:self.buttons[item.tag-1]]; }
 - (BOOL)applicationShouldHandleReopen:(NSApplication *)app hasVisibleWindows:(BOOL)visible { [self show:nil]; return YES; }
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)app { return NO; }
 - (void)refresh {
