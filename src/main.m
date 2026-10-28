@@ -66,6 +66,13 @@ static NSString *ValidateProfile(NSInteger account) {
     if (account < 1 || account > 10) return @"账号编号无效。";
     return ValidateProfileAtPath(ProfilePath(account),ProfilePath(account));
 }
+// Returns why an account cannot be deleted right now, or nil. 01 is the official default profile and is never deleted here.
+static NSString *DeleteBlocker(NSInteger account, NSArray *pids, BOOL starting) {
+    if (account == 1) return @"账号 01 是 Claude 默认目录，启动器不删除它。";
+    if (account < 2 || account > 10) return @"账号编号无效。";
+    if (starting || pids.count) return @"该账号正在运行或启动中。请先在 Claude 中正常退出（⌘Q），再删除。";
+    return nil;
+}
 static BOOL LoginConflict(NSDictionary<NSNumber *,NSArray *> *processes, NSInteger account) {
     for (NSNumber *key in processes) if (key.integerValue != account && [processes[key] count]) return YES;
     return NO;
@@ -549,11 +556,40 @@ static const unsigned CardFill = 0xFFFCF7;
     reveal.target = self; reveal.tag = sender.tag; reveal.enabled = [NSFileManager.defaultManager fileExistsAtPath:ProfilePath(sender.tag)];
     NSMenuItem *copy = [menu addItemWithTitle:@"复制账号目录路径" action:@selector(copyProfilePath:) keyEquivalent:@""];
     copy.target = self; copy.tag = sender.tag;
+    [menu addItem:NSMenuItem.separatorItem];
+    NSMenuItem *remove = [menu addItemWithTitle:@"删除该实例…" action:@selector(deleteProfile:) keyEquivalent:@""];
+    remove.target = self; remove.tag = sender.tag;
+    remove.attributedTitle = [[NSAttributedString alloc] initWithString:@"删除该实例…" attributes:@{NSForegroundColorAttributeName:NSColor.systemRedColor,NSFontAttributeName:[NSFont menuFontOfSize:0]}];
+    remove.enabled = sender.tag != 1 && [NSFileManager.defaultManager fileExistsAtPath:ProfilePath(sender.tag)];
+    if (sender.tag == 1) remove.toolTip = @"账号 01 是 Claude 默认目录，不能在启动器中删除。";
     [menu popUpMenuPositioningItem:nil atLocation:NSMakePoint(0,-4) inView:sender];
 }
 - (void)revealProfile:(NSMenuItem *)item { [NSWorkspace.sharedWorkspace activateFileViewerSelectingURLs:@[[NSURL fileURLWithPath:ProfilePath(item.tag)]]]; }
 - (void)copyProfilePath:(NSMenuItem *)item {
     [NSPasteboard.generalPasteboard clearContents]; [NSPasteboard.generalPasteboard setString:ProfilePath(item.tag) forType:NSPasteboardTypeString];
+}
+- (void)deleteProfile:(NSMenuItem *)item {
+    NSInteger account = item.tag; NSNumber *key = @(account);
+    [self refresh];
+    NSString *blocker = self.scanError ?: DeleteBlocker(account, self.processes[key], self.starting[key] != nil);
+    if (blocker) { [self alert:@"暂时不能删除" detail:blocker]; return; }
+    NSAlert *confirm = [NSAlert new]; confirm.alertStyle = NSAlertStyleWarning;
+    confirm.messageText = [NSString stringWithFormat:@"删除账号 %02ld？",(long)account];
+    confirm.informativeText = [NSString stringWithFormat:@"将把以下目录移到废纸篓，其中的登录状态、聊天缓存和 Claude Code 配置会一起移走：\n%@\n\n清空废纸篓前可以恢复。",ProfilePath(account)];
+    [confirm addButtonWithTitle:@"取消"];
+    NSButton *destroy = [confirm addButtonWithTitle:@"移到废纸篓"]; destroy.hasDestructiveAction = YES;
+    if ([confirm runModal] != NSAlertSecondButtonReturn) return;
+    // State may have changed while the dialog was open; recheck identity, process state and path safety.
+    [self refresh];
+    blocker = self.scanError ?: DeleteBlocker(account, self.processes[key], self.starting[key] != nil) ?: ValidateProfile(account);
+    if (blocker) { [self alert:@"已取消删除" detail:blocker]; return; }
+    NSError *error = nil;
+    if (![NSFileManager.defaultManager trashItemAtURL:[NSURL fileURLWithPath:ProfilePath(account) isDirectory:YES] resultingItemURL:nil error:&error]) {
+        [self alert:@"删除失败" detail:error.localizedDescription ?: @"未移动任何数据。"]; return;
+    }
+    [self.errors removeObjectForKey:key];
+    self.message.stringValue = [NSString stringWithFormat:@"账号 %02ld 已移到废纸篓。",(long)account];
+    [self refresh];
 }
 - (void)revealSupport:(id)sender {
     [NSWorkspace.sharedWorkspace openURL:[NSURL fileURLWithPath:[NSHomeDirectory() stringByAppendingPathComponent:@"Library/Application Support"]]];
@@ -694,6 +730,10 @@ static int SelfTest(void) {
         NSCAssert(LoginConflict(@{@1:@[@123]},2),@"other account blocks login");
         NSCAssert(LoginConflict(@{@0:@[@123]},2),@"unmanaged official instance blocks login");
         NSCAssert(!LoginConflict(@{@2:@[@123]},2),@"own instance allowed");
+        NSCAssert(DeleteBlocker(1,@[],NO),@"default profile never deleted");
+        NSCAssert(DeleteBlocker(3,@[@123],NO) && DeleteBlocker(3,@[],YES),@"running or starting profile not deleted");
+        NSCAssert(DeleteBlocker(11,@[],NO),@"out-of-range account rejected");
+        NSCAssert(!DeleteBlocker(3,@[],NO),@"idle profile deletable");
         NSString *root = [NSFileManager.defaultManager.currentDirectoryPath stringByAppendingPathComponent:[@".claude-isolation-tests-" stringByAppendingString:NSUUID.UUID.UUIDString]];
         NSFileManager *fm = NSFileManager.defaultManager;
         NSString *a = [root stringByAppendingPathComponent:@"A"], *b = [root stringByAppendingPathComponent:@"B"];
@@ -714,7 +754,7 @@ static int SelfTest(void) {
         NSCAssert(ValidateProfileAtPath(a,a),@"hardlinked cookie store rejected");
         NSCAssert([[NSString stringWithContentsOfFile:marker encoding:NSUTF8StringEncoding error:nil] isEqual:@"synthetic-test-only"],@"other fixture untouched");
         NSCAssert([fm removeItemAtPath:root error:nil],@"clean generated fixtures only");
-        puts("PASS: login conflict guard, duplicate overrides, exact paths, symlink and hardlink rejection; synthetic fixtures only");
+        puts("PASS: login conflict guard, delete guards, duplicate overrides, exact paths, symlink and hardlink rejection; synthetic fixtures only");
         puts("PASS: profile mapping, helper/CLI filtering, malformed arguments, kernel argv");
     } return 0;
 }

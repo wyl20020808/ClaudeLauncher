@@ -7,7 +7,7 @@ Claude 启动器 1.6（开发构建；日常交付仍为 1.5）
 01：~/Library/Application Support/Claude（沿用默认账号，不传覆盖参数）
 02：~/Library/Application Support/Claude-Second
 03～10：~/Library/Application Support/Claude-Profile-03 至 Claude-Profile-10
-悬停主按钮可查看完整目录。已有数据不会删除、迁移或覆盖。
+悬停主按钮可查看完整目录。启动器不会自动删除、迁移或覆盖数据。 删除：点卡片右侧“···”→“删除该实例…”，确认后整个账号目录移到废纸篓（可恢复）。账号 01 不能删除；运行中的账号需先在 Claude 中正常退出（⌘Q）。
 
 登录
 已移除“单独登录”入口和常驻保护说明。创建空账号空间时显示简短提醒。需要登录或换号时，请先保存工作并正常退出其他 Claude 实例，再自行登录并核对身份；浏览器登录回调仍可能切错实例。
