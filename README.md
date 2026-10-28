@@ -6,6 +6,8 @@
 
 管理本机的 Claude 桌面账号（最多 10 个，只显示已有的）。水墨风界面：左侧导航（实例管理、账号管理、项目管理、日志记录、系统设置），右侧账号卡片；运行中显示棕色“打开”，已有目录未运行显示“启动”，无目录显示“创建”，“+ 新建实例”创建第一个未使用的编号。使用同一份官方 Claude.app，通过不同数据目录启动，不复制、修改或重签官方应用。
 
+实验分支 `codex/usage-limits-research`：macOS 卡片可在窗口切到前台时读取官方已保存的五小时／周用量历史，标明“本地记录”和采样时间。不会发送限额查询或触发官方刷新，不读取凭据。记录超过 15 分钟、多组织身份不明或格式不支持时不显示百分比；它不能替代官方实时用量页面。尚未发布／安装，详见 [用量调查](docs/USAGE-RESEARCH.md) 与 [状态](docs/STATUS.md)。
+
 ![界面](docs/assets/界面.png)
 
 ## 项目结构
@@ -14,6 +16,7 @@
 src/main.m                  macOS 应用实现与内置自检
 src/Projects.h / Projects.m  项目清单、路径校验与合成自检
 src/ProjectImport.h / .m     只读目录识别、批量导入与边界自检
+src/UsageHistory.h / .m      只读官方用量历史、格式与安全边界自检
 windows/                    Windows 原生实现（项目管理待按 SPEC 实现）
 docs/SPEC.md                跨平台行为规格
 scripts/build.sh            构建、签名和自检

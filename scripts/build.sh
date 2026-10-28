@@ -17,7 +17,7 @@ if [[ -z "$BUILD_SDK" ]]; then
         BUILD_SDK=$(xcrun --show-sdk-path)
     fi
 fi
-xcrun clang -isysroot "$BUILD_SDK" -arch arm64 -arch x86_64 -fobjc-arc -Wall -Wextra -Wno-unused-parameter -mmacosx-version-min=12.0 -framework Cocoa -framework ApplicationServices -framework Security src/main.m src/Projects.m src/ProjectImport.m -o "$APP/Contents/MacOS/ClaudeLauncher"
+xcrun clang -isysroot "$BUILD_SDK" -arch arm64 -arch x86_64 -fobjc-arc -Wall -Wextra -Wno-unused-parameter -mmacosx-version-min=12.0 -framework Cocoa -framework ApplicationServices -framework Security src/main.m src/Projects.m src/ProjectImport.m src/UsageHistory.m -o "$APP/Contents/MacOS/ClaudeLauncher"
 cp resources/icon/AppIcon.icns resources/icon/menubar.png "$APP/Contents/Resources/"
 cp resources/ui/*.webp resources/update-helper.sh windows/assets/update-public-key.xml "$APP/Contents/Resources/"
 # Mac 发布公钥在包内改名：NSBundle 会把以 -macos 结尾的文件当作平台变体，顶替同名的共用公钥。
