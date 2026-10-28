@@ -16,6 +16,8 @@ using System.Web.Script.Serialization;
 
 [assembly: AssemblyVersion("1.7.0.0")]
 [assembly: AssemblyFileVersion("1.7.0.0")]
+// csc 直接编译时没有目标框架声明，运行时会退回旧路径规则（拒绝超过 260 字符的路径）；Claude 的缓存目录常超过此长度。
+[assembly: System.Runtime.Versioning.TargetFramework(".NETFramework,Version=v4.8", FrameworkDisplayName = ".NET Framework 4.8")]
 namespace ClaudeLauncher {
     // SPEC 更新与安装：latest-<平台>.json。
     public sealed class Release {

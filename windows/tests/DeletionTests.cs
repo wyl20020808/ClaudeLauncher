@@ -80,6 +80,15 @@ public static class DeletionTests {
             Directory.CreateDirectory(Core.Folder(3, roaming));
             check(!Directory.EnumerateFileSystemEntries(first).Any(), "Recreated profile must be empty");
             check(File.Exists(Path.Combine(neighbour, "keep.txt")), "Neighbour lost after recreation");
+
+            // 长路径（超过 260 字符）：删除前检查不能因路径过长失败，且能整体移入回收站。
+            string deep = Path.Combine(Core.Folder(5, roaming), "Service Worker", new string('s', 120), new string('t', 120), new string('u', 120));
+            Directory.CreateDirectory(Storage.Extended(deep));
+            File.WriteAllText(Storage.Extended(Path.Combine(deep, "index-dir-entry")), "fixture-only");
+            check(Path.Combine(deep, "index-dir-entry").Length > 300, "Long-path fixture too short");
+            string[] longApproved = ProfileDeletion.Prepare(5, roaming, local);
+            check(longApproved.Length == 1, "Long-path profile not prepared");
+            check(ProfileDeletion.Execute(5, roaming, local, longApproved, () => { }, RecycleBin.Move) == 1 && !Directory.Exists(Core.Folder(5, roaming)), "Long-path profile was not recycled");
         } finally {
             string full = Path.GetFullPath(fixture);
             if (!full.StartsWith(Path.GetFullPath(Path.GetTempPath()), StringComparison.OrdinalIgnoreCase) || !Path.GetFileName(full).StartsWith("claude-delete-test-"))
