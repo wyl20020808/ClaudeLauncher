@@ -90,15 +90,18 @@ static NSString *MetricKey(NSString *label) {
     if ([@[@"每周 · 所有模型",@"Weekly · all models"] containsObject:label]) return @"sd";
     return nil; // Model-specific weekly and context utilization are not the account's weekly limit.
 }
+// Before the first message of a new five-hour window, the official button shows the weekly limit instead.
 static NSDictionary *ButtonMetric(NSString *label) {
-    for (NSString *pattern in @[@"^用量[：:]\\s*5 小时限额的 ([0-9]{1,3}(?:\\.[0-9]+)?)%(.*)$",
-                                @"^Usage: ([0-9]{1,3}(?:\\.[0-9]+)?)% of (?:the )?5-hour limit(.*)$"]) {
+    NSDictionary *patterns = @{@"^用量[：:]\\s*5 小时限额的 ([0-9]{1,3}(?:\\.[0-9]+)?)%(.*)$":@"fh",
+                               @"^Usage: ([0-9]{1,3}(?:\\.[0-9]+)?)% of (?:the )?5-hour limit(.*)$":@"fh",
+                               @"^用量[：:]\\s*每周 · 所有模型[：:]\\s*([0-9]{1,3}(?:\\.[0-9]+)?)%(.*)$":@"sd"};
+    for (NSString *pattern in patterns) {
         NSTextCheckingResult *match = [[NSRegularExpression regularExpressionWithPattern:pattern options:0 error:nil] firstMatchInString:label options:0 range:NSMakeRange(0,label.length)];
         if (!match) continue;
         NSNumber *percent = Percent(@([[label substringWithRange:[match rangeAtIndex:1]] doubleValue]));
         if (!percent) return nil;
         NSString *reset = [[label substringWithRange:[match rangeAtIndex:2]] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-        return @{@"percent":percent,@"reset":reset};
+        return @{@"key":patterns[pattern],@"percent":percent,@"reset":reset};
     }
     return nil;
 }
@@ -106,7 +109,7 @@ static BOOL CodeURL(NSString *value) {
     if (![value isKindOfClass:NSString.class]) return NO;
     NSURL *url = [NSURL URLWithString:value];
     return [url.scheme isEqual:@"https"] && [url.host isEqual:@"claude.ai"] && !url.user && !url.password && !url.port && !url.query && !url.fragment &&
-        [url.path hasPrefix:@"/epitaxy/"] && url.path.length > 9;
+        ([url.path isEqual:@"/epitaxy"] || ([url.path hasPrefix:@"/epitaxy/"] && url.path.length > 9)); // Code home or a conversation.
 }
 static BOOL UsageURL(NSString *value) {
     NSURL *url = [NSURL URLWithString:value];
@@ -158,7 +161,7 @@ static BOOL UsageURL(NSString *value) {
     if ([role isEqual:@"AXStaticText"]) {
         NSString *text = String([self read:node key:@"AXValue"]);
         if (MetricKey(text)) *reset = nil;
-        else if ([text containsString:@"重置"] || [text hasPrefix:@"Resets "]) *reset = text;
+        else if ([text containsString:@"重置"] || [text hasPrefix:@"Resets "] || [text containsString:@"第一条消息"]) *reset = text;
         return YES;
     }
     if ([role isEqual:@"AXLevelIndicator"] || [role isEqual:@"AXProgressIndicator"]) {
@@ -185,16 +188,17 @@ static BOOL UsageURL(NSString *value) {
         else return; // The native wrapper is a sibling of Code, not its parent in Claude 4.29.0.
     }
     if (page && [role isEqual:@"AXPopUpButton"]) {
-        NSDictionary *five = ButtonMetric([self name:node]);
-        if (!five) return;
-        NSMutableDictionary *result = [@{@"status":@"界面已读取",@"page":page,@"fh":five} mutableCopy];
+        NSDictionary *shown = ButtonMetric([self name:node]);
+        if (!shown) return;
+        NSString *key = shown[@"key"];
+        NSMutableDictionary *result = [@{@"status":@"界面已读取",@"page":page,key:@{@"percent":shown[@"percent"],@"reset":shown[@"reset"]}} mutableCopy];
         NSUInteger panels = 0;
         for (id sibling in [self children:parent]) {
             // Chromium's generic container role/name varies. Verify the dedicated settings link before reading text.
             if (sibling == node || ![self hasUsageLink:sibling depth:0]) continue;
             NSMutableDictionary *metrics = [NSMutableDictionary dictionary]; NSString *reset = nil; BOOL linked = NO;
-            if (![self panel:sibling metrics:metrics reset:&reset linked:&linked depth:0] || !linked || !metrics[@"fh"] ||
-                ![metrics[@"fh"][@"percent"] isEqual:five[@"percent"]]) { result = nil; break; }
+            if (![self panel:sibling metrics:metrics reset:&reset linked:&linked depth:0] || !linked || !metrics[key] ||
+                ![metrics[key][@"percent"] isEqual:shown[@"percent"]]) { result = nil; break; }
             [result addEntriesFromDictionary:metrics]; panels++;
         }
         if (!result || panels > 1) [self.matches addObject:@{@"status":@"界面数据待核对"}];
@@ -357,7 +361,7 @@ NSArray *StoredUsageInterface(NSDictionary *records) {
     NSMutableArray *items = [NSMutableArray array];
     for (NSNumber *account in [[records allKeys] sortedArrayUsingSelector:@selector(compare:)]) {
         NSDictionary *record = records[account];
-        if (![record[@"status"] isEqual:@"界面已读取"] || !record[@"identity"] || !record[@"fh"]) continue;
+        if (![record[@"status"] isEqual:@"界面已读取"] || !record[@"identity"] || !(record[@"fh"] || record[@"sd"])) continue;
         NSMutableDictionary *item = [@{@"identity":record[@"identity"]} mutableCopy];
         for (NSString *key in @[@"fh",@"sd"]) if (record[key]) item[key] = [record[key] dictionaryWithValuesForKeys:@[@"percent",@"reset",@"observedAt"]];
         [items addObject:item]; // No page/session identifier, conversation content or credentials are persisted.
@@ -393,7 +397,7 @@ NSDictionary *LoadedUsageInterface(id stored, NSDate *now) {
                 ![metric[@"observedAt"] isKindOfClass:NSDate.class] || !isfinite([now timeIntervalSinceDate:metric[@"observedAt"]]) || [now timeIntervalSinceDate:metric[@"observedAt"]] < 0) continue;
             record[key] = @{@"percent":metric[@"percent"],@"reset":metric[@"reset"],@"observedAt":metric[@"observedAt"],@"visible":@NO};
         }
-        if (record[@"fh"]) records[@(account)] = record;
+        if (record[@"fh"] || record[@"sd"]) records[@(account)] = record;
     }
     return records;
 }
@@ -470,6 +474,21 @@ void TestUsageInterface(void) {
     NSDictionary *deep = node(@"AXGroup",@{},@[secondButton]);
     for (NSUInteger i=0;i<45;i++) deep = node(@"AXGroup",@{},@[deep]);
     NSCAssert(read(@[page(@[deep,button])])[@"fh"] && !read(@[page(@[deep])])[@"fh"],@"deep unrelated branches cannot block supported quota controls or become quota candidates");
+    NSDictionary *weeklyButton = node(@"AXPopUpButton",@{@"AXDescription":@"用量：每周 · 所有模型：7%周三19:00 重置"},@[]);
+    NSDictionary *idle = read(@[node(@"AXWebArea",@{@"AXURL":@"https://claude.ai/epitaxy"},@[node(@"AXGroup",@{},@[weeklyButton])])]);
+    NSCAssert(!idle[@"fh"] && [idle[@"sd"][@"percent"] isEqual:@7] && [idle[@"sd"][@"reset"] isEqual:@"周三19:00 重置"],@"idle five-hour window: Code home weekly button supplies only weekly");
+    NSDictionary *idlePanel = node(@"AXGroup",@{},@[
+        node(@"AXLink",@{@"AXURL":@"https://claude.ai/settings/usage"},@[]),
+        node(@"AXStaticText",@{@"AXValue":@"发送第一条消息后开始计时"},@[]),
+        node(@"AXLevelIndicator",@{@"AXDescription":@"5 小时限额",@"AXValue":@0},@[]),
+        node(@"AXLevelIndicator",@{@"AXDescription":@"每周 · 所有模型",@"AXValue":@7},@[])]);
+    NSDictionary *idleOpen = read(@[page(@[weeklyButton,idlePanel])]);
+    NSCAssert([idleOpen[@"fh"][@"percent"] isEqual:@0] && [idleOpen[@"fh"][@"reset"] isEqual:@"发送第一条消息后开始计时"] && [idleOpen[@"sd"][@"percent"] isEqual:@7],@"expanded weekly button refreshes reset five-hour value");
+    NSCAssert(!read(@[page(@[node(@"AXPopUpButton",@{@"AXDescription":@"用量：每周 · 所有模型：8%"},@[]),idlePanel])])[@"sd"],@"weekly button must match its panel");
+    NSCAssert(UsagePopoverOpens(@"AXPopUpButton",@"用量：每周 · 所有模型：7%周三19:00 重置",@YES),@"manual expansion of weekly button triggers one observation");
+    NSDictionary *idleMerged = MergeUsageInterface(first,idle,@[@1,@123,@456],[now dateByAddingTimeInterval:30]);
+    NSCAssert([idleMerged[@"fh"][@"observedAt"] isEqual:now] && ![idleMerged[@"fh"][@"visible"] boolValue] && [idleMerged[@"sd"][@"observedAt"] isEqual:[now dateByAddingTimeInterval:30]],@"weekly-only read keeps five-hour as last observation");
+    NSCAssert(!read(@[node(@"AXWebArea",@{@"AXURL":@"https://claude.ai/epitaxyx"},@[button])])[@"fh"],@"only Code home or conversation pages accepted");
     NSData *syntheticMarker = [NSMutableData dataWithLength:CC_SHA256_DIGEST_LENGTH];
     NSArray *identity = @[@1,@123,@456,@0,@[@1,@2],syntheticMarker];
     NSDictionary *persisted = MergeUsageInterface(nil,open,identity,now);
@@ -485,6 +504,8 @@ void TestUsageInterface(void) {
     NSDictionary *hidden = MergeUsageInterface(restored[@1],@{@"status":@"未观察到 Code 用量"},identity,[now dateByAddingTimeInterval:60]);
     NSCAssert([hidden[@"sd"][@"percent"] isEqual:@7] && [hidden[@"sd"][@"observedAt"] isEqual:now] && ![hidden[@"sd"][@"visible"] boolValue],@"closed interface retains last observation without fabricating freshness");
     NSCAssert(!MergeUsageInterface(restored[@1],closed,@[@2,@123,@456,@0,@[@1,@2],syntheticMarker],now)[@"sd"],@"persisted quota never crosses accounts");
+    NSDictionary *weeklyOnly = LoadedUsageInterface(StoredUsageInterface(@{@1:MergeUsageInterface(nil,idle,identity,now)}),now);
+    NSCAssert([weeklyOnly[@1][@"sd"][@"percent"] isEqual:@7] && !weeklyOnly[@1][@"fh"],@"weekly-only observation persists without inventing five-hour value");
     // Production rejects shared writable ancestors; keep fixtures under the owned home directory.
     NSString *folder = [NSHomeDirectory() stringByAppendingPathComponent:[@".claude-launcher-marker-test-" stringByAppendingString:NSUUID.UUID.UUIDString]];
     NSCAssert([NSFileManager.defaultManager createDirectoryAtPath:folder withIntermediateDirectories:NO attributes:@{NSFilePosixPermissions:@0700} error:nil],@"marker fixture directory");
