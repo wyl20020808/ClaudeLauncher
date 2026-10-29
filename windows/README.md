@@ -87,7 +87,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup.ps1
 
 ## 发布（发布机）
 
-两种方式：只发布 Windows 时直接运行 `scripts/publish-release.ps1`（标签 `windows-v<版本>`，从当前最新 Release 带入已签名的 macOS 清单与 DMG，验签核对后一并放进新 Release，自建服务的 macOS 清单不动）；两端同时发布时运行 `scripts/publish-release.ps1 -MacSize <字节> -MacSha256 <哈希>`（标签 `v<版本>`）：构建 Setup → 从草稿 Release `v<版本>` 下载 macOS DMG 并核对 macOS 给出的 size/sha256 → 内存中解密 DPAPI 私钥，签名 `latest-windows.json`、`latest-macos.json`（首行 `macos`、`ClaudeLauncher-<版本>.dmg`、`minimumOS=12.0`）和 1.2.0 兼容 `latest.json`，并本地验签 → 安装包复制到 `updates/public/` → Setup 与两份清单上传到草稿 → 原子切换自建服务清单 → 草稿转正式 → 从自建服务与 GitHub 各下载一次清单和安装包验签核对。正式发布后的任何失败都会恢复自建清单并把 Release 改回草稿。`-DryRun` 只构建、签名和本地校验，不上传（可用测试密钥）。私钥不落盘、不输出。服务端白名单与维护步骤见 `updates/维护说明.md`。
+两种方式：只发布 Windows 时直接运行 `scripts/publish-release.ps1`（标签 `windows-v<版本>`，从当前最新 Release 带入已签名的 macOS 清单与 DMG，验签核对后一并放进新 Release，自建服务的 macOS 清单不动）；两端同时发布时运行 `scripts/publish-release.ps1 -MacSize <字节> -MacSha256 <哈希>`（标签 `v<版本>`）：构建 Setup → 从草稿 Release `v<版本>` 下载 macOS DMG 并核对 macOS 给出的 size/sha256 → 内存中解密 DPAPI 私钥，签名 `latest-windows.json`、`latest-macos.json`（首行 `macos`、`ClaudeLauncher-<版本>.dmg`、`minimumOS=12.0`）和 1.2.0 兼容 `latest.json`，并本地验签 → 安装包复制到 `updates/public/` → Setup 与两份清单上传到草稿 → 原子切换自建服务清单 → 草稿转正式 → 从自建服务与 GitHub 各下载一次清单和安装包验签核对。上传后先经 GitHub API 下载草稿附件逐字节核对（不符则停在草稿、原 Latest 与自建服务不变），转正式前记下上一版 Latest；只有内容确认不符才回滚（恢复自建清单、改回草稿并显式恢复上一版 Latest），latest/download 最多等 10 分钟，仅缓存未更新或自建服务暂时不可达时保留发布并以状态 2 退出。`-DryRun` 只构建、签名和本地校验，不上传（可用测试密钥）。私钥不落盘、不输出。服务端白名单与维护步骤见 `updates/维护说明.md`。
 
 ## 常驻图标（通知区域）
 

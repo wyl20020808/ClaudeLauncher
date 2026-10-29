@@ -1,5 +1,11 @@
 # 项目状态
 
+## Windows 发布脚本加固（2026-10-29，feature/windows-publish-hardening，未发布）
+
+- `windows/scripts/publish-release.ps1` 按 `scripts/publish-macos.sh` 加固：上传后经 GitHub API 下载草稿附件核对清单与哈希（不经 latest/download），不符停在草稿，原 Latest 与自建服务不变；转正式前记下上一版 Latest；只有内容确认不符才回滚（恢复自建清单、改回草稿、显式恢复上一版 Latest）；latest/download 最多等 10 分钟，仅缓存未更新或自建服务暂时不可达时保留发布、列出未完成项并以状态 2 退出。`-DryRun` 遇同名 Release 只警告。过渡期仍同步自建服务。
+- 验证：PowerShell 语法解析通过；`-DryRun`（一次性测试密钥，用后删除）38 秒通过：构建 Setup（含自动检查与自检）、从当前 Latest `macos-v1.7.15` 带入 macOS 清单并验签、DMG 1984327 字节哈希一致、三份清单签名与本地验签；测试签名的暂存目录已删除。
+- 未验证：草稿上传、API 核对、转正式、等待缓存、回滚与状态 2 分支均需真实发布才能执行。
+
 ## Windows 本地界面用量调查报告（2026-10-29，feature/windows-usage-research，仅文档）
 
 - 按交接 C4 只写调查报告 [USAGE-RESEARCH-WINDOWS.md](USAGE-RESEARCH-WINDOWS.md)，没有写代码。覆盖 Mac 踩过的 a～e（网页辅助功能树默认关闭、多账号按 PID 归属、两种 Code 页面、五小时重置后按钮改显示周额度、读取中不闪空与短超时），以及 Windows 上的 UIA 对应做法和需实测项。

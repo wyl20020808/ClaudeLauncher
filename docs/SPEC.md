@@ -213,7 +213,7 @@ Windows 对应：重解析点（符号链接、junction）等同链接；硬链�
 > - **[Windows 差异]** 回滚：Setup 先卸载旧版再安装，新版安装失败时旧版已卸载，无法自动回滚到旧版（账号数据不受影响，可重新运行 Setup 或从 GitHub 下载）。旧版卸载失败、启动器无法正常关闭时则中止并保留旧版。
 > - **[Windows 差异]** `minimumOS` 每段允许 1～5 位数字（Windows 版本号第三段为构建号，如 `19041`）。macOS 端解析 `latest-macos.json` 时可保持 1～3 位。
 > - 兼容 1.2.0：发布脚本额外签发旧格式 `latest.json`（签名原文 version、file、size、sha256），指向同版本的单个 `ClaudeLauncher-x.x.x.0.exe`，1.2.0 客户端用 `--apply-update` 原地替换；新程序保留该入口。旧清单只放自建服务。
-> - 发布流程与上文的差别：macOS DMG 由 macOS 端先上传到草稿 Release，发布脚本下载并核对 macOS 给出的 size/sha256，再上传 Setup 与两份清单，切换自建服务清单后把草稿转为正式；正式发布后的任何失败都会恢复自建清单并把 Release 改回草稿。
+> - 发布流程与上文的差别：macOS DMG 由 macOS 端先上传到草稿 Release，发布脚本下载并核对 macOS 给出的 size/sha256，再上传 Setup 与两份清单，切换自建服务清单后把草稿转为正式；上传后先经 GitHub API 下载草稿附件逐字节核对（不符则停在草稿、原 Latest 与自建服务不变），转正式前记下上一版 Latest；只有内容确认不符才回滚（恢复自建清单、改回草稿并显式恢复上一版 Latest），latest/download 最多等 10 分钟，仅缓存未更新或自建服务暂时不可达时保留发布并以状态 2 退出。
 
 两端共用一套发布与校验流程。来源有两个，内容相同、校验相同：放在哪里不影响安全，安全只靠签名。
 
@@ -260,6 +260,12 @@ Windows 对应：重解析点（符号链接、junction）等同链接；硬链�
 ### 发布流程（发布机）
 
 一个脚本完成：构建两端安装包 → 计算 SHA-256 → 用私钥签名两份清单 → 上传自建服务 → `gh release create v<版本>` 上传两份清单与两个安装包 → 两个来源各下载一次并验签核对。任何一步失败都不发布半成品。
+
+复核加固（macOS `publish-macos.sh` 与 Windows `publish-release.ps1` 一致，Windows 于 feature/windows-publish-hardening 对齐）：
+- 上传后先经 GitHub API 下载草稿附件，核对附件清单与逐字节内容（不经 latest/download 缓存）；不符则停在草稿，原 Latest 不变（Windows 另保证此时尚未切换自建服务清单）。
+- 转正式前记下上一版 Latest。只有内容确认不符才回滚：改回草稿，并显式把上一版设回 Latest（Windows 同时恢复自建清单），避免 GitHub 自动选中更早版本导致 latest/download 失效。
+- latest/download 最多等 10 分钟；仅缓存未更新（Windows 另含自建服务暂时不可达）时保留发布、提示稍后复核并以状态 2 退出。
+- `--dry-run`／`-DryRun` 只构建、签名、本地校验与带入核对，不创建 Release；Windows 允许测试密钥，同名 Release 已存在时只警告。
 
 **每个正式 Release 都必须同时包含两端当前的清单与安装包。** GitHub 回退地址 `releases/latest/download/` 只指向最新的一个 Release；若只放一个平台的文件，另一平台回退时会 404。
 
