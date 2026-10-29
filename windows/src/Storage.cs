@@ -327,6 +327,30 @@ namespace ClaudeLauncher {
                 File.WriteAllText(settingsFile, broken);
                 Check(!LauncherSettings.Load(settingsFile).AllowUpdates, "异常设置必须回落为关闭：" + broken);
             }
+            // SPEC 系统设置 [Windows]：默认值、逐项校验（异常项只回落该项）、全部字段往返、导出不含账号数据、上次页面白名单。
+            var defaults = new LauncherSettings();
+            Check(defaults.CloseToBackground && defaults.ShowTray && !defaults.RememberPage && defaults.StartPage == "instances" && defaults.RefreshInterval == 3 &&
+                defaults.RestoreMinimized && defaults.ShowArtwork && defaults.LogLimit == 500 && defaults.LocalNotifications && !defaults.NotificationSound && !defaults.AllowUpdates, "设置默认值与 SPEC 不符");
+            File.WriteAllText(settingsFile, "{\"version\":1,\"refreshInterval\":0,\"logLimit\":999999,\"startPage\":\"C:\\\\Windows\",\"showTray\":\"yes\",\"closeToBackground\":false,\"unknown\":true}");
+            var mixed = LauncherSettings.Load(settingsFile);
+            Check(mixed.RefreshInterval == 3 && mixed.LogLimit == 500 && mixed.StartPage == "instances" && mixed.ShowTray && !mixed.CloseToBackground && mixed.LoadError == null, "单项异常只应回落该项");
+            var changed = new LauncherSettings { CloseToBackground = false, ShowTray = false, RememberPage = true, StartPage = "logs", RefreshInterval = 5, RestoreMinimized = false,
+                ShowArtwork = false, LogLimit = 100, LocalNotifications = false, NotificationSound = true, AllowUpdates = true };
+            changed.Save(settingsFile);
+            Check(LauncherSettings.Load(settingsFile).SameAs(changed) && !changed.SameAs(defaults) && changed.Clone().SameAs(changed), "设置往返或比较错误");
+            string exported = changed.ExportJson();
+            Check(exported.StartsWith("{\"version\":1,\"settings\":{") && !exported.Contains("account") && !exported.Contains("Claude-") && !exported.Contains("lastPage"), "导出设置格式错误或含账号数据");
+            string lastPage = Path.Combine(root, "settings", "last-page");
+            Check(LauncherSettings.ReadLastPage(lastPage) == null, "缺少上次页面应为空");
+            LauncherSettings.WriteLastPage(lastPage, "accounts");
+            Check(LauncherSettings.ReadLastPage(lastPage) == "accounts", "上次页面往返错误");
+            File.WriteAllText(lastPage, @"..\..\evil");
+            Check(LauncherSettings.ReadLastPage(lastPage) == null, "未知上次页面必须忽略");
+            Rejects(() => LauncherSettings.WriteLastPage(lastPage, "evil"), "不得写入未知页面");
+            // 开机启动：只接受正式安装路径；值比较不区分大小写、需带引号的完整路径。（不读写真实注册表）
+            string installed = @"C:\Users\x\AppData\Local\Programs\Claude 多开启动器\ClaudeLauncher.exe";
+            Check(AutoStart.IsInstalledCopy(installed.ToUpperInvariant(), installed) && !AutoStart.IsInstalledCopy(@"D:\ClaudeLauncher\windows\artifacts\bin\ClaudeLauncher.exe", installed), "正式安装路径判断错误");
+            Check(AutoStart.PointsTo("\"" + installed + "\"", installed) && !AutoStart.PointsTo(installed, installed) && !AutoStart.PointsTo("\"C:\\other.exe\"", installed) && !AutoStart.PointsTo(null, installed), "开机启动值比较错误");
             Check(Updates.SignerProblem(null, null) == null && Updates.SignerProblem("AA", "aa") == null, "签名者规则错误");
             Check(Updates.SignerProblem("AA", null) != null && Updates.SignerProblem("AA", "BB") != null, "签名者不一致必须拒绝");
             string unsigned = Path.Combine(root, "unsigned.exe");

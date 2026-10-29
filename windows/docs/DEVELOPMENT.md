@@ -3,14 +3,15 @@
 ## 技术结构
 
 - `src/ClaudeLauncher.cs`：账号路径、进程发现、准入判断（打开/删除/登录保护/Code 状态）、登录保护持久化、窗口恢复及程序入口。
-- `src/LauncherUI.cs`：WPF 四页界面、“···”菜单、对话框，以及后台检查后再核对的打开/删除/登录保护流程。
+- `src/LauncherUI.cs`：WPF 四页界面（系统设置六分类与草稿／保存／撤销／恢复默认）、“···”菜单、对话框，以及后台检查后再核对的打开/删除/登录保护流程。
 - `src/ProfileDeletion.cs`：目录范围校验、运行状态拦截、回收站操作和未完成删除标记。
 - `src/Storage.cs`：存储元数据递归校验（链接、所有者、硬链接）及 `--self-test`。
 - `installer/ClaudeLauncher.iss`、`scripts/setup.ps1`：Inno Setup 安装包。
 - `scripts/publish-release.ps1`：两端一次发布（签名清单、上传自建服务与 GitHub Release、两来源复核）。
 - `src/Diagnostics.cs`：本地日志与账号进程退出观察。
 - `src/Updates.cs`：版本号、唯一更新来源（本项目 GitHub Releases）、集中 URL 白名单 `UrlAllowed`、开关未开启时的提前拒绝、清单验签、下载校验、Authenticode 签名者比对、运行 Setup；以及 1.2.0 兼容的 `--apply-update` 原地替换。新的联网入口必须经过 `UrlAllowed` 并在 `--self-test` 中加离线拒绝用例。
-- `src/Settings.cs`：启动器自己的设置 `%LOCALAPPDATA%\Claude-MultiLauncher\settings.json`（目前只有 `allowUpdates`，默认关闭；异常回落默认，原子替换写入）。
+- `src/Settings.cs`：启动器自己的设置 `%LOCALAPPDATA%\Claude-MultiLauncher\settings.json`（SPEC 系统设置 [Windows] 的 11 项，逐项白名单校验、异常回落默认、原子替换写入、导出 version 1），上次页面 `last-page`，以及 HKCU Run 开机启动项 `AutoStart`（只接受正式安装路径）。
+- 界面测试与离屏预览用 `new LauncherUI(new LauncherSettings(), <临时路径>)`，不读写用户真实设置。
 - `assets/update-public-key.xml`：客户端公开验签密钥，允许随源码分发。
 
 程序使用 C# 5 / .NET Framework WPF。无 NuGet 依赖；构建脚本直接调用系统 `csc.exe`。源文件编码 UTF-8；PowerShell 脚本使用 UTF-8 BOM 以兼容 Windows PowerShell 5.1。

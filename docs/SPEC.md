@@ -19,6 +19,17 @@
 
 不再提供自动恢复 Claude 实例、改默认浏览器、迁移账号目录或未存在的批量启动间隔。默认页面只在「恢复上次页面」关闭时可选。设置保存不修改运行中 Claude 的配置。
 
+**[Windows]**（2026-10-29，feature/windows-settings）同一六分类与草稿规则，WPF 原生控件（开关为带切换状态的复选框，选项为下拉框）：
+
+- 存储：`%LOCALAPPDATA%\Claude-MultiLauncher\settings.json`，`{"version":1,"closeToBackground":true,"showTray":true,"rememberPage":false,"startPage":"instances","refreshInterval":3,"restoreMinimized":true,"showArtwork":true,"logLimit":500,"localNotifications":true,"notificationSound":false,"allowUpdates":false}`。逐项按类型与可选值校验，单项异常只回落该项；文件缺失、损坏或版本不是 1 时全部用默认。同目录临时文件写完后替换；保存失败保留原文件与草稿。`startPage` 存页面名（`instances`／`accounts`／`logs`／`settings`，项目页接入后加 `projects`），不存序号。上次页面只在开启「恢复上次页面」时写入同目录 `last-page`。
+- 常规：关闭窗口继续运行（开：隐藏窗口，托盘或再次打开启动器可恢复；关：关闭窗口即退出启动器，Claude 继续运行）；通知区域图标（关闭后托盘菜单不可用，再次打开启动器即可显示窗口）。
+- 启动行为：开机启动写 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 的 `ClaudeMultiLauncher` 值（带引号的程序路径），单独确认、立即生效、不进草稿；只在程序位于 `%LOCALAPPDATA%\Programs\Claude 多开启动器\ClaudeLauncher.exe` 时允许开启，开发副本拒绝；关闭只删除本值且仅当它指向本启动器。卸载程序不处理该值（升级时 Setup 会先运行旧卸载程序，处理它会丢失用户选择），卸载前请先关闭开机启动。**[Windows 差异]** 本地进程刷新间隔默认 3 秒（实测一次 WMI 扫描约 280 ms，1 秒间隔开销过大），可选 1／3／5 秒。点击账号时恢复最小化窗口：关闭时若目标窗口已最小化，不还原、不切换，只提示从任务栏打开。
+- 外观：显示水墨插画（侧栏山水、主区背景、账号卡片插画）。「显示本地界面用量」在本地界面用量实现前不提供开关，只显示说明；语言／主题为固定说明。
+- 数据与存储：在资源管理器中显示、复制启动器数据目录；导出已保存设置为 `{"version":1,"settings":{…}}`（不含账号、别名、项目、凭据、登录保护、上次页面）；内存日志上限 100／500／1000（默认 500），保存后立即截断。
+- 消息通知：窗口内提示为主区底部的临时提示条（约 5 秒），用于警告与错误；提示音用系统“感叹号”声音，仅在窗口内提示开启时生效；测试按钮按已保存设置显示。安全确认与错误弹窗不受影响。
+- 关于软件：版本、离线帮助、复制基础诊断（仅启动器版本、Windows 版本、联网更新开关、Claude/Anthropic 请求禁止）、更新开关与检查按钮。
+- 退出启动器（托盘「退出启动器」、关闭窗口且未开启继续运行）时有未保存设置：提示保存后退出／放弃更改退出／取消。系统注销或安装程序请求退出时不阻拦。
+
 ### 账号与日志交互
 
 - 账号搜索支持本地别名、固定编号和目录；状态筛选支持运行中／未运行／处理中／异常。进程扫描失败时显示未知，不伪装成确定状态。统计仍按全部已有账号计算。
@@ -34,7 +45,7 @@
 - 重定向只允许本项目 Release 下载路径及 GitHub 的 `objects.githubusercontent.com`／`release-assets.githubusercontent.com`；拒绝所有其他域名，包括 Claude／Anthropic。使用无 Cookie、无凭据存储、无 URL 缓存的临时会话。签名、哈希、版本和安装证书校验保留。
 - `--update-test` 也需明确的 `--allow-updates` 参数，且仍经过同一 URL 白名单；普通自检和 UI 自检不联网。导出、诊断、帮助不产生网络请求。
 - 有未保存设置时不开始更新；下载期间若出现未保存更改，安装前取消并清理临时更新文件，保留当前程序和草稿。
-- **[Windows]** `allowUpdates` 保存在 `%LOCALAPPDATA%\Claude-MultiLauncher\settings.json`（`{"version":1,"allowUpdates":false}`，同目录临时文件写完后替换；缺失、损坏或类型不符按默认关闭）。系统设置“检查启动器更新”开关先进入草稿，点“保存设置”才生效。开启后每次打开启动器检查一次（只在有新版时提示，失败只记日志），另可从设置页或托盘“检查更新…”手动检查；未开启时这些入口都不联网，只提示先开启并保存。删除自建来源、取较高版本、启动 8 秒后／24 小时自动检查及 `last-update-check` 记录。
+- **[Windows]** `allowUpdates` 保存在 `%LOCALAPPDATA%\Claude-MultiLauncher\settings.json`（格式见上文「系统设置」[Windows]；缺失、损坏或类型不符按默认关闭）。「关于软件」中的“检查启动器更新”开关先进入草稿，点“保存设置”才生效。开启后每次打开启动器检查一次（只在有新版时提示，失败只记日志），另可从设置页或托盘“检查更新…”手动检查；未开启时这些入口都不联网，只提示先开启并保存。删除自建来源、取较高版本、启动 8 秒后／24 小时自动检查及 `last-update-check` 记录。
 - **[Windows]** 唯一网络入口 `Updates.UrlAllowed` 在创建请求前校验：首次请求只允许 `https://github.com/wyl20020808/ClaudeLauncher/releases/latest/download/` 下的 `latest-windows.json` 与严格版本文件名的 `ClaudeLauncherSetup-<x.y.z>.exe`；跳转只允许同仓库 `releases/download/<标签>/` 下的这两类文件，以及 `objects.githubusercontent.com`／`release-assets.githubusercontent.com`。一律 HTTPS、443、无用户信息，最多 5 跳；请求不带凭据、不预认证、无 Cookie、不缓存，TLS 证书校验保持系统默认。发布脚本与自建服务过渡期仍为 1.7.3 及更早客户端发布，客户端不再读取。
 
 

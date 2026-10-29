@@ -14,7 +14,8 @@ C# 5 / .NET Framework 4.8 WPF（系统自带），无 NuGet 依赖。构建脚�
 | 启动实例 | `ProcessStartInfo`（`UseShellExecute=false`，设置 `CLAUDE_CONFIG_DIR`），返回新进程 PID |
 | 单实例 | 按用户 SID 命名的 Mutex，重复打开时激活已有窗口 |
 | 存储校验 | `FileAttributes.ReparsePoint`、ACL 所有者、`GetFileInformationByHandle` 链接数（只读属性，不打开内容），存储项内部递归，在后台线程执行 |
-| 界面 | WPF 代码构建，水墨浅色四页（实例管理、账号管理、日志记录、系统设置） |
+| 界面 | WPF 代码构建，水墨浅色四页（实例管理、账号管理、日志记录、系统设置六分类） |
+| 设置 | `%LOCALAPPDATA%\Claude-MultiLauncher\settings.json`（`src/Settings.cs`）；开机启动为 HKCU Run 的 `ClaudeMultiLauncher` 值 |
 
 目录：`src/` 生产源码（`ClaudeLauncher.cs` 核心逻辑，`LauncherUI.cs` 界面与流程，`Storage.cs` 存储校验与自检），`tests/` 自动检查，`scripts/` 构建、安装包与发布工具，`installer/` Inno Setup 脚本，`assets/` 图标与更新验签公钥，`updates/` 自建更新服务，`docs/` 开发、设计和用户说明。界面插画取自仓库根目录 `resources/ui/*.webp`，构建时转为 JPEG 内嵌，客户电脑不需要 WebP 解码器。
 
@@ -26,7 +27,7 @@ C# 5 / .NET Framework 4.8 WPF（系统自带），无 NuGet 依赖。构建脚�
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1
 ```
 
-该脚本编译 `artifacts/bin/ClaudeLauncher.exe` 和 `LauncherTests.exe`，先跑自动检查，再跑内置自检。加 `-Preview`（或运行 `scripts/preview-ui.ps1`）还会离屏渲染四个页面到 `artifacts/previews/`。单独运行自检（GUI 程序需经管道才会等待退出并输出结果）：
+该脚本编译 `artifacts/bin/ClaudeLauncher.exe` 和 `LauncherTests.exe`，先跑自动检查，再跑内置自检。加 `-Preview`（或运行 `scripts/preview-ui.ps1`）还会离屏渲染实例、账号、日志三页及系统设置六个分类到 `artifacts/previews/`。单独运行自检（GUI 程序需经管道才会等待退出并输出结果）：
 
 ```powershell
 artifacts\bin\ClaudeLauncher.exe --self-test | Write-Output
@@ -46,6 +47,8 @@ artifacts\bin\ClaudeLauncher.exe --self-test | Write-Output
 - 检查期间原 PID 退出或被替换时不自动重启、不切换；
 - 更新协议（一次性 RSA-3072 测试密钥）：`latest-windows.json` 验签与签名原文格式、篡改哈希/大小拒绝、其他密钥拒绝、平台/文件名/版本格式/大小上限/哈希格式/minimumOS 不符拒绝（即使签名正确）、非 Base64 签名与超大清单拒绝、`latest-macos.json` 验签；版本比较只升不降；系统版本比较；Authenticode 签名者规则与未签名文件识别；内置公钥为 RSA-3072。
 - 网络边界：`UrlAllowed` 允许本项目清单／Setup 首次请求、同仓库标签下载路径及两个 GitHub 附件主机作跳转；拒绝 HTTP、非 443、用户信息、其他仓库、任意路径、查询串、其他清单、相似域名、自建服务、claude.ai、anthropic.com 等（每个地址首次与跳转两种情形）；未开启更新时检查与下载在创建任何请求前拒绝（请求计数不变）。设置文件默认关闭、保存往返、覆盖不残留临时文件、损坏／未知版本／类型不符回落关闭。
+- 系统设置：11 项默认值与 SPEC 一致；单项异常（越界、类型不符、路径当页面名）只回落该项；全部字段往返；导出为 version 1 且不含账号数据；上次页面白名单；开机启动只接受正式安装路径、值比较规则（不读写真实注册表）。
+- 界面（LauncherTests，合成设置 + 临时路径）：六个分类按钮、假选项已移除；开关改变草稿、切换分类保留草稿、撤销不写文件；恢复上次页面时默认页面禁用；保存后日志上限截断内存日志、插画隐藏、窗口内提示关闭；恢复默认只填草稿；更新检查在未开启或有未保存设置时不创建请求；诊断只含版本、系统版本与联网开关。
 
 1.2.0 兼容的 `--apply-update` 原地替换改动后，另运行 `scripts/test-install.ps1`。
 
@@ -70,7 +73,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup.ps1
 
 ## 应用内更新（SPEC 更新与安装）
 
-- 开关（feature/windows-update-boundary 起）：`allowUpdates` 默认关闭，保存在 `%LOCALAPPDATA%\Claude-MultiLauncher\settings.json`；系统设置“检查启动器更新”切换后需点“保存设置”。未开启时设置页“检查更新”与托盘“检查更新…”都不联网，只提示开启；有未保存设置时不开始；下载期间设置被改则安装前取消并删除临时文件。
+- 开关（feature/windows-update-boundary 起）：`allowUpdates` 默认关闭，保存在 `%LOCALAPPDATA%\Claude-MultiLauncher\settings.json`；系统设置“关于软件 → 允许检查 GitHub 更新”切换后需点“保存设置”。未开启时设置页“检查更新”与托盘“检查更新…”都不联网，只提示开启；有未保存设置时不开始；下载期间设置被改则安装前取消并删除临时文件。
 - 时机：开启后每次打开启动器检查一次（只在有新版时提示，失败只记日志）+ 手动检查；没有定时或后台重复检查，已删除 8 秒／24 小时自动检查及 `last-update-check`。
 - 来源：只用 `https://github.com/wyl20020808/ClaudeLauncher/releases/latest/download/latest-windows.json` 与同 Release 的 Setup；失败时显示原因并提供“前往 GitHub 下载”（打开 Releases 页面）。自建服务与“取较高版本”已从客户端移除（发布脚本过渡期仍为旧客户端同步自建服务）。
 - 清单：`platform=windows`、`version` x.y.z、`file=ClaudeLauncherSetup-<版本>.exe`、`size`（1 KB～50 MB）、小写 `sha256`、`minimumOS`、`signature`；签名原文为 platform、version、file、size、sha256 各一行（`\n` 结尾），RSA-3072 + SHA-256（PKCS#1 v1.5），公钥 `assets/update-public-key.xml`（与 macOS 同一把）。清单上限 16 KB。
@@ -86,7 +89,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup.ps1
 
 ## 常驻图标（通知区域）
 
-- 启动器运行期间托盘常驻；关闭主窗口只隐藏（首次弹一次提示），程序和图标继续运行。左键单击或双击显示主窗口，右键弹出菜单。
+- 启动器运行期间托盘常驻（可在“常规设置”关闭图标）；关闭主窗口只隐藏（首次弹一次提示），程序和图标继续运行；“关闭窗口后继续运行”关闭时，关闭窗口即退出启动器。左键单击或双击显示主窗口，右键弹出菜单。
 - 菜单：显示启动器窗口 / 本机账号（“账号 NN · 运行中/未运行”，进行中时显示检查中、启动中、删除未完成；点击与卡片主按钮走同一流程：PID 核对、登录保护、存储检查）/ 检查更新… / 退出启动器（只退出启动器，不退出任何 Claude；删除进行中时不允许）。
 - 每次打开菜单同步重新扫描进程；扫描失败时账号项禁用并显示原因。菜单不显示任何账号内容。
 - 安装程序请求退出时发送专用消息 `ClaudeMultiLauncher.Exit`（WM_CLOSE 只会隐藏）；再次打开启动器时用命名事件让已运行实例显示窗口。
@@ -134,6 +137,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup.ps1
 9. **1.2.0 遗留的 01 删除标记**：01 不可删，因此 1.2.0 中对 01 发起且未完成的删除无法在启动器内重试，01 会一直提示“删除未完成”。需用户手动处理该标记（`%LOCALAPPDATA%\Claude-MultiLauncher\pending-01`），启动器不自动清除。
 
 ## 验证记录
+
+### 系统设置六分类（2026-10-29，feature/windows-settings）
+
+- 自检（已执行）：`build.ps1 -Preview` 通过，LauncherTests 269 项（新增 23 项设置界面检查）、`--self-test` 179 项（新增 10 项设置模型检查）。系统设置六个分类的离屏图已人工查看，开关、下拉、按钮无遮挡；首轮发现开关文字缩进 14 px，已修正。
+- GUI（**未验证**）：桌面窗口中的实际点击与键盘操作；关闭窗口退出／隐藏、托盘图标显隐、退出前未保存提示；开机启动的确认与真实注册表写入（本轮未在真实 HKCU 中写入）及登录后自动打开；恢复上次页面跨重启；最小化窗口不恢复；提示音；导出文件对话框；复制到剪贴板。
 
 ### 网络边界（2026-10-29，feature/windows-update-boundary）
 

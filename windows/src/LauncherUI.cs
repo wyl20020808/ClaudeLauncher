@@ -38,12 +38,16 @@ namespace ClaudeLauncher {
         readonly Border indicator;
         readonly TextBlock summary, message, emptyHint, tableFooter, logSummary;
         readonly TextBlock[] stats = new TextBlock[3];
-        readonly Button create, endLogin, update, saveSettings;
-        // 已保存的设置与草稿；草稿与已保存值不同即为未保存更改（SPEC 网络边界）。
-        LauncherSettings settings = LauncherSettings.Load(LauncherSettings.DefaultPath);
-        bool draftAllowUpdates;
-        Border updateToggle;
-        bool SettingsDirty { get { return draftAllowUpdates != settings.AllowUpdates; } }
+        readonly Button create, endLogin;
+        Button update, saveSettings;
+        // 已保存的设置与草稿；草稿与已保存值不同即为未保存更改（SPEC 系统设置）。
+        LauncherSettings settings, draft;
+        readonly string settingsPath, lastPagePath;
+        bool SettingsDirty { get { return !draft.SameAs(settings); } }
+        // 水墨插画元素（侧栏、背景、卡片），按“显示水墨插画”切换。
+        readonly List<UIElement> artwork = new List<UIElement>();
+        Border toast; TextBlock toastText;
+        readonly DispatcherTimer toastTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(5) };
         readonly StackPanel cardList, rowList;
         readonly Canvas logRows;
         readonly Dictionary<int, Card> cards = new Dictionary<int, Card>();
@@ -94,15 +98,6 @@ namespace ClaudeLauncher {
             var box = Panel(10, "#EBFFFDFA"); box.Child = grid; box.IsHitTestVisible = false;
             return At(canvas, box, x, y, width, height);
         }
-        static Border Toggle(bool on) {
-            var knob = new Ellipse { Width = 16, Height = 16, Fill = Brushes.White, Margin = new Thickness(2) };
-            var toggle = new Border { Width = 40, Height = 20, CornerRadius = new CornerRadius(10), Child = knob, IsHitTestVisible = false };
-            SetToggle(toggle, on); return toggle;
-        }
-        static void SetToggle(Border toggle, bool on) {
-            toggle.Background = B(on ? Brown : "#E6DED4");
-            ((Ellipse)toggle.Child).HorizontalAlignment = on ? HorizontalAlignment.Right : HorizontalAlignment.Left;
-        }
         Button Action(string text, string style, string icon, double size) {
             var button = new Button { Style = (Style)window.FindResource(style), FontSize = size };
             if (icon == null) button.Content = text;
@@ -133,7 +128,11 @@ namespace ClaudeLauncher {
             } catch (Exception error) { Diagnostics.Error("ui_art_error", error); return null; }
         }
 
-        public LauncherUI() {
+        public LauncherUI() : this(LauncherSettings.Load(LauncherSettings.DefaultPath), LauncherSettings.DefaultPath) { }
+        // 测试与离屏预览传入合成设置和临时路径，不读写用户的真实设置。
+        internal LauncherUI(LauncherSettings initial, string path) {
+            settings = initial; draft = initial.Clone(); settingsPath = path;
+            lastPagePath = IOPath.Combine(IOPath.GetDirectoryName(path), IOPath.GetFileName(LauncherSettings.LastPagePath));
             for (int i = 1; i <= 10; i++) if (DeletionJournal.IsPending(i, ProfileDeletion.Local)) incompleteDeletes.Add(i);
             loginAccount = LoginProtection.Read(ProfileDeletion.Local);
             window = new Window {
@@ -162,7 +161,7 @@ namespace ClaudeLauncher {
                 double height = 272 * mountains.Height / mountains.Width;
                 var mask = new LinearGradientBrush { StartPoint = new Point(0, 0), EndPoint = new Point(0, 1) };
                 mask.GradientStops.Add(new GradientStop(Colors.Transparent, 0)); mask.GradientStops.Add(new GradientStop(Colors.Black, Math.Min(1, 180 / height)));
-                At(sidebar, new Image { Source = mountains, Stretch = Stretch.Fill, OpacityMask = mask, IsHitTestVisible = false }, 0, 720 - height, 272, height);
+                artwork.Add(At(sidebar, new Image { Source = mountains, Stretch = Stretch.Fill, OpacityMask = mask, IsHitTestVisible = false }, 0, 720 - height, 272, height));
             }
             At(sidebar, new Rectangle { Fill = B("#E6DCCF") }, 271, 0, 1, 720);
             At(sidebar, new Image { Source = logo }, 32, 54, 58, 58);
@@ -178,7 +177,7 @@ namespace ClaudeLauncher {
                 content.Children.Add(T(items[i][0], 16, Ink, FontWeights.Medium));
                 nav[i] = At(sidebar, new Button { Style = (Style)window.FindResource("Nav"), Content = content }, 20, 176 + i * 56, 232, 48);
                 AutomationProperties.SetName(nav[i], items[i][0]);
-                nav[i].Click += delegate { ShowPage(index); };
+                nav[i].Click += delegate { ShowPage(index); RememberPage(); };
             }
             indicator = At(sidebar, new Border { Background = B("#B9825F"), CornerRadius = new CornerRadius(2) }, 6, 188, 4, 24);
 
@@ -186,12 +185,22 @@ namespace ClaudeLauncher {
             var main = new Grid { ClipToBounds = true };
             Grid.SetColumn(main, 1); root.Children.Add(main);
             ImageSource backdrop = Art("background");
-            if (backdrop != null) main.Children.Add(new Image { Source = backdrop, Stretch = Stretch.UniformToFill, HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Center, IsHitTestVisible = false });
+            if (backdrop != null) {
+                var image = new Image { Source = backdrop, Stretch = Stretch.UniformToFill, HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Center, IsHitTestVisible = false };
+                main.Children.Add(image); artwork.Add(image);
+            }
             var wash = new LinearGradientBrush { StartPoint = new Point(0, 0.5), EndPoint = new Point(1, 0.5) };
             wash.GradientStops.Add(new GradientStop((Color)ColorConverter.ConvertFromString("#EDFAF6F0"), 0));
             wash.GradientStops.Add(new GradientStop((Color)ColorConverter.ConvertFromString("#B8FAF6F0"), 1));
             main.Children.Add(new Rectangle { Fill = wash, IsHitTestVisible = false });
             for (int i = 0; i < 4; i++) { pages[i] = new Grid(); main.Children.Add(pages[i]); }
+            // 窗口内提示条（SPEC 消息通知 [Windows]）：主区底部，约 5 秒后隐藏，不拦截点击。
+            toastText = new TextBlock { FontSize = 13, Foreground = Brushes.White, TextWrapping = TextWrapping.Wrap, MaxWidth = 640 };
+            toast = new Border { Child = toastText, Background = B("#E62B2622"), CornerRadius = new CornerRadius(10), Padding = new Thickness(16, 9, 16, 9),
+                HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Bottom, Margin = new Thickness(0, 0, 0, 22), Visibility = Visibility.Collapsed, IsHitTestVisible = false };
+            AutomationProperties.SetAutomationId(toast, "LauncherToast");
+            main.Children.Add(toast);
+            toastTimer.Tick += delegate { toastTimer.Stop(); toast.Visibility = Visibility.Collapsed; };
 
             // 实例管理
             var instancesPage = new Canvas(); pages[0].Children.Add(instancesPage);
@@ -266,105 +275,32 @@ namespace ClaudeLauncher {
             logSummary = At(logsPage, T("", 12, Muted, FontWeights.Normal), 448, 658, 300);
             logSummary.TextAlignment = TextAlignment.Right;
 
-            // 系统设置：仅日志目录、数据目录和检查更新可用，其余为静态占位。
-            var settings = PageTitled(3, "系统设置", "调整启动行为、窗口管理、界面偏好以及本地数据存储。");
-            At(settings, Panel(16, "#DBFFFDFA"), 36, 140, 736, 556);
-            At(settings, new Rectangle { Fill = B("#EDE4D8") }, 206, 141, 1, 554);
-            string[][] menu = { new[] { "常规设置", "" }, new[] { "启动行为", "" }, new[] { "外观设置", "" }, new[] { "数据与存储", "" }, new[] { "消息通知", "" }, new[] { "关于软件", "" } };
-            for (int i = 0; i < menu.Length; i++) {
-                var item = At(settings, new Border { CornerRadius = new CornerRadius(10), Background = i == 0 ? B("#EDDDC9") : Brushes.Transparent, IsHitTestVisible = false }, 48, 154 + i * 46, 146, 38);
-                var line = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(14, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
-                string color = i == 0 ? "#9A6447" : "#3A332D";
-                var glyph = Glyph(menu[i][1], 13, color); glyph.Width = 28; line.Children.Add(glyph);
-                line.Children.Add(T(menu[i][0], 14, color, i == 0 ? FontWeights.SemiBold : FontWeights.Normal));
-                item.Child = line;
-            }
-            string data = IOPath.Combine(ProfileDeletion.Local, "Claude-MultiLauncher");
-            object[][][] sections = {
-                new object[][] { new object[] { "启动与运行", "管理启动器的常规行为" },
-                    new object[] { "开机自动启动", "系统登录后自动运行启动器", false },
-                    new object[] { "关闭窗口后继续运行", "留在通知区域，右键图标可退出；不退出 Claude", true },
-                    new object[] { "启动时恢复上次窗口", "自动恢复上一次打开的实例", false },
-                    new object[] { "本地诊断日志", "启动、进程与异常记录，不含账号信息", "logs" } },
-                new object[][] { new object[] { "默认行为", "新实例将沿用这些设置" },
-                    new object[] { "默认打开方式", "控制 Claude 实例的窗口行为", "独立窗口" },
-                    new object[] { "检查启动器更新", "仅 GitHub；保存后每次打开检查一次，默认关闭", "updates" },
-                    new object[] { "启动间隔", "批量启动时的间隔时间", "3 秒" } },
-                new object[][] { new object[] { "界面与存储", "" },
-                    new object[] { "应用语言", "界面显示语言", "简体中文" },
-                    new object[] { "界面主题", "当前为水墨浅色", "浅色 · 水墨风" },
-                    new object[] { "数据存储路径", "启动器偏好、日志与删除状态的位置", data } } };
-            double sy = 156;
-            foreach (object[][] section in sections) {
-                var heading = new StackPanel { Orientation = Orientation.Horizontal };
-                heading.Children.Add(T((string)section[0][0], 15, Ink, FontWeights.SemiBold));
-                var sub = T((string)section[0][1], 11, "#8A7F74", FontWeights.Normal); sub.Margin = new Thickness(10, 3, 0, 0); heading.Children.Add(sub);
-                At(settings, heading, 230, sy);
-                double top = sy + 26, count = section.Length - 1;
-                At(settings, Panel(10, "#F2FFFDFA"), 230, top, 518, count * 36);
-                for (int r = 1; r < section.Length; r++) {
-                    double y = top + (r - 1) * 36;
-                    if (r > 1) At(settings, new Rectangle { Fill = B("#F0E8DE") }, 244, y, 490, 1);
-                    At(settings, T((string)section[r][0], 13, Ink, FontWeights.SemiBold), 246, y + 2);
-                    At(settings, T((string)section[r][1], 10, "#8A7F74", FontWeights.Normal), 246, y + 19, 240);
-                    object control = section[r][2];
-                    if (control is bool) At(settings, Toggle((bool)control), 690, y + 8);
-                    else if ((string)control == "updates") {
-                        // 草稿开关：点“保存设置”后才生效。
-                        draftAllowUpdates = this.settings.AllowUpdates;
-                        updateToggle = Toggle(draftAllowUpdates);
-                        var flip = At(settings, new Button { Style = (Style)window.FindResource("Icon"), Content = updateToggle, Cursor = Cursors.Hand, ToolTip = "开启后只访问本项目 GitHub Releases" }, 686, y + 4, 48, 28);
-                        AutomationProperties.SetName(flip, "检查启动器更新");
-                        flip.Click += delegate { draftAllowUpdates = !draftAllowUpdates; SetToggle(updateToggle, draftAllowUpdates); saveSettings.IsEnabled = SettingsDirty; };
-                    } else if ((string)control == "logs") {
-                        var open = At(settings, Action("打开", "Btn", null, 12), 664, y + 5, 70, 26);
-                        open.Click += delegate {
-                            try { Diagnostics.OpenFolder(); } catch (Exception error) { Diagnostics.Error("open_logs_error", error); Alert("无法打开日志目录", error.Message); }
-                        };
-                    } else if ((string)control == data) {
-                        Field(settings, 522, y + 4, 210, 28, null, @"%LOCALAPPDATA%\Claude-MultiLauncher", Ink, false);
-                        var reveal = At(settings, new Button { Style = (Style)window.FindResource("Icon"), Content = "", ToolTip = "在资源管理器中显示：" + data, Cursor = Cursors.Hand }, 522, y + 4, 210, 28);
-                        AutomationProperties.SetName(reveal, "在资源管理器中显示启动器数据目录");
-                        reveal.Click += delegate { OpenFolder(data); };
-                    } else Field(settings, 522, y + 4, 210, 28, null, (string)control, Ink, (string)control != "3 秒");
-                }
-                sy = top + count * 36 + 16;
-            }
-            At(settings, T("更改仅作用于本地启动器", 12, "#8A7F74", FontWeights.Normal), 230, 652);
-            update = At(settings, Action("检查更新", "Btn", "", 14), 400, 642, 120, 38);
-            update.Click += async delegate { await CheckUpdate(true); };
-            var reset = At(settings, Action("恢复默认", "Btn", null, 14), 530, 642, 100, 38); reset.IsHitTestVisible = false; reset.Focusable = false;
-            saveSettings = At(settings, Action("保存设置", "Primary", "", 14), 640, 642, 116, 38);
-            saveSettings.IsEnabled = false;
-            saveSettings.Click += delegate {
-                var next = new LauncherSettings { AllowUpdates = draftAllowUpdates };
-                try { next.Save(LauncherSettings.DefaultPath); }
-                catch (Exception error) { Diagnostics.Error("settings_save_error", error); Alert("无法保存设置", error.Message + "\n已保留草稿，原设置未改动。"); return; }
-                this.settings = next; saveSettings.IsEnabled = false;
-                Diagnostics.Write("settings_saved", "allowUpdates=" + next.AllowUpdates);
-                Message(next.AllowUpdates ? "设置已保存：已开启检查启动器更新（仅 GitHub）。" : "设置已保存：已关闭检查启动器更新，启动器不再联网检查。", false);
-            };
+            // 系统设置：六个分类，修改先进入草稿，保存后写入启动器自己的 settings.json（SPEC 系统设置 [Windows]）。
+            BuildSettings(PageTitled(3, "系统设置", "调整启动器自身的行为、外观、本地数据与通知；不改变任何 Claude 配置。"));
 
-            ShowPage(0);
+            // SPEC 启动行为：只恢复启动器自己的页面，不启动或激活任何 Claude。
+            string first = settings.RememberPage ? LauncherSettings.ReadLastPage(lastPagePath) ?? settings.StartPage : settings.StartPage;
+            ShowPage(Array.IndexOf(LauncherSettings.Pages, first));
             AddLog("启动器已完成初始化");
-            if (this.settings.LoadError != null) { Diagnostics.Write("settings_load_error", this.settings.LoadError); AddLog("设置文件无法读取，已按默认（更新关闭）：" + this.settings.LoadError); }
-            timer.Interval = TimeSpan.FromSeconds(2);
+            if (settings.LoadError != null) { Diagnostics.Write("settings_load_error", settings.LoadError); AddLog("设置文件无法读取，已按默认设置运行：" + settings.LoadError); }
+            ApplySettings();
             timer.Tick += async delegate { await Refresh(); };
             window.Loaded += async delegate {
                 await Refresh(); timer.Start();
                 // SPEC 网络边界：已保存开启时，每次打开启动器检查一次；只在有新版时提示，失败只记日志。
-                if (!closed && this.settings.AllowUpdates) await CheckUpdate(false);
+                if (!closed && settings.AllowUpdates) await CheckUpdate(false);
             };
             window.Closed += delegate { closed = true; timer.Stop(); processWatch.Dispose(); Diagnostics.Write("window_closed", "正常关闭启动器"); };
             window.Closing += delegate(object sender, System.ComponentModel.CancelEventArgs e) {
                 if (deleting) { e.Cancel = true; Message("请先完成或取消当前删除操作。", true); return; }
-                // SPEC 常驻图标：关闭主窗口后启动器继续运行，图标留在通知区域；只有“退出启动器”才真正退出。
-                if (tray != null && !exiting) {
-                    e.Cancel = true; window.Hide();
-                    if (!trayHintShown) {
-                        trayHintShown = true;
-                        tray.ShowBalloonTip(4000, Title, "启动器仍在通知区域运行。左键单击图标打开窗口，右键可退出。", System.Windows.Forms.ToolTipIcon.Info);
-                    }
+                // 正式运行（Show 建立托盘后）：开启“关闭窗口后继续运行”时只隐藏；关闭该设置时关闭窗口即退出启动器（走统一的退出流程）。不退出 Claude。
+                if (tray == null || exiting) return;
+                e.Cancel = true;
+                if (!settings.CloseToBackground) { window.Dispatcher.BeginInvoke(new Action(() => ExitLauncher(false))); return; }
+                window.Hide();
+                if (!trayHintShown && tray.Visible) {
+                    trayHintShown = true;
+                    tray.ShowBalloonTip(4000, Title, "启动器仍在通知区域运行。左键单击图标打开窗口，右键可退出。", System.Windows.Forms.ToolTipIcon.Info);
                 }
             };
             window.SourceInitialized += delegate {
@@ -380,12 +316,12 @@ namespace ClaudeLauncher {
         // 安装程序用此消息请求启动器退出（WM_CLOSE 现在只是隐藏到通知区域）。
         public static readonly int ExitMessage = Native.RegisterWindowMessage("ClaudeMultiLauncher.Exit");
         IntPtr ExitHook(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled) {
-            if (msg == ExitMessage) { handled = true; if (!deleting) ExitLauncher(); }
+            if (msg == ExitMessage) { handled = true; if (!deleting) ExitLauncher(true); }
             return IntPtr.Zero;
         }
         void CreateTray() {
             using (Stream stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("ClaudeLauncher.Icon"))
-                tray = new System.Windows.Forms.NotifyIcon { Icon = new System.Drawing.Icon(stream, System.Windows.Forms.SystemInformation.SmallIconSize), Text = Title, Visible = true };
+                tray = new System.Windows.Forms.NotifyIcon { Icon = new System.Drawing.Icon(stream, System.Windows.Forms.SystemInformation.SmallIconSize), Text = Title, Visible = settings.ShowTray };
             var menu = new System.Windows.Forms.ContextMenuStrip();
             menu.Opening += delegate { BuildTrayMenu(menu); };
             menu.Items.Add("…");
@@ -429,7 +365,7 @@ namespace ClaudeLauncher {
             menu.Items.Add(check);
             var exit = new System.Windows.Forms.ToolStripMenuItem("退出启动器");
             exit.ToolTipText = "只退出启动器，不退出任何 Claude。";
-            exit.Click += delegate { ExitLauncher(); };
+            exit.Click += delegate { ExitLauncher(false); };
             menu.Items.Add(exit);
         }
         // 托盘中的账号项：与主界面卡片同一份可见性与可用状态（编号、标签、是否可点）。
@@ -442,8 +378,14 @@ namespace ClaudeLauncher {
             }
             return result;
         }
-        void ExitLauncher() {
+        // force：安装程序请求退出或更新交接，不因未保存设置阻拦。
+        void ExitLauncher(bool force) {
             if (deleting) { ShowMain(); Message("请先完成或取消当前删除操作。", true); return; }
+            if (!force && SettingsDirty) {
+                ShowMain();
+                int choice = Ask("设置尚未保存", "保存后退出，或放弃这次更改。Claude 实例会继续运行。", new[] { "取消", "放弃更改并退出", "保存并退出" }, 0, 2);
+                if (choice == 0 || (choice == 2 && !SaveSettings())) return;
+            }
             exiting = true;
             if (tray != null) { tray.Visible = false; tray.Dispose(); tray = null; }
             window.Close();
@@ -464,10 +406,10 @@ namespace ClaudeLauncher {
             card.Root = new Border { Width = 776, Height = 124, Margin = new Thickness(0, 0, 0, 12), CornerRadius = new CornerRadius(14), Background = B("#FFFCF7"), BorderBrush = B("#EDE4D8"), BorderThickness = new Thickness(1), Child = canvas, HorizontalAlignment = HorizontalAlignment.Left };
             ImageSource art = Art("card-" + ((n - 1) % 4 + 1));
             if (art != null) {
-                At(canvas, new Image { Source = art, Stretch = Stretch.UniformToFill, Clip = new RectangleGeometry(new Rect(0, 0, 200, 110), 12, 12), IsHitTestVisible = false }, 185, 6, 200, 110);
+                artwork.Add(At(canvas, new Image { Source = art, Stretch = Stretch.UniformToFill, Clip = new RectangleGeometry(new Rect(0, 0, 200, 110), 12, 12), IsHitTestVisible = false }, 185, 6, 200, 110));
                 var fade = new LinearGradientBrush { StartPoint = new Point(0, 0.5), EndPoint = new Point(1, 0.5) };
                 fade.GradientStops.Add(new GradientStop((Color)ColorConverter.ConvertFromString("#FFFCF7"), 0)); fade.GradientStops.Add(new GradientStop((Color)ColorConverter.ConvertFromString("#00FFFCF7"), 1));
-                At(canvas, new Rectangle { Fill = fade, IsHitTestVisible = false }, 184, 6, 90, 110);
+                artwork.Add(At(canvas, new Rectangle { Fill = fade, IsHitTestVisible = false }, 184, 6, 90, 110));
             }
             string[] palette = Palette[(n - 1) % 4];
             var badge = At(canvas, new Grid(), 22, 39, 44, 44);
@@ -522,6 +464,227 @@ namespace ClaudeLauncher {
             return row;
         }
 
+        // ---- 系统设置（SPEC 系统设置 [Windows]） ----
+        readonly Canvas[] settingsSections = new Canvas[6];
+        readonly Button[] settingsTabs = new Button[6];
+        readonly List<Action> settingsSync = new List<Action>();
+        TextBlock settingsFeedback, autoStartStatus;
+        int settingsSection;
+        bool syncingSettings;
+
+        void BuildSettings(Canvas page) {
+            At(page, Panel(16, "#DBFFFDFA"), 36, 140, 736, 556);
+            At(page, new Rectangle { Fill = B("#EDE4D8") }, 206, 141, 1, 554);
+            string[][] tabs = { new[] { "常规设置", "" }, new[] { "启动行为", "" }, new[] { "外观设置", "" }, new[] { "数据与存储", "" }, new[] { "消息通知", "" }, new[] { "关于软件", "" } };
+            for (int i = 0; i < tabs.Length; i++) {
+                int index = i;
+                var line = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(14, 0, 0, 0) };
+                var glyph = Glyph(tabs[i][1], 13, "#3A332D"); glyph.Width = 28; line.Children.Add(glyph);
+                line.Children.Add(new TextBlock { Text = tabs[i][0], FontSize = 14, VerticalAlignment = VerticalAlignment.Center });
+                settingsTabs[i] = At(page, new Button { Style = (Style)window.FindResource("Nav"), Content = line, Padding = new Thickness(0), Foreground = B("#3A332D") }, 48, 154 + i * 46, 146, 38);
+                AutomationProperties.SetName(settingsTabs[i], tabs[i][0]);
+                settingsTabs[i].Click += delegate { ShowSettingsSection(index); };
+                settingsSections[i] = At(page, new Canvas { Visibility = Visibility.Collapsed }, 230, 156, 518, 470);
+            }
+            string data = LauncherSettings.DataDirectory;
+
+            // 常规设置
+            var c = settingsSections[0]; double y = Heading(c, "常规设置");
+            y = SwitchRow(c, y, "关闭窗口后继续运行", "关闭窗口只隐藏，可从通知区域或再次打开启动器恢复；关闭此项后，关闭窗口即退出启动器。都不会退出 Claude。", () => draft.CloseToBackground, v => draft.CloseToBackground = v);
+            y = SwitchRow(c, y, "显示通知区域图标", "右键图标可查看账号状态、检查更新或退出。关闭后再次打开启动器即可显示窗口。", () => draft.ShowTray, v => draft.ShowTray = v);
+            Note(c, y + 8, "这些设置只影响本启动器，不改变 Claude 的运行、登录或窗口。");
+
+            // 启动行为
+            c = settingsSections[1]; y = Heading(c, "启动行为");
+            ActionRow(c, 0, y, "管理开机启动…", ManageAutoStart);
+            autoStartStatus = At(c, new TextBlock { FontSize = 12, Foreground = B(Muted), TextWrapping = TextWrapping.Wrap }, 0, y + 42, 518);
+            y += 82;
+            y = SwitchRow(c, y, "恢复启动器上次页面", "只恢复本启动器的页面，不自动启动或激活任何 Claude。", () => draft.RememberPage, v => draft.RememberPage = v);
+            y = ChoiceRow(c, y, "未恢复时的启动页面", new[] { "实例管理", "账号管理", "日志记录", "系统设置" }, LauncherSettings.Pages.Cast<object>().ToArray(), () => draft.StartPage, v => draft.StartPage = (string)v, () => !draft.RememberPage);
+            y = ChoiceRow(c, y, "本地进程状态刷新间隔", new[] { "1 秒", "3 秒", "5 秒" }, LauncherSettings.Intervals.Cast<object>().ToArray(), () => draft.RefreshInterval, v => draft.RefreshInterval = (int)v, null);
+            SwitchRow(c, y, "点击账号时恢复最小化窗口", "只处理经过核对的目标 PID 窗口；关闭后最小化的窗口需从任务栏打开。", () => draft.RestoreMinimized, v => draft.RestoreMinimized = v);
+
+            // 外观设置
+            c = settingsSections[2]; y = Heading(c, "外观设置");
+            y = SwitchRow(c, y, "显示水墨插画", "关闭后保留浅色纸张背景和原有文字布局。", () => draft.ShowArtwork, v => draft.ShowArtwork = v);
+            Note(c, y + 8, "本地界面用量：Windows 版尚未接入，需先完成调查并取得授权，因此暂不提供开关。\n\n界面语言：简体中文\n主题：浅色水墨\n\n这两项为当前版本的固定样式。Claude 自身的外观、浏览器和登录方式由官方客户端管理。");
+
+            // 数据与存储
+            c = settingsSections[3]; y = Heading(c, "数据与存储");
+            Note(c, y, "启动器数据目录（设置、日志、登录保护与删除状态）\n" + Diagnostics.Redact(data) + "\n账号目录固定，不迁移、不合并。");
+            y += 76;
+            ActionRow(c, 0, y, "在资源管理器中显示", () => OpenFolder(data));
+            ActionRow(c, 264, y, "复制数据目录路径", () => {
+                try { Clipboard.SetText(data); settingsFeedback.Text = "启动器数据目录路径已复制"; } catch (Exception error) { Alert("无法复制路径", error.Message); }
+            });
+            ActionRow(c, 0, y + 44, "导出已保存的设置…", ExportSettings);
+            ActionRow(c, 264, y + 44, "打开本地诊断日志", () => {
+                try { Diagnostics.OpenFolder(); } catch (Exception error) { Diagnostics.Error("open_logs_error", error); Alert("无法打开日志目录", error.Message); }
+            });
+            y = ChoiceRow(c, y + 100, "本次运行日志保留上限", new[] { "100 条", "500 条", "1000 条" }, LauncherSettings.LogLimits.Cast<object>().ToArray(), () => draft.LogLimit, v => draft.LogLimit = (int)v, null);
+            Note(c, y + 4, "日志记录页只留在内存，退出即清空；导出位置由你选择。导出的设置不含账号、别名、项目或凭据。恢复默认只重置启动器偏好，保留登录保护、开机启动项和任何 Claude 数据。");
+
+            // 消息通知
+            c = settingsSections[4]; y = Heading(c, "消息通知");
+            y = SwitchRow(c, y, "显示窗口内提示", "在启动器底部临时显示警告和错误；不推送、不上传、不读取 Claude 消息。", () => draft.LocalNotifications, v => draft.LocalNotifications = v);
+            y = SwitchRow(c, y, "警告时播放提示音", "仅在窗口内提示开启时生效，使用系统提示音。", () => draft.NotificationSound, v => draft.NotificationSound = v);
+            ActionRow(c, 0, y + 6, "测试已保存的通知设置", () => {
+                settingsFeedback.Text = Notify("本地通知测试：设置已生效，没有发送网络请求。") ? "已按保存的设置显示提示" : "窗口内提示已关闭；开启并保存后可测试";
+            });
+            Note(c, y + 56, "安全确认和错误弹窗始终保留，不受通知开关影响。");
+
+            // 关于软件
+            c = settingsSections[5]; y = Heading(c, "Claude 多开启动器 " + Updates.DisplayVersion);
+            Note(c, y, "非官方本地管理工具，与 Anthropic 无关联。\n不向 Claude / Anthropic 发请求，不读取凭据，不修改官方应用。");
+            y = SwitchRow(c, y + 54, "允许检查 GitHub 更新", "默认关闭。保存开启后每次打开启动器检查一次，也可手动检查；只访问本项目 GitHub 下载地址。", () => draft.AllowUpdates, v => draft.AllowUpdates = v);
+            update = ActionRow(c, 0, y + 6, "检查启动器更新…", async () => await CheckUpdate(true));
+            ActionRow(c, 0, y + 50, "查看本地使用帮助", ShowHelp);
+            ActionRow(c, 0, y + 94, "复制基础诊断信息", CopyDiagnostics);
+            Note(c, y + 144, "诊断仅包含版本、Windows 版本和联网开关，不包含账号、路径、日志或凭据。");
+
+            // 底部：反馈、恢复默认、撤销、保存
+            settingsFeedback = At(page, new TextBlock { Text = "更改后点击保存设置", FontSize = 12, Foreground = B(Muted), TextTrimming = TextTrimming.CharacterEllipsis }, 230, 618, 518);
+            AutomationProperties.SetAutomationId(settingsFeedback, "SettingsFeedback");
+            var reset = At(page, Action("恢复默认…", "Btn", null, 14), 400, 646, 110, 38);
+            reset.Click += delegate {
+                if (Ask("恢复启动器默认设置？", "将默认值填入草稿，点击保存后生效。不会移除账号、登录保护、开机启动项或任何 Claude 数据。", new[] { "取消", "恢复到草稿" }, 0, 1) == 1) ResetSettingsDraft();
+            };
+            var undo = At(page, Action("撤销更改", "Btn", null, 14), 520, 646, 110, 38);
+            AutomationProperties.SetAutomationId(undo, "UndoSettings");
+            undo.Click += delegate { DiscardSettings(); };
+            saveSettings = At(page, Action("保存设置", "Primary", "", 14), 640, 646, 116, 38);
+            AutomationProperties.SetAutomationId(saveSettings, "SaveSettings");
+            saveSettings.Click += delegate { SaveSettings(); };
+            ShowSettingsSection(0);
+            SyncSettings();
+        }
+        double Heading(Canvas c, string text) {
+            At(c, T(text, 17, Ink, FontWeights.SemiBold), 0, 0, 518);
+            return 44;
+        }
+        void Note(Canvas c, double y, string text) {
+            At(c, new TextBlock { Text = text, FontSize = 12, Foreground = B(Muted), TextWrapping = TextWrapping.Wrap, LineHeight = 19 }, 0, y, 518);
+        }
+        // 开关行：整行可点（标题 + 说明 + 开关）；只改草稿。
+        double SwitchRow(Canvas c, double y, string title, string detail, Func<bool> get, Action<bool> set) {
+            var text = new StackPanel { Width = 450, HorizontalAlignment = HorizontalAlignment.Left };
+            text.Children.Add(new TextBlock { Text = title, FontSize = 14, FontWeight = FontWeights.SemiBold, Foreground = B(Ink) });
+            text.Children.Add(new TextBlock { Text = detail, FontSize = 12, Foreground = B(Muted), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 3, 0, 0) });
+            var box = At(c, new CheckBox { Style = (Style)window.FindResource("Switch"), Content = text }, 0, y, 518);
+            AutomationProperties.SetName(box, title);
+            box.Click += delegate { set(box.IsChecked == true); DraftChanged(); };
+            settingsSync.Add(() => box.IsChecked = get());
+            return y + 72;
+        }
+        double ChoiceRow(Canvas c, double y, string title, string[] labels, object[] values, Func<object> get, Action<object> set, Func<bool> enabled) {
+            At(c, T(title, 14, Ink, FontWeights.SemiBold), 0, y + 6, 260);
+            var combo = At(c, new ComboBox { ItemsSource = labels, FontSize = 13 }, 290, y, 228, 32);
+            AutomationProperties.SetName(combo, title);
+            combo.SelectionChanged += delegate {
+                if (syncingSettings || combo.SelectedIndex < 0) return;
+                set(values[combo.SelectedIndex]); DraftChanged();
+            };
+            settingsSync.Add(() => {
+                combo.SelectedIndex = Math.Max(0, Array.IndexOf(values, get()));
+                combo.IsEnabled = enabled == null || enabled();
+            });
+            return y + 48;
+        }
+        Button ActionRow(Canvas c, double x, double y, string text, Action handler) {
+            var button = At(c, Action(text, "Btn", null, 13), x, y, 250, 34);
+            button.Click += delegate { handler(); };
+            return button;
+        }
+        void ShowSettingsSection(int index) {
+            settingsSection = index;
+            for (int i = 0; i < settingsSections.Length; i++) {
+                bool on = i == index;
+                settingsSections[i].Visibility = on ? Visibility.Visible : Visibility.Collapsed;
+                settingsTabs[i].Background = on ? B("#EDDDC9") : Brushes.Transparent;
+                settingsTabs[i].Foreground = B(on ? "#9A6447" : "#3A332D");
+                foreach (TextBlock label in ((StackPanel)settingsTabs[i].Content).Children) { label.Foreground = settingsTabs[i].Foreground; label.FontWeight = on ? FontWeights.SemiBold : FontWeights.Normal; }
+            }
+            if (index == 1) autoStartStatus.Text = AutoStartStatus();
+        }
+        // 控件从草稿重新取值；草稿跨分类保留。
+        void SyncSettings() {
+            syncingSettings = true;
+            try { foreach (Action sync in settingsSync) sync(); } finally { syncingSettings = false; }
+            saveSettings.IsEnabled = SettingsDirty;
+        }
+        void DraftChanged() {
+            SyncSettings();
+            settingsFeedback.Text = SettingsDirty ? "有未保存的更改" : "与已保存设置一致";
+        }
+        internal void DiscardSettings() { draft = settings.Clone(); SyncSettings(); settingsFeedback.Text = "已撤销未保存更改"; }
+        internal void ResetSettingsDraft() { draft = new LauncherSettings(); SyncSettings(); settingsFeedback.Text = "默认值已填入，请保存或撤销"; }
+        internal bool SaveSettings() {
+            LauncherSettings next = draft.Clone();
+            if (updating && next.AllowUpdates != settings.AllowUpdates) { Alert("更新正在进行", "请等待当前更新结束后再改变联网选项。其余更改仍保留在草稿中。"); return false; }
+            try { next.Save(settingsPath); }
+            catch (Exception error) { Diagnostics.Error("settings_save_error", error); Alert("保存设置失败", error.Message + "\n运行设置保持原样，草稿已保留。"); return false; }
+            settings = next; draft = next.Clone();
+            ApplySettings(); SyncSettings();
+            settingsFeedback.Text = "设置已保存并生效，仅作用于本地启动器";
+            Diagnostics.Write("settings_saved", new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(next.Values()));
+            AddLog("本地设置已保存");
+            return true;
+        }
+        // 把已保存设置应用到启动器自身：刷新间隔、托盘、插画、提示、日志上限、上次页面记录。不触碰任何 Claude。
+        void ApplySettings() {
+            timer.Interval = TimeSpan.FromSeconds(settings.RefreshInterval);
+            if (tray != null) tray.Visible = settings.ShowTray;
+            foreach (UIElement element in artwork) element.Visibility = settings.ShowArtwork ? Visibility.Visible : Visibility.Collapsed;
+            if (!settings.LocalNotifications) { toastTimer.Stop(); toast.Visibility = Visibility.Collapsed; }
+            if (logs.Count > settings.LogLimit) { logs.RemoveRange(settings.LogLimit, logs.Count - settings.LogLimit); RenderLogs(); }
+            if (settings.RememberPage) RememberPage();
+            else try { if (File.Exists(lastPagePath)) File.Delete(lastPagePath); } catch (Exception error) { Diagnostics.Error("last_page_clear_error", error); }
+        }
+        void RememberPage() {
+            if (!settings.RememberPage || snapshotMode) return;
+            try { LauncherSettings.WriteLastPage(lastPagePath, LauncherSettings.Pages[page]); } catch (Exception error) { Diagnostics.Error("last_page_write_error", error); }
+        }
+        internal string AutoStartStatus() {
+            string exe = Assembly.GetExecutingAssembly().Location, value;
+            try { value = AutoStart.Current(); } catch (Exception error) { return "无法读取开机启动状态：" + error.Message; }
+            if (value == null) return AutoStart.IsInstalledCopy(exe, AutoStart.InstalledPath) ? "开机启动未开启。此项单独保存，确认后立即生效，不进入草稿。" : "开机启动未开启。只有安装到默认位置的正式启动器可以开启（当前为开发副本或其他位置）。";
+            return AutoStart.PointsTo(value, exe) ? "开机启动已开启：登录 Windows 后只打开启动器，不启动 Claude。" : "开机启动项指向其他位置，启动器不会修改：" + value;
+        }
+        void ManageAutoStart() {
+            string exe = Assembly.GetExecutingAssembly().Location, value;
+            try { value = AutoStart.Current(); } catch (Exception error) { Alert("无法读取开机启动状态", error.Message); return; }
+            bool enabled = AutoStart.PointsTo(value, exe);
+            if (!enabled && value != null) { Alert("开机启动项指向其他位置", "当前值：" + value + "\n启动器不会修改不属于本程序的值。"); return; }
+            if (!enabled && !AutoStart.IsInstalledCopy(exe, AutoStart.InstalledPath)) {
+                Alert("请使用已安装的启动器", "开机启动只为安装到默认位置的正式副本开启，避免登录时运行临时开发版本：\n" + Diagnostics.Redact(AutoStart.InstalledPath)); return;
+            }
+            if (Ask(enabled ? "关闭开机启动？" : "开启开机启动？", "只更改本启动器在当前 Windows 用户中的开机启动项，立即生效。不会自动启动任何 Claude 账号。",
+                new[] { "取消", enabled ? "关闭开机启动" : "开启开机启动" }, 0, 1) != 1) return;
+            try {
+                if (enabled) AutoStart.Disable(exe); else AutoStart.Enable(exe);
+                Diagnostics.Write("autostart_changed", "enabled=" + !enabled);
+                AddLog(enabled ? "已关闭开机启动" : "已开启开机启动");
+            } catch (Exception error) { Diagnostics.Error("autostart_error", error); Alert("开机启动设置失败", error.Message); }
+            autoStartStatus.Text = AutoStartStatus(); settingsFeedback.Text = autoStartStatus.Text;
+        }
+        void ExportSettings() {
+            var dialog = new Microsoft.Win32.SaveFileDialog { FileName = "启动器设置.json", Filter = "JSON 文件|*.json" };
+            if (dialog.ShowDialog(window) != true) return;
+            try { File.WriteAllText(dialog.FileName, settings.ExportJson(), new UTF8Encoding(false)); settingsFeedback.Text = "已导出保存的设置，不含账号或凭据"; }
+            catch (Exception error) { Alert("导出失败", error.Message); }
+        }
+        void ShowHelp() {
+            Alert("本地使用帮助", "实例管理：手动启动或打开指定账号；“···”菜单可显示或复制目录、管理登录保护、删除账号（移到回收站）。\n账号管理：查看本机账号空间与运行状态。\n日志记录：本次运行的提示，可导出或清空，仅保留在内存。\n系统设置：编辑后保存；撤销恢复已保存值；恢复默认只填入草稿，不处理账号数据。\n\n启动器不查询 Claude 服务、不读取凭据，不控制官方客户端自身正常联网。联网更新默认关闭，开启后只访问本项目 GitHub。");
+        }
+        internal string DiagnosticsText() {
+            return "Claude MultiLauncher " + Updates.DisplayVersion + " (" + Updates.Version + ")\nWindows " + Environment.OSVersion.Version +
+                "\nNetwork: GitHub updates " + (settings.AllowUpdates ? "enabled" : "disabled") + "\nClaude/Anthropic requests: prohibited";
+        }
+        void CopyDiagnostics() {
+            try { Clipboard.SetText(DiagnosticsText()); settingsFeedback.Text = "基础诊断已复制，不含账号、路径或日志"; }
+            catch (Exception error) { Alert("无法复制诊断信息", error.Message); }
+        }
+
         void ShowPage(int index) {
             page = index;
             for (int i = 0; i < 4; i++) {
@@ -532,8 +695,9 @@ namespace ClaudeLauncher {
             Render();
         }
         // 仅用于测试与离屏预览：以给定进程状态渲染某页，不扫描真实进程。
+        bool snapshotMode;
         internal FrameworkElement Snapshot(int index, List<Instance> state) {
-            healthy = true; instances = state; ShowPage(index);
+            snapshotMode = true; healthy = true; instances = state; ShowPage(index);
             return (FrameworkElement)((ScrollViewer)window.Content).Content;
         }
 
@@ -542,12 +706,21 @@ namespace ClaudeLauncher {
 
         void Message(string text, bool error) {
             message.Text = text; message.Foreground = B(error ? "#C9604A" : Muted);
-            if (!String.IsNullOrEmpty(text) && text != lastLogged) { lastLogged = text; AddLog(text); }
+            if (!String.IsNullOrEmpty(text) && text != lastLogged) { lastLogged = text; AddLog(text); if (error) Notify(text); }
+        }
+        // SPEC 消息通知：按已保存设置显示窗口内提示条，可选系统提示音；不推送、不读取 Claude 消息。
+        internal bool Notify(string text) {
+            if (!settings.LocalNotifications) return false;
+            toastText.Text = text; toast.Visibility = Visibility.Visible;
+            toastTimer.Stop(); toastTimer.Start();
+            if (settings.NotificationSound && !snapshotMode) System.Media.SystemSounds.Exclamation.Play();
+            return true;
         }
         void AddLog(string text) {
             string level = new[] { "失败", "错误", "未通过", "无法" }.Any(text.Contains) ? "错误" : new[] { "超时", "保护", "未确认", "已变化", "多个" }.Any(text.Contains) ? "警告" : "信息";
             Match match = Regex.Match(text, "账号 ([0-9]{2})");
             logs.Insert(0, new LogEntry { Time = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"), Level = level, Instance = match.Success ? "Claude " + Int32.Parse(match.Groups[1].Value) : "系统", Text = text });
+            if (logs.Count > settings.LogLimit) logs.RemoveRange(settings.LogLimit, logs.Count - settings.LogLimit);
             RenderLogs();
         }
         void RenderLogs() {
@@ -764,6 +937,11 @@ namespace ClaudeLauncher {
         async Task Activate(int number, Instance running) {
             IntPtr handle = Native.WindowFor(running.ProcessId);
             if (handle != IntPtr.Zero) {
+                // SPEC 启动行为：关闭“点击账号时恢复最小化窗口”时，不还原、不切换已最小化的窗口。
+                if (!settings.RestoreMinimized && Native.IsMinimized(handle)) {
+                    Message("账号 " + Two(number) + " 的窗口已最小化；按设置未自动恢复，请从任务栏打开。", false);
+                    return;
+                }
                 bool focused = Native.Focus(handle);
                 Diagnostics.Write("account_reuse", "slot=" + number + "; pid=" + running.ProcessId + "; focused=" + focused);
                 Message(focused ? "已切回账号 " + Two(number) + "（PID " + running.ProcessId + "），没有重复启动。" : "账号 " + Two(number) + " 已经运行；Windows 未允许切换焦点，请从任务栏打开。", !focused);
@@ -1100,7 +1278,7 @@ namespace ClaudeLauncher {
                         Diagnostics.Write("update_handoff", "退出启动器，交由安装程序卸载旧版并安装新版");
                         await Task.Delay(TimeSpan.FromSeconds(2));
                         CloseProgress(progress);
-                        ExitLauncher(); return;
+                        ExitLauncher(true); return;
                     }
                 }
                 CloseProgress(progress);
@@ -1161,6 +1339,23 @@ namespace ClaudeLauncher {
  <Style x:Key='Nav' TargetType='Button' BasedOn='{StaticResource Icon}'>
   <Setter Property='HorizontalContentAlignment' Value='Left'/><Setter Property='Padding' Value='20,0,0,0'/>
   <Setter Property='Tag'><Setter.Value><CornerRadius>14</CornerRadius></Setter.Value></Setter>
+ </Style>
+ <Style x:Key='Switch' TargetType='CheckBox'>
+  <Setter Property='Cursor' Value='Hand'/><Setter Property='FocusVisualStyle' Value='{x:Null}'/>
+  <Setter Property='Template'><Setter.Value><ControlTemplate TargetType='CheckBox'>
+   <Grid Background='Transparent'>
+    <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width='Auto'/></Grid.ColumnDefinitions>
+    <ContentPresenter VerticalAlignment='Top'/>
+    <Border x:Name='Track' Grid.Column='1' Width='40' Height='20' CornerRadius='10' Background='#E6DED4' BorderBrush='#9A6447' BorderThickness='0' VerticalAlignment='Top' Margin='0,2,0,0'>
+     <Ellipse x:Name='Knob' Width='16' Height='16' Fill='White' Margin='2,0' HorizontalAlignment='Left' VerticalAlignment='Center'/>
+    </Border>
+   </Grid>
+   <ControlTemplate.Triggers>
+    <Trigger Property='IsChecked' Value='True'><Setter TargetName='Track' Property='Background' Value='#A8765A'/><Setter TargetName='Knob' Property='HorizontalAlignment' Value='Right'/></Trigger>
+    <Trigger Property='IsKeyboardFocused' Value='True'><Setter TargetName='Track' Property='BorderThickness' Value='2'/></Trigger>
+    <Trigger Property='IsEnabled' Value='False'><Setter Property='Opacity' Value='0.5'/></Trigger>
+   </ControlTemplate.Triggers>
+  </ControlTemplate></Setter.Value></Setter>
  </Style>
 </ResourceDictionary>";
     }
