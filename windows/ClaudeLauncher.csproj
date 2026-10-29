@@ -28,6 +28,8 @@
     <Reference Include="System.Drawing" />
     <Reference Include="System.Windows.Forms" />
     <Reference Include="WindowsBase" />
+    <Reference Include="UIAutomationClient" />
+    <Reference Include="UIAutomationTypes" />
     <Reference Include="PresentationCore" />
     <Reference Include="PresentationFramework" />
   </ItemGroup>
@@ -37,6 +39,7 @@
     <Compile Include="src\Diagnostics.cs" />
     <Compile Include="src\Updates.cs" />
     <Compile Include="src\Settings.cs" />
+    <Compile Include="src\Usage.cs" />
     <Compile Include="src\Storage.cs" />
     <Compile Include="src\LauncherUI.cs" />
     <EmbeddedResource Include="assets\app.ico"><LogicalName>ClaudeLauncher.Icon</LogicalName></EmbeddedResource>

@@ -1,6 +1,15 @@
-# 本地界面用量：Windows 调查报告（未实现，待授权）
+# 本地界面用量：Windows 调查报告
 
-日期：2026-10-29。分支：`feature/windows-usage-research`。对应交接 [HANDOFF-windows-1.7.14.md](HANDOFF-windows-1.7.14.md) C4 与 [HANDOFF-windows-sync.md](HANDOFF-windows-sync.md) 第 6 项。
+日期：2026-10-29。分支：`feature/windows-usage-research`。
+
+> **结果（2026-10-29，feature/windows-usage）**：用户授权 D1，D2 不做，D3 未授权。已按 SPEC「本地界面用量」[Windows] 实现。D1 实测（账号 01，Claude 4.29.0 商店版，停在 `claude.ai/epitaxy/<会话>`）：
+> - 首次 UIA 连接时只有原生外壳（24 个节点、没有 Code 地址）；约 2.5 秒后网页树可读（532 个节点）。证实 a：连接本身启用网页树。
+> - Code 页为 Document，`ValuePattern.Value` 给出地址；层级 Pane×9 → Document → Group×21 → Button。
+> - 用量按钮：ControlType Button，支持 ExpandCollapse（Collapsed），名称在 `Name` 中，格式与 macOS 相同：`用量：每周 · 所有模型：##%周二##:## 重置`（五小时窗口尚未开始，数字已打码）。没有用到 HelpText 或子节点。
+> - 独立诊断程序（放在临时目录，未进仓库）只读，没有点击、展开或设置任何属性。**问题**：它的打码过滤只排除了 Text 节点，命中关键字的 ListItem 名称（本次对话中我自己回复的几句正文）被原样输出到了诊断结果里。该输出只在本机会话中，没有保存或发送。正式实现不读取 ListItem／Text 等分支的名称，只读可展开 Button 的名称。
+> - 正式实现 `--usage-interface-check`：`账号 01：界面已读取；5小时=无；每周=已观察`，约 400～500 ms。
+>
+> 以下为授权前的原始调查，保留原结论。对应交接 [HANDOFF-windows-1.7.14.md](HANDOFF-windows-1.7.14.md) C4 与 [HANDOFF-windows-sync.md](HANDOFF-windows-sync.md) 第 6 项。
 
 ## 本报告的边界
 

@@ -29,7 +29,7 @@ namespace ClaudeLauncher {
         static readonly string[][] Palette = { new[] { "#FCE7D4", "#C0743A" }, new[] { "#E9E3FA", "#6A55C8" }, new[] { "#DDF0E6", "#3C8A68" }, new[] { "#FCE3DD", "#C75F47" } };
         static readonly FontFamily Icons = new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets");
 
-        sealed class Card { public Border Root; public Ellipse Dot; public TextBlock Title, Status; public Button Action; }
+        sealed class Card { public Border Root; public Ellipse Dot; public TextBlock Title, Status, Source; public Button Action; public Border[] Bars = new Border[2]; public TextBlock[] Values = new TextBlock[2], Times = new TextBlock[2]; }
         sealed class Row { public Border Root; public Ellipse Dot; public TextBlock Name, Status, Recent; public CheckBox Select; }
 
         // 账号页：本地别名、搜索与状态筛选、可见选择（SPEC 账号与日志交互）。
@@ -76,6 +76,13 @@ namespace ClaudeLauncher {
         readonly DispatcherTimer timer = new DispatcherTimer();
         readonly ProcessWatch processWatch = new ProcessWatch();
         List<Instance> instances = new List<Instance>();
+        // SPEC 本地界面用量 [Windows]：本次读取结果与已保存的观察记录（按账号编号）。
+        readonly Dictionary<int, UsageRecord> usage = new Dictionary<int, UsageRecord>();
+        Dictionary<int, UsageRecord> savedUsage = new Dictionary<int, UsageRecord>();
+        readonly string usagePath;
+        int usageGeneration;
+        bool readingUsage;
+        DateTime lastUsageRead = DateTime.MinValue;
         int loginAccount, page;
         string executable, scanError, lastProcessState = "", lastRefreshError = "", lastLogged;
         bool scanning, closed, healthy, deleting, updating;
@@ -173,6 +180,8 @@ namespace ClaudeLauncher {
             logPath = IOPath.Combine(IOPath.GetDirectoryName(path), IOPath.GetFileName(LogStore.DefaultPath));
             logs.AddRange(LogStore.Load(logPath));
             if (logs.Count > settings.LogLimit) { logs.RemoveRange(settings.LogLimit, logs.Count - settings.LogLimit); SaveLogs(); }
+            usagePath = IOPath.Combine(IOPath.GetDirectoryName(path), IOPath.GetFileName(UsageInterface.DefaultPath));
+            if (settings.ShowUsage) savedUsage = UsageInterface.Load(usagePath, DateTime.Now);
             for (int i = 1; i <= 10; i++) if (DeletionJournal.IsPending(i, ProfileDeletion.Local)) incompleteDeletes.Add(i);
             loginAccount = LoginProtection.Read(ProfileDeletion.Local);
             window = new Window {
@@ -217,7 +226,7 @@ namespace ClaudeLauncher {
                 content.Children.Add(T(items[i][0], 16, Ink, FontWeights.Medium));
                 nav[i] = At(sidebar, new Button { Style = (Style)window.FindResource("Nav"), Content = content }, 20, 176 + i * 56, 232, 48);
                 AutomationProperties.SetName(nav[i], items[i][0]);
-                nav[i].Click += delegate { ShowPage(index); RememberPage(); };
+                nav[i].Click += async delegate { ShowPage(index); RememberPage(); if (index == 0) await ReadUsage(); };
             }
             indicator = At(sidebar, new Border { Background = B("#B9825F"), CornerRadius = new CornerRadius(2) }, 6, 188, 4, 24);
 
@@ -344,8 +353,12 @@ namespace ClaudeLauncher {
             if (settings.LoadError != null) { Diagnostics.Write("settings_load_error", settings.LoadError); AddLog("设置文件无法读取，已按默认设置运行：" + settings.LoadError); }
             ApplySettings();
             timer.Tick += async delegate { await Refresh(); };
+            // 用量只在主动查看实例页时读取一次：激活窗口、切到实例页、在实例页点击（SPEC 本地界面用量 [Windows]）。
+            window.Activated += async delegate { await ReadUsage(); };
+            pages[0].PreviewMouseLeftButtonUp += async delegate { await ReadUsage(); };
             window.Loaded += async delegate {
                 await Refresh(); timer.Start();
+                await ReadUsage();
                 // SPEC 网络边界：已保存开启时，每次打开启动器检查一次；只在有新版时提示，失败只记日志。
                 if (!closed && settings.AllowUpdates) await CheckUpdate(false);
             };
@@ -484,8 +497,11 @@ namespace ClaudeLauncher {
                 At(canvas, Glyph(quota[row][0], 16, Muted), 406, y + 1);
                 At(canvas, T(quota[row][1], 14, Ink, FontWeights.Medium), 436, y);
                 At(canvas, new Border { CornerRadius = new CornerRadius(3), Background = B("#EEE8E0") }, 436, y + 26, 150, 6);
-                var none = At(canvas, T("未接入", 12, Faint, FontWeights.Normal), 592, y + 19, 44); none.TextAlignment = TextAlignment.Right;
+                card.Bars[row] = At(canvas, new Border { CornerRadius = new CornerRadius(3), Background = B("#C98A5B"), Width = 0 }, 436, y + 26, Double.NaN, 6);
+                card.Values[row] = At(canvas, T("—", 12, Faint, FontWeights.Normal), 592, y + 19, 44); card.Values[row].TextAlignment = TextAlignment.Right;
+                card.Times[row] = At(canvas, T("尚未观察到", 10, Muted, FontWeights.Normal), 520, y + 2, 116); card.Times[row].TextAlignment = TextAlignment.Right;
             }
+            card.Source = At(canvas, T("", 11, Muted, FontWeights.Normal), 436, 100, 200);
             int number = n;
             card.Action = At(canvas, Action("启动", "Btn", null, 17), 646, 36, 86, 52);
             AutomationProperties.SetAutomationId(card.Action, "Profile" + n);
@@ -565,11 +581,11 @@ namespace ClaudeLauncher {
             SettingsSection(2);
             SettingsHeader("显示");
             ToggleRow("", "显示水墨插画", "关闭后保留浅色纸张背景和原有文字布局。", () => draft.ShowArtwork, v => draft.ShowArtwork = v);
-            ValueRow("", "显示本地界面用量", "Windows 尚未接入");
+            ToggleRow("", "显示本地界面用量", "只读 Claude Code 已显示的用量按钮，不点击、不查询；关闭后清除观察记录。", () => draft.ShowUsage, v => draft.ShowUsage = v);
             SettingsHeader("样式");
             ValueRow("", "界面语言", "简体中文");
             ValueRow("", "主题", "浅色水墨");
-            SettingsNote("语言与主题为当前版本的固定样式；Claude 自身的外观、浏览器和登录方式由官方客户端管理。本地界面用量需先完成调查并取得授权，因此暂不提供开关。");
+            SettingsNote("语言与主题为当前版本的固定样式；Claude 自身的外观、浏览器和登录方式由官方客户端管理。");
 
             SettingsSection(3);
             SettingsHeader("启动器数据");
@@ -743,6 +759,7 @@ namespace ClaudeLauncher {
             timer.Interval = TimeSpan.FromSeconds(settings.RefreshInterval);
             if (tray != null) tray.Visible = settings.ShowTray;
             foreach (UIElement element in artwork) element.Visibility = settings.ShowArtwork ? Visibility.Visible : Visibility.Collapsed;
+            if (!settings.ShowUsage) ClearUsage();
             if (!settings.LocalNotifications) { toastTimer.Stop(); toast.Visibility = Visibility.Collapsed; }
             if (logs.Count > settings.LogLimit) { logs.RemoveRange(settings.LogLimit, logs.Count - settings.LogLimit); SaveLogs(); RenderLogs(); }
             if (settings.RememberPage) RememberPage();
@@ -1077,9 +1094,105 @@ namespace ClaudeLauncher {
             accountsEmpty.Visibility = shown > 0 && !rows.Values.Any(r => r.Root.Visibility == Visibility.Visible) ? Visibility.Visible : Visibility.Collapsed;
             accountsShown = shown;
             UpdateSelection();
+            RenderUsage();
             if (healthy && loginAccount != 0)
                 Message("账号 " + Two(loginAccount) + " 登录保护中。" + (instances.Any(x => x.Number != loginAccount) ? "检测到其他 Claude！请停止登录，并正常退出其他实例。" : "完成登录并核对身份后，点「结束登录保护」恢复多开。"), false);
         }
+        // ---- 本地界面用量（SPEC 本地界面用量 [Windows]） ----
+        bool CanObserveUsage() {
+            return settings.ShowUsage && !snapshotMode && !closed && healthy && loginAccount == 0 && page == 0 &&
+                window.IsVisible && window.WindowState != WindowState.Minimized && !readingUsage && DateTime.UtcNow - lastUsageRead >= TimeSpan.FromSeconds(1);
+        }
+        // 后台读取每个只有一个已核实主进程的账号；读取前后身份一致才采用。读取中保留旧值。
+        async Task ReadUsage() {
+            if (!CanObserveUsage()) return;
+            readingUsage = true; lastUsageRead = DateTime.UtcNow;
+            int generation = usageGeneration;
+            var before = instances.ToList();
+            Dictionary<int, Tuple<UsageRecord, string, DateTime>> results;
+            try {
+                results = await Task.Run(() => {
+                    var read = new Dictionary<int, Tuple<UsageRecord, string, DateTime>>();
+                    for (int n = 1; n <= 10; n++) {
+                        var found = before.Where(x => x.Number == n).ToList();
+                        if (found.Count != 1) continue;
+                        string identity = UsageInterface.Identity(n, found[0]);
+                        read[n] = Tuple.Create(UsageInterface.ReadProcess(found[0].ProcessId, identity), identity, DateTime.Now);
+                    }
+                    List<Instance> after = null;
+                    try { if (read.Count > 0) after = Core.Scan(); } catch (Exception) { }
+                    foreach (int n in read.Keys.ToList()) {
+                        var found = after == null ? null : after.Where(x => x.Number == n).ToList();
+                        if (found == null || found.Count != 1 || UsageInterface.Identity(n, found[0]) != read[n].Item2)
+                            read[n] = Tuple.Create(new UsageRecord { Status = "账号状态变化，待读取" }, (string)null, read[n].Item3);
+                    }
+                    return read;
+                });
+            } finally { readingUsage = false; }
+            if (closed || generation != usageGeneration || !settings.ShowUsage || loginAccount != 0) return;
+            bool changed = false;
+            foreach (var pair in results) {
+                int n = pair.Key;
+                string current = CurrentUsageIdentity(n);
+                if (pair.Value.Item2 == null || current != pair.Value.Item2) { usage[n] = pair.Value.Item1; continue; }
+                UsageRecord previous, stored, kept;
+                usage.TryGetValue(n, out previous); savedUsage.TryGetValue(n, out stored);
+                kept = previous != null && previous.Status == UsageInterface.Observed ? previous : stored;
+                usage[n] = UsageInterface.Merge(kept, pair.Value.Item1, current, pair.Value.Item3);
+                if (usage[n].Status == UsageInterface.Observed && usage[n] != stored) { savedUsage[n] = usage[n]; changed = true; }
+            }
+            // 身份已变化的保存记录不再恢复。
+            foreach (int n in savedUsage.Keys.ToList()) {
+                string current = CurrentUsageIdentity(n);
+                if (current != null && current != savedUsage[n].Identity) { savedUsage.Remove(n); changed = true; }
+            }
+            if (changed) try { UsageInterface.Save(usagePath, savedUsage.Values); } catch (Exception error) { Diagnostics.Error("usage_save_error", error); }
+            RenderUsage();
+        }
+        string CurrentUsageIdentity(int n) {
+            var found = instances.Where(x => x.Number == n).ToList();
+            return found.Count == 1 ? UsageInterface.Identity(n, found[0]) : null;
+        }
+        void ClearUsage() {
+            usageGeneration++; usage.Clear(); savedUsage.Clear();
+            try { if (File.Exists(usagePath)) File.Delete(usagePath); } catch (Exception error) { Diagnostics.Error("usage_clear_error", error); }
+            RenderUsage();
+        }
+        const string UsageNote = "在实例页激活窗口、切到实例页或点击时，读取一次 Claude Code 已显示的用量按钮。不定时读取、不代点、不调用用量查询，不读官方历史、Cookies 或登录信息。首次读取会让该 Claude 进程开启本机网页辅助功能树，直到它退出。时间是本机观察时间，不是服务器实时额度，两项时间独立。未做组织核对：同一账号内切换组织后，在 Claude 重启前可能仍显示上一组织的数值。";
+        void RenderUsage() {
+            if (cards.Count < 10) return;
+            DateTime now = DateTime.Now;
+            for (int n = 1; n <= 10; n++) {
+                Card card = cards[n];
+                var found = instances.Where(x => x.Number == n).ToList();
+                UsageRecord record; usage.TryGetValue(n, out record);
+                string current = found.Count == 1 && (record != null || savedUsage.ContainsKey(n)) ? UsageInterface.Identity(n, found[0]) : null;
+                if ((record == null || record.Status != UsageInterface.Observed) && savedUsage.ContainsKey(n) && savedUsage[n].Identity == current && (record == null || record.Status.StartsWith("未观察到") || record.Status == "界面读取未完成")) record = savedUsage[n];
+                string status = record != null ? record.Status : "未观察到 Code 用量";
+                if (!snapshotMode && record != null && record.Identity != null && record.Identity != current) status = "账号进程变化，待读取";
+                if (!snapshotMode && found.Count == 0) status = "Claude 未运行";
+                if (found.Count > 1) status = "多个主进程，待核对";
+                if (loginAccount != 0) status = "登录保护中";
+                if (!healthy) status = "进程待核对";
+                if (!settings.ShowUsage) status = "本地用量显示已关闭";
+                bool available = status == UsageInterface.Observed;
+                card.Source.Text = available ? "" : status;
+                card.Source.ToolTip = UsageNote;
+                for (int row = 0; row < 2; row++) {
+                    UsageMetric metric = available ? (row == 0 ? record.FiveHour : record.Weekly) : null;
+                    card.Values[row].Text = metric != null ? Math.Round(metric.Percent).ToString("0") + "%" : "—";
+                    card.Values[row].Foreground = B(metric != null ? Ink : Faint);
+                    card.Bars[row].Width = metric != null ? 150 * metric.Percent / 100 : 0;
+                    card.Times[row].Text = UsageInterface.TimeLabel(metric, now);
+                    string tip = metric != null ? UsageNote + "\n观察时间：" + metric.Observed.ToString("yyyy-MM-dd HH:mm:ss") + "\n官方重置说明：" + (metric.Reset.Length > 0 ? metric.Reset : "未提供") : UsageNote;
+                    card.Values[row].ToolTip = card.Times[row].ToolTip = tip;
+                    AutomationProperties.SetName(card.Values[row], (row == 0 ? "5小时已使用" : "每周已使用") + "，" + card.Values[row].Text + "，观察时间 " + card.Times[row].Text + (available ? "" : "，" + status));
+                }
+            }
+        }
+        // 仅供测试与离屏预览：注入一条合成观察记录，不读取真实 Claude。
+        internal void SetUsage(int number, UsageRecord record) { usage[number] = record; RenderUsage(); }
+
         // 目录修改时间只是元数据，近似“最近使用”，不打开账号文件。
         static string Recent(int number) {
             try {

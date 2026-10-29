@@ -394,6 +394,50 @@ namespace ClaudeLauncher {
             Check(LogStore.Load(logFile).Count == 1, "格式不符的日志记录必须丢弃");
             foreach (string broken in new[] { "{", "{}", "null", "\"x\"" }) { File.WriteAllText(logFile, broken); Check(LogStore.Load(logFile).Count == 0, "损坏日志文件应读为空：" + broken); }
             Check(LauncherUI.PageNumbers(1, 0).SequenceEqual(new[] { 0 }) && LauncherUI.PageNumbers(10, 0).SequenceEqual(new[] { 0, 1, 9 }) && LauncherUI.PageNumbers(10, 5).SequenceEqual(new[] { 0, 4, 5, 6, 9 }) && LauncherUI.PageNumbers(3, 1).SequenceEqual(new[] { 0, 1, 2 }), "数字页码规则错误");
+            // 本地界面用量：只用合成节点树，不访问真实 Claude。
+            var fh = UsageInterface.ButtonMetric("用量：5 小时限额的 52%周四01:10 重置");
+            Check(fh != null && fh.Item1 == "fh" && fh.Item2 == 52 && fh.Item3 == "周四01:10 重置", "五小时按钮解析错误");
+            var sd = UsageInterface.ButtonMetric("用量：每周 · 所有模型：11%周三19:00 重置");
+            Check(sd != null && sd.Item1 == "sd" && sd.Item2 == 11, "周按钮解析错误");
+            Check(UsageInterface.ButtonMetric("Usage: 7.5% of the 5-hour limit Resets 3pm").Item2 == 7.5, "英文五小时按钮解析错误");
+            Check(UsageInterface.ButtonMetric("用量：5 小时限额的 101%") == null && UsageInterface.ButtonMetric("上下文 52%") == null && UsageInterface.ButtonMetric("用量：每周 · Opus：5%") == null && UsageInterface.ButtonMetric(null) == null, "无效百分比、上下文与模型专属周限额必须排除");
+            Check(UsageInterface.CodeUrl("https://claude.ai/epitaxy") && UsageInterface.CodeUrl("https://claude.ai/epitaxy/local_x") &&
+                !UsageInterface.CodeUrl("https://claude.ai/epitaxyx") && !UsageInterface.CodeUrl("https://claude.ai/epitaxy/") && !UsageInterface.CodeUrl("https://evil.test/epitaxy") &&
+                !UsageInterface.CodeUrl("https://claude.ai:8443/epitaxy") && !UsageInterface.CodeUrl("https://claude.ai/epitaxy?x=1") && !UsageInterface.CodeUrl("https://claude.ai/epitaxy#a") &&
+                !UsageInterface.CodeUrl("http://claude.ai/epitaxy") && !UsageInterface.CodeUrl("https://u@claude.ai/epitaxy") && !UsageInterface.CodeUrl("https://claude.ai/chat/x"), "Code 页面地址校验错误");
+            Func<UsageNode[], UsageNode> group = children => new UsageNode { Children = children.ToList() };
+            Func<string, UsageNode[], UsageNode> page = (url, children) => new UsageNode { Type = "Document", Url = url, Children = children.ToList() };
+            Func<string, UsageNode> button = name => new UsageNode { Type = "Button", Name = name, Expandable = true };
+            const string code = "https://claude.ai/epitaxy/local_synthetic";
+            var shell = new UsageNode { Type = "Pane", Children = { new UsageNode { Type = "Document" }, group(new[] { page(code, new[] { group(new[] { button("用量：每周 · 所有模型：11%周三19:00 重置") }) }) }) } };
+            UsageRecord read = UsageInterface.ReadSynthetic(shell, 5);
+            Check(read.Status == UsageInterface.Observed && read.Weekly.Percent == 11 && read.FiveHour == null, "合成树应读到周值");
+            Check(UsageInterface.ReadSynthetic(page("https://evil.test/epitaxy/x", new[] { button("用量：5 小时限额的 52%") }), 5).FiveHour == null, "非官方页面必须拒绝");
+            Check(UsageInterface.ReadSynthetic(group(new[] { button("用量：5 小时限额的 52%") }), 5).Status == "未观察到 Code 用量页面", "Code 页面以外的按钮不得采用");
+            Check(UsageInterface.ReadSynthetic(page(code, new[] { new UsageNode { Type = "Text", Name = "用量：5 小时限额的 52%" }, new UsageNode { Type = "Button", Name = "用量：5 小时限额的 52%" } }), 5).Status == "未观察到 Code 用量控件", "正文或不可展开按钮不得提供额度");
+            Check(UsageInterface.ReadSynthetic(page(code, new[] { new UsageNode { Type = "Text", Children = { button("用量：5 小时限额的 52%") } } }), 5).FiveHour == null, "正文分支不得进入");
+            Check(UsageInterface.ReadSynthetic(page(code, new[] { page(code, new[] { button("用量：5 小时限额的 52%") }) }), 5).FiveHour == null, "嵌套网页不得进入");
+            Check(UsageInterface.ReadSynthetic(page(code, new[] { button("用量：5 小时限额的 52%"), button("用量：5 小时限额的 53%") }), 5).Status == "多个用量界面，待核对", "多个用量按钮不得采用");
+            UsageNode deep = button("用量：5 小时限额的 52%"); for (int i = 0; i < 45; i++) deep = group(new[] { deep });
+            Check(UsageInterface.ReadSynthetic(page(code, new[] { deep }), 5).FiveHour == null, "超过 40 层不采用");
+            Check(UsageInterface.ReadSynthetic(page(code, new[] { button("用量：5 小时限额的 52%") }), -1).Status == "界面读取未完成", "预算耗尽不采用");
+            // 合并：只给一项时另一项沿用同一身份的旧值与原时间；身份变化不沿用；暂不可读保留旧值。
+            DateTime t1 = new DateTime(2026, 10, 29, 9, 0, 0), t2 = t1.AddMinutes(30);
+            var first = UsageInterface.Merge(null, new UsageRecord { Status = UsageInterface.Observed, FiveHour = new UsageMetric { Percent = 40, Reset = "3:20 重置" } }, "2|10|5|1|x", t1);
+            var second = UsageInterface.Merge(first, new UsageRecord { Status = UsageInterface.Observed, Weekly = new UsageMetric { Percent = 9 } }, "2|10|5|1|x", t2);
+            Check(second.FiveHour.Percent == 40 && second.FiveHour.Observed == t1 && second.Weekly.Observed == t2, "合并应保留另一项与原时间");
+            Check(UsageInterface.Merge(first, new UsageRecord { Status = UsageInterface.Observed, Weekly = new UsageMetric { Percent = 9 } }, "2|11|5|1|x", t2).FiveHour == null, "身份变化不得沿用旧值");
+            Check(UsageInterface.Merge(second, new UsageRecord { Status = "界面读取未完成" }, "2|10|5|1|x", t2) == second && UsageInterface.Merge(second, new UsageRecord { Status = "多个用量界面，待核对" }, "2|10|5|1|x", t2).Status != UsageInterface.Observed, "暂不可读保留旧值，不确定结果不沿用");
+            Check(UsageInterface.TimeLabel(second.FiveHour, t2) == "09:00:00" && UsageInterface.TimeLabel(second.FiveHour, t1.AddDays(1)) == "10-29 09:00" && UsageInterface.TimeLabel(null, t2) == "尚未观察到", "观察时间格式错误");
+            string usageFile = Path.Combine(root, "settings", "usage-observations.json");
+            Check(UsageInterface.Load(usageFile, t2).Count == 0, "缺少观察记录应为空");
+            UsageInterface.Save(usageFile, new[] { second, new UsageRecord { Status = "界面读取未完成" } });
+            var restored = UsageInterface.Load(usageFile, t2.AddMinutes(1));
+            Check(restored.Count == 1 && restored[2].Identity == "2|10|5|1|x" && restored[2].FiveHour.Percent == 40 && restored[2].FiveHour.Observed == t1 && restored[2].Weekly.Reset == "", "观察记录往返错误");
+            Check(!File.ReadAllText(usageFile).Contains("epitaxy") && UsageInterface.Load(usageFile, t1.AddMinutes(-1)).Count == 0, "不得保存页面；未来时间必须拒绝");
+            File.WriteAllText(usageFile, "{\"version\":1,\"records\":[{\"identity\":\"3|1|1|0|x\",\"fh\":{\"percent\":5,\"reset\":\"\",\"observed\":1000}},{\"identity\":\"3|2|1|0|x\",\"fh\":{\"percent\":6,\"reset\":\"\",\"observed\":1000}},{\"identity\":\"11|1|1|0|x\",\"fh\":{\"percent\":5,\"reset\":\"\",\"observed\":1000}},{\"identity\":\"4|1|1|0|x\",\"fh\":{\"percent\":105,\"reset\":\"\",\"observed\":1000}}]}");
+            Check(UsageInterface.Load(usageFile, t2).Count == 0, "重复账号、越界编号与百分比必须丢弃");
+            foreach (string broken in new[] { "{", "null", "{\"version\":2,\"records\":[]}" }) { File.WriteAllText(usageFile, broken); Check(UsageInterface.Load(usageFile, t2).Count == 0, "损坏观察记录应为空：" + broken); }
             // 开机启动：只接受正式安装路径；值比较不区分大小写、需带引号的完整路径。（不读写真实注册表）
             string installed = @"C:\Users\x\AppData\Local\Programs\Claude 多开启动器\ClaudeLauncher.exe";
             Check(AutoStart.IsInstalledCopy(installed.ToUpperInvariant(), installed) && !AutoStart.IsInstalledCopy(@"D:\ClaudeLauncher\windows\artifacts\bin\ClaudeLauncher.exe", installed), "正式安装路径判断错误");
