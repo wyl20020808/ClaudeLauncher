@@ -1869,7 +1869,7 @@ static const unsigned CardFill = 0xFFFCF7;
     if (self.snapshotMode || ![self.settings[@"showUsageHistory"] boolValue] || self.loginAccount || self.scanError || self.readingUsageInterface ||
         (!triggerPID && NSProcessInfo.processInfo.systemUptime-self.lastUsageRead < 1)) return;
     self.readingUsageInterface = YES; self.lastUsageRead = NSProcessInfo.processInfo.systemUptime;
-    if (!triggerPID) self.usageInterface = @{};
+    // Keep current values on screen while reading; completion replaces or drops each account's record, so cards never blank out.
     [self updateUsageCards]; // Revalidate cached ownership only on an explicit viewing action.
     NSUInteger generation = self.usageGeneration;
     NSDictionary *processes = self.processes;

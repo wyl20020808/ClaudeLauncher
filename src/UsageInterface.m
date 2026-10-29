@@ -233,6 +233,7 @@ static NSDictionary *ReadUsageInterfaceAttempt(pid_t pid, BOOL allowInitializati
     NSMapTable *structure = [NSMapTable strongToStrongObjectsMapTable];
     reader.attribute = ^id(id node, NSString *key) {
         if (!node || CFGetTypeID((__bridge CFTypeRef)node) != AXUIElementGetTypeID()) return nil;
+        AXUIElementSetMessagingTimeout((__bridge AXUIElementRef)node,0.1f); // Per element; keeps one call within the read deadline.
         if ([key isEqual:@"AXRole"] || [key isEqual:@"AXChildren"]) {
             NSDictionary *cached = [structure objectForKey:node];
             if (!cached) {
@@ -285,6 +286,8 @@ static BOOL UsagePopoverOpens(NSString *role, NSString *label, id expanded) {
 }
 @end
 static id PopoverAttribute(AXUIElementRef element, CFStringRef key) {
+    // Runs on the main thread: a hung Claude must not stall the launcher for the ~6s default timeout.
+    AXUIElementSetMessagingTimeout(element,0.1f);
     CFTypeRef value = NULL; AXUIElementCopyAttributeValue(element,key,&value); return CFBridgingRelease(value);
 }
 static void UsagePopoverChanged(AXObserverRef observer, AXUIElementRef element, CFStringRef notification, void *context) {
