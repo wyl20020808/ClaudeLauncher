@@ -1,6 +1,6 @@
 # Claude 启动器
 
-非官方工具，与 Anthropic 无关联。原生 macOS 桌面账号启动器，Objective-C / AppKit。当前 macOS 版本号为 1.7.11 / build 18；发布进度见 docs/STATUS.md。
+非官方工具，与 Anthropic 无关联。原生 macOS 桌面账号启动器，Objective-C / AppKit。当前 macOS 版本号为 1.7.12 / build 19；发布进度见 docs/STATUS.md。
 
 已整合 `dev` 的本地设置和更新进度界面：账号搜索／筛选／别名／多选复制、日志筛选／搜索／分页可用。管理功能只操作本地；禁止向 Claude／Anthropic 发请求。联网更新默认关闭；开启后每次启动检查一次，也可手动检查，仅使用本项目 GitHub Releases。详见 [当前规则](docs/SPEC.md) 与 [验收记录](docs/STATUS.md)。
 
