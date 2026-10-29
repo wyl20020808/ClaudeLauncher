@@ -9,7 +9,6 @@ cd "${0:A:h}/.."
 REPO=wyl20020808/ClaudeLauncher
 DOWNLOAD="https://github.com/$REPO/releases/latest/download"
 SIGN_IDENTITY="${SIGN_IDENTITY:-ClaudeLauncher Local Signing}"
-UPDATE_BASE_URL="${UPDATE_BASE_URL:-https://www.u4139693.nyat.app:53569/claude-launcher/}"
 DRY=0; [[ "${1:-}" == --dry-run ]] && DRY=1
 SDK=/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk; [[ -d $SDK ]] || SDK=$(xcrun --show-sdk-path)
 step() { print "== $1"; }
@@ -34,7 +33,7 @@ WORK=$(mktemp -d "${TMPDIR:-/tmp}/claude-launcher-publish.XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
 
 step '构建并打包'
-UPDATE_BASE_URL="$UPDATE_BASE_URL" SIGN_IDENTITY="$SIGN_IDENTITY" /bin/zsh scripts/build.sh >/dev/null
+SIGN_IDENTITY="$SIGN_IDENTITY" /bin/zsh scripts/build.sh >/dev/null
 APP="build/Claude 启动器.app"
 VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")
 [[ "$VERSION" =~ '^[0-9]+\.[0-9]+\.[0-9]+$' ]] || die "版本号格式不符：$VERSION"

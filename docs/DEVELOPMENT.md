@@ -135,3 +135,13 @@ arch -x86_64 "build/Claude 启动器.app/Contents/MacOS/ClaudeLauncher" --self-t
 - 密钥：`scripts/release-key.m`（编译为 `build/release-key`，用固定证书签名，标识 `local.claude.profile-launcher.release-key`）。`create` 在登录钥匙串生成 RSA-3072 私钥，**不可导出**（创建后立即尝试导出，若成功则删除并报错）；`public` 输出公钥 XML；`sign` / `verify` 用于清单。私钥不打印、不进仓库或 DMG。注意：“不可导出”必须写在 `SecKeyCreateRandomKey` 的顶层参数，只写在 `kSecPrivateKeyAttrs` 中会被忽略（实测）。
 - 发布：`scripts/publish-macos.sh [--dry-run]`。要求工作区干净、当前提交已推送、`gh` 已登录、钥匙串公钥与 `resources/update-public-key-macos.xml` 一致；版本必须高于 GitHub 上当前的 `latest-macos.json`。流程见脚本头注释与 SPEC。自建服务由 Windows 端定时同步，脚本不操作。
 - 包内 Mac 公钥文件名为 `macos-publisher-key.xml`（不能以 `-macos` 结尾，见 SPEC【macOS 差异】）。
+
+## 本地设置与控件验收（feature/local-settings）
+
+- `src/Settings.m/.h` 管理默认值、类型／范围白名单、本地别名校验、日志组合筛选及更新 URL 白名单；`TestSettings` 合入 `--self-test`。
+- 构建加入系统 ServiceManagement.framework，无第三方依赖。固定证书构建到 `build/local-settings/`，保留已安装应用和其他开发构建。
+- 运行 `build/local-settings/'Claude 启动器.app'/Contents/MacOS/ClaudeLauncher --ui-self-test build/local-settings/checks`：在随机独立偏好 suite 中进行原生控件 target/action 测试，结束清理 suite；只用合成账号／日志，不运行正常启动生命周期、不扫描真实账号、不启动 Claude、不注册登录项，不创建网络会话。
+- UI 自检覆盖六类切换、草稿与保存／重载、撤销、默认值保存不清除其他偏好、关闭窗口返回值、插画／用量／通知开关、日志数量上限／组合筛选／分页、账号搜索／状态／全选／部分选中及隐藏选择清理。生成六张设置页和账号／日志页的离屏 PNG。
+- 网络拒绝测试直接调用 Fetch：更新关闭时拒绝合法更新地址；开启时拒绝 Anthropic 地址，两个分支都在 NSURLSession 创建之前返回。URL 测试另覆盖协议、域名伪装、其他仓库、用户信息和端口；不对远端发探测请求。
+- 合成测试和离屏渲染不等于真实系统授权、登录启动、菜单栏、Finder、文件选择或真实 Claude 窗口恢复验收。这些系统集成保留人工验收边界，不为测试自动修改用户系统设置。
+- `--update-test --allow-updates` 是明确联网并可自动安装更新的开发命令，本轮未执行；无参数调用必须直接返回 2，不能发请求。发布脚本不再把任意自建更新地址注入 macOS 包。
