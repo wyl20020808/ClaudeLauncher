@@ -1,5 +1,13 @@
 # 项目状态
 
+## macOS 更新进度窗口（2026-10-28，feature/update-progress，基于 feature/local-settings）
+
+- 先把最新 dev（1.7.7）合并进本分支，冲突（build.sh、SPEC、STATUS）已解决：链接 ServiceManagement 与 sqlite3、编译 Settings.m。
+- 按用户决定：更新只用 GitHub Releases（自建服务不再作为来源，1.7.6 的取较高版本随之停用）；开启更新后每次打开启动器检查一次，并可手动检查；默认关闭。AGENTS、SPEC、设置文案同步。
+- 新增进度窗口：下载（真实进度、MB、百分比、来源）→ 校验（不定进度）→ 安装（提示启动器即将关闭，约 2 秒后退出，取消按钮禁用）。下载与校验阶段可取消，取消即中止请求、删除暂存与临时文件；关闭窗口等同取消。下载改为可取消、带进度的会话委托，仍保留跳转白名单与大小上限。
+- 验证：自检 10 组通过（arm64 构建内运行）；进度窗口三个阶段离屏截图核对；端到端（1.7.6 测试副本）：下载中取消后版本不变、无暂存与临时文件；完整更新经 GitHub 到 1.7.7，跳转仅白名单主机。未验证：真实窗口中的点击与动画、启动时自动检查的实际弹窗。
+- 风险提示（未改动）：dev 中 1.7.7 的用量功能读取钥匙串 Claude Safe Storage 并解密 Cookies 中的 lastActiveOrg；与本分支 AGENTS“不得读取凭据”存在冲突，需用户决定。
+
 ## 系统设置与本地安全（2026-10-28，feature/local-settings）
 
 - 从干净的 `feature/project-registration`（`4fa0bb7`）创建新分支 `feature/local-settings`。保留本地用量、项目导入和已合并的目录登记；本轮只修改 macOS，Windows 未改。版本仍为 1.7.4 / build 11。

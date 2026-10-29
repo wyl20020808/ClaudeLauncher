@@ -205,8 +205,15 @@ static NSString *SameSigner(NSString *candidate) {
     if (me) CFRelease(me); if (requirement) CFRelease(requirement); if (other) CFRelease(other);
     return failure;
 }
-@interface RedirectGuard : NSObject <NSURLSessionTaskDelegate>
+// Session delegate: enforces the redirect allowlist, collects the body under a size limit and reports progress.
+@interface RedirectGuard : NSObject <NSURLSessionDataDelegate>
 @property BOOL github;
+@property long long limit;
+@property NSURL *url;
+@property NSMutableData *body;
+@property NSString *overLimit;
+@property (copy) void (^progress)(long long received, long long expected);
+@property (copy) void (^done)(NSData *data, NSString *failure);
 @end
 @implementation RedirectGuard
 - (void)URLSession:(NSURLSession *)session task:(NSURLSessionTask *)task willPerformHTTPRedirection:(NSHTTPURLResponse *)response newRequest:(NSURLRequest *)request completionHandler:(void (^)(NSURLRequest *))completionHandler {
@@ -214,23 +221,43 @@ static NSString *SameSigner(NSString *candidate) {
     if (TraceNetwork) printf("[network] redirect -> %s %s\n",request.URL.host.UTF8String,allowed ? "allowed" : "blocked");
     completionHandler(allowed ? request : nil);
 }
+- (void)URLSession:(NSURLSession *)session dataTask:(NSURLSessionDataTask *)task didReceiveResponse:(NSURLResponse *)response completionHandler:(void (^)(NSURLSessionResponseDisposition))completionHandler {
+    if (response.expectedContentLength > self.limit) { self.overLimit = @"下载内容超出上限。"; completionHandler(NSURLSessionResponseCancel); return; }
+    completionHandler(NSURLSessionResponseAllow);
+}
+- (void)URLSession:(NSURLSession *)session dataTask:(NSURLSessionDataTask *)task didReceiveData:(NSData *)data {
+    [self.body appendData:data];
+    if ((long long)self.body.length > self.limit) { self.overLimit = @"下载内容超出上限。"; [task cancel]; return; }
+    if (self.progress) {
+        long long received = self.body.length, expected = task.response.expectedContentLength;
+        void (^progress)(long long, long long) = self.progress;
+        dispatch_async(dispatch_get_main_queue(), ^{ progress(received,expected); });
+    }
+}
+- (void)URLSession:(NSURLSession *)session task:(NSURLSessionTask *)task didCompleteWithError:(NSError *)error {
+    NSInteger status = [task.response isKindOfClass:NSHTTPURLResponse.class] ? ((NSHTTPURLResponse *)task.response).statusCode : 0;
+    if (TraceNetwork) printf("[network] %s -> HTTP %ld, %lu bytes\n",self.url.absoluteString.UTF8String,(long)status,(unsigned long)self.body.length);
+    NSString *failure = self.overLimit ?: error.code == NSURLErrorCancelled ? @"已取消。" : error ? error.localizedDescription : status != 200 ? [NSString stringWithFormat:@"服务器返回 %ld。",(long)status] : nil;
+    NSData *data = failure ? nil : [self.body copy];
+    void (^done)(NSData *, NSString *) = self.done;
+    [session finishTasksAndInvalidate];
+    dispatch_async(dispatch_get_main_queue(), ^{ done(data, failure); });
+}
 @end
-static void Fetch(NSURL *url, BOOL github, long long limit, NSTimeInterval timeout, void (^done)(NSData *data, NSString *failure)) {
-    if (!NetworkEnabled || !github || !AllowedUpdateURL(url,NO)) { done(nil,@"本地安全策略已阻止此请求；仅允许主动检查本项目的 GitHub 更新。"); return; }
+// Returns the task so a caller can cancel it; progress (optional) runs on the main queue.
+static NSURLSessionTask *Fetch(NSURL *url, BOOL github, long long limit, NSTimeInterval timeout, void (^progress)(long long received, long long expected), void (^done)(NSData *data, NSString *failure)) {
+    if (!NetworkEnabled || !github || !AllowedUpdateURL(url,NO)) { done(nil,@"本地安全策略已阻止此请求；仅允许主动检查本项目的 GitHub 更新。"); return nil; }
     RedirectGuard *guard = [RedirectGuard new]; guard.github = github;
+    guard.limit = limit; guard.url = url; guard.body = [NSMutableData data]; guard.progress = progress; guard.done = done;
     NSURLSessionConfiguration *config = NSURLSessionConfiguration.ephemeralSessionConfiguration;
     config.timeoutIntervalForRequest = 15; config.timeoutIntervalForResource = timeout; config.requestCachePolicy = NSURLRequestReloadIgnoringLocalCacheData;
     config.HTTPCookieStorage = nil; config.URLCredentialStorage = nil; config.URLCache = nil;
     config.HTTPShouldSetCookies = NO;
     config.HTTPAdditionalHeaders = @{@"User-Agent":[@"ClaudeProfileLauncher/" stringByAppendingString:[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"0"]};
     NSURLSession *session = [NSURLSession sessionWithConfiguration:config delegate:guard delegateQueue:nil];
-    [[session dataTaskWithURL:url completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
-        NSInteger status = [response isKindOfClass:NSHTTPURLResponse.class] ? ((NSHTTPURLResponse *)response).statusCode : 0;
-        if (TraceNetwork) printf("[network] %s -> HTTP %ld, %lu bytes\n",url.absoluteString.UTF8String,(long)status,(unsigned long)data.length);
-        NSString *failure = error ? error.localizedDescription : status != 200 ? [NSString stringWithFormat:@"服务器返回 %ld。",(long)status] : (long long)data.length > limit ? @"下载内容超出上限。" : nil;
-        [session finishTasksAndInvalidate];
-        dispatch_async(dispatch_get_main_queue(), ^{ done(failure ? nil : data, failure); });
-    }] resume];
+    NSURLSessionTask *task = [session dataTaskWithURL:url];
+    [task resume];
+    return task;
 }
 static NSString *RunTool(NSString *path, NSArray<NSString *> *arguments, NSData **output) {
     NSTask *task = [NSTask new]; task.executableURL = [NSURL fileURLWithPath:path]; task.arguments = arguments;
@@ -580,7 +607,16 @@ static const unsigned CardFill = 0xFFFCF7;
 @property NSArray<NSDictionary *> *snapshotProjects;
 @property BOOL snapshotMode;
 @property BOOL updating;
+@property BOOL updateCancelled;
+@property NSURLSessionTask *updateTask;
+@property NSWindow *updateWindow;
+@property NSArray<NSTextField *> *updateSteps;
+@property NSProgressIndicator *updateBar;
+@property NSTextField *updateDetail;
+@property NSButton *updateCancel;
+@property NSInteger updateStage;
 @property BOOL headless;         // --update-test: no dialogs, accept the offered update, print results.
+@property BOOL testCancel;       // --update-test --allow-updates --cancel: cancel as soon as download progress arrives.
 @property NSStatusItem *statusItem;
 @property NSString *lastLogged;
 @property NSTextField *accessibilityStatus;
@@ -645,8 +681,8 @@ static const unsigned CardFill = 0xFFFCF7;
     [self makeWindow]; [self applySettings]; [self refresh]; [self show:nil];
     if (self.projectStore.notice) [self alert:@"项目清单提示" detail:self.projectStore.notice];
     [self finishPendingUpdate];
-    // No scheduled network requests. Updates require saved opt-in and an explicit click.
-
+    // One check per launch (only when the user enabled updates); no timers or repeated background checks.
+    if (NetworkEnabled) dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(3*NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ [self runUpdateCheck:NO]; });
 }
 - (void)alert:(NSString *)title detail:(NSString *)detail {
     if (self.headless) { printf("[result] %s：%s\n",title.UTF8String,detail.UTF8String); exit(3); }
@@ -1200,7 +1236,7 @@ static const unsigned CardFill = 0xFFFCF7;
         default:
             [self settingsText:[NSString stringWithFormat:@"Claude 启动器 %@",[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"开发版"] y:0 height:28 bold:YES];
             [self settingsText:@"非官方本地管理工具，与 Anthropic 无关联。\n不向 Claude / Anthropic 发请求，不读取凭据，不修改官方应用。" y:42 height:70 bold:NO];
-            [self settingToggle:@"allowUpdates" title:@"允许手动检查 GitHub 更新" detail:@"默认关闭。启用后仍需主动点击；仅访问本项目下载地址。" y:124];
+            [self settingToggle:@"allowUpdates" title:@"允许检查 GitHub 更新" detail:@"默认关闭。开启后每次打开启动器检查一次，也可手动检查；仅访问本项目 GitHub 下载地址。" y:124];
             [self settingsAction:@"检查启动器更新…" action:@selector(checkForUpdates:) y:214];
             [self settingsAction:@"查看本地使用帮助" action:@selector(localHelp:) y:258];
             [self settingsAction:@"复制基础诊断信息" action:@selector(copyDiagnostics:) y:302];
@@ -1348,17 +1384,77 @@ static const unsigned CardFill = 0xFFFCF7;
     [self runUpdateCheck:YES];
 }
 - (void)runUpdateCheck:(BOOL)manual {
-    if (!manual || !NetworkEnabled) {
+    if (!NetworkEnabled) {
         if (manual) [self alert:@"联网更新未启用" detail:@"如需检查启动器更新，请在系统设置 → 关于软件中启用 GitHub 更新并保存，然后再次点击检查更新。不会访问 Claude 或 Anthropic。"];
         return;
     }
     if (self.updating) { if (manual) [self alert:@"正在检查更新" detail:@"请稍候。"]; return; }
-    self.updating = YES;
+    self.updating = YES; self.updateCancelled = NO;
     [NSUserDefaults.standardUserDefaults setObject:[NSDate date] forKey:@"lastUpdateCheck"];
     [self checkAllSources:manual];
 }
+// Progress window (SPEC 更新过程界面): 下载 → 校验 → 安装. Cancel is allowed until installation starts.
+- (void)showUpdateProgress:(NSString *)version {
+    if (self.headless) return;
+    [self closeUpdateProgress];
+    NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,460,212) styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable backing:NSBackingStoreBuffered defer:NO];
+    window.title = [NSString stringWithFormat:@"更新到 %@",version]; window.releasedWhenClosed = NO; window.delegate = self;
+    Canvas *content = [[Canvas alloc] initWithFrame:NSMakeRect(0,0,460,212)];
+    content.paint = ^(NSRect bounds) { [Hex(0xFAF6F0) setFill]; NSRectFill(bounds); };
+    window.contentView = content;
+    [content addSubview:Text([NSString stringWithFormat:@"正在更新 Claude 启动器到 %@",version], NSMakeRect(24,20,412,24), [NSFont systemFontOfSize:16 weight:NSFontWeightSemibold], Hex(0x2B2622))];
+    NSMutableArray *steps = [NSMutableArray array];
+    NSArray *names = @[@"① 下载",@"② 校验",@"③ 安装"];
+    for (NSUInteger i = 0; i < names.count; i++) {
+        NSTextField *step = Text(names[i], NSMakeRect(24+i*140,58,130,20), [NSFont systemFontOfSize:13 weight:NSFontWeightMedium], Hex(0xA59B90));
+        [content addSubview:step]; [steps addObject:step];
+    }
+    self.updateSteps = steps;
+    self.updateBar = [[NSProgressIndicator alloc] initWithFrame:NSMakeRect(24,90,412,16)];
+    self.updateBar.style = NSProgressIndicatorStyleBar; self.updateBar.minValue = 0; self.updateBar.maxValue = 1;
+    [content addSubview:self.updateBar];
+    self.updateDetail = Text(@"", NSMakeRect(24,116,412,40), [NSFont systemFontOfSize:12], Hex(0x6E655C));
+    self.updateDetail.maximumNumberOfLines = 2; self.updateDetail.lineBreakMode = NSLineBreakByWordWrapping;
+    [content addSubview:self.updateDetail];
+    self.updateCancel = [NSButton buttonWithTitle:@"取消" target:self action:@selector(cancelUpdate:)];
+    self.updateCancel.frame = NSMakeRect(356,164,80,30); [content addSubview:self.updateCancel];
+    self.updateWindow = window; [window center];
+    if (!self.snapshotMode) { [window makeKeyAndOrderFront:nil]; [NSApp activateIgnoringOtherApps:YES]; }
+}
+// progress: 0...1 determinate, negative = indeterminate.
+- (void)updateStep:(NSInteger)stage detail:(NSString *)detail progress:(double)progress {
+    if (self.headless || !self.updateWindow) return;
+    self.updateStage = stage;
+    for (NSInteger i = 0; i < (NSInteger)self.updateSteps.count; i++) {
+        NSString *base = [self.updateSteps[i].stringValue stringByReplacingOccurrencesOfString:@" ✓" withString:@""];
+        self.updateSteps[i].stringValue = i < stage ? [base stringByAppendingString:@" ✓"] : base;
+        self.updateSteps[i].textColor = i < stage ? Hex(0x3C8A68) : i == stage ? Hex(0x9A6447) : Hex(0xA59B90);
+    }
+    if (progress < 0) { self.updateBar.indeterminate = YES; [self.updateBar startAnimation:nil]; }
+    else { [self.updateBar stopAnimation:nil]; self.updateBar.indeterminate = NO; self.updateBar.doubleValue = MIN(1,progress); }
+    self.updateDetail.stringValue = detail;
+    self.updateCancel.enabled = stage < 2;
+}
+- (void)closeUpdateProgress {
+    if (!self.updateWindow) return;
+    NSWindow *window = self.updateWindow; self.updateWindow = nil;
+    window.delegate = nil; [window orderOut:nil];
+}
+- (void)cancelUpdate:(id)sender {
+    if (!self.updating || self.updateStage >= 2) return;
+    self.updateCancelled = YES; self.updating = NO;
+    [self.updateTask cancel]; self.updateTask = nil;
+    [self closeUpdateProgress];
+    [self addLog:@"已取消更新，未做任何改动。"];
+}
+- (BOOL)windowShouldClose:(NSWindow *)sender {
+    if (sender != self.updateWindow) return YES;
+    if (self.updateStage >= 2) return NO;   // installation already handed off
+    [self cancelUpdate:nil]; return NO;
+}
 - (void)updateFailed:(NSArray<NSString *> *)failures manual:(BOOL)manual {
     self.updating = NO;
+    [self closeUpdateProgress];
     NSString *detail = [failures componentsJoinedByString:@"\n"];
     [self addLog:[@"检查更新失败：" stringByAppendingString:[failures componentsJoinedByString:@"；"]]];
     if (self.headless) exit(1);
@@ -1377,7 +1473,7 @@ static const unsigned CardFill = 0xFFFCF7;
     for (NSUInteger i = 0; i < sources.count; i++) {
         NSDictionary *source = sources[i];
         dispatch_group_enter(group);
-        Fetch([NSURL URLWithString:[source[@"base"] stringByAppendingString:@"latest-macos.json"]], [source[@"github"] boolValue], 16384, 30, ^(NSData *data, NSString *failure) {
+        Fetch([NSURL URLWithString:[source[@"base"] stringByAppendingString:@"latest-macos.json"]], [source[@"github"] boolValue], 16384, 30, nil, ^(NSData *data, NSString *failure) {
             NSString *invalid = failure;
             NSDictionary *manifest = data ? VerifyManifest(data, ReleaseKeys(), &invalid) : nil;
             results[i] = manifest ? @{@"source":source,@"manifest":manifest} : @{@"source":source,@"failure":invalid ?: @"未知错误"};
@@ -1423,10 +1519,24 @@ static const unsigned CardFill = 0xFFFCF7;
 }
 // Download from the sources that offer the chosen version, in source order; a failed download moves to the next one.
 - (void)downloadOffer:(NSArray<NSDictionary *> *)offers index:(NSUInteger)index failures:(NSArray<NSString *> *)failures {
+    if (self.updateCancelled) return;
     if (index >= offers.count) { [self updateFailed:failures manual:YES]; return; }
     NSDictionary *source = offers[index][@"source"], *manifest = offers[index][@"manifest"];
     [self addLog:[NSString stringWithFormat:@"正在从%@下载 %@",source[@"name"],manifest[@"file"]]];
-    Fetch([NSURL URLWithString:[source[@"base"] stringByAppendingString:[manifest[@"file"] stringByAddingPercentEncodingWithAllowedCharacters:NSCharacterSet.URLPathAllowedCharacterSet]]], [source[@"github"] boolValue], UpdateSizeLimit, 300, ^(NSData *package, NSString *downloadFailure) {
+    if (index == 0) [self showUpdateProgress:manifest[@"version"]];
+    double total = [manifest[@"size"] doubleValue];
+    [self updateStep:0 detail:[NSString stringWithFormat:@"从 %@ 下载 · 0 / %.1f MB",source[@"name"],total/1048576] progress:0];
+    self.updateTask = Fetch([NSURL URLWithString:[source[@"base"] stringByAppendingString:[manifest[@"file"] stringByAddingPercentEncodingWithAllowedCharacters:NSCharacterSet.URLPathAllowedCharacterSet]]], [source[@"github"] boolValue], UpdateSizeLimit, 300, ^(long long received, long long expected) {
+        if (self.updateCancelled) return;
+        if (self.headless && self.testCancel) {
+            [self cancelUpdate:nil]; printf("[result] cancelled at %lld bytes\n",received);
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(2*NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ exit(0); }); return;
+        }
+        double size = expected > 0 ? expected : total;
+        [self updateStep:0 detail:[NSString stringWithFormat:@"从 %@ 下载 · %.1f / %.1f MB · %.0f%%",source[@"name"],received/1048576.0,size/1048576,size > 0 ? 100.0*received/size : 0] progress:size > 0 ? received/size : 0];
+    }, ^(NSData *package, NSString *downloadFailure) {
+        self.updateTask = nil;
+        if (self.updateCancelled) return;
         NSString *problem = downloadFailure ?: (long long)package.length != [manifest[@"size"] longLongValue] || ![SHA256Hex(package) isEqual:manifest[@"sha256"]] ? @"安装包大小或 SHA-256 不匹配，已拒绝。" : nil;
         if (problem) { [self downloadOffer:offers index:index+1 failures:[failures arrayByAddingObject:[NSString stringWithFormat:@"%@：%@",source[@"name"],problem]]]; return; }
         [self installPackage:package version:manifest[@"version"]];
@@ -1438,6 +1548,7 @@ static const unsigned CardFill = 0xFFFCF7;
     NSString *staged = [folder stringByAppendingPathComponent:[NSString stringWithFormat:@".%@-update-%@.app",current.lastPathComponent.stringByDeletingPathExtension,token]];
     NSString *backup = [folder stringByAppendingPathComponent:[NSString stringWithFormat:@".%@-backup-%@.app",current.lastPathComponent.stringByDeletingPathExtension,token]];
     NSString *helper = [NSBundle.mainBundle pathForResource:@"update-helper" ofType:@"sh"];
+    [self updateStep:1 detail:@"正在校验安装包：签名、版本与证书…" progress:-1];
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0), ^{
         NSFileManager *fm = NSFileManager.defaultManager;
         NSString *work = [NSTemporaryDirectory() stringByAppendingPathComponent:[@"claude-launcher-update-" stringByAppendingString:token]];
@@ -1456,19 +1567,24 @@ static const unsigned CardFill = 0xFFFCF7;
         if (!failure) failure = SameSigner(staged);
         if (failure) [fm removeItemAtPath:staged error:nil];
         dispatch_async(dispatch_get_main_queue(), ^{
+            if (self.updateCancelled) { [fm removeItemAtPath:staged error:nil]; [fm removeItemAtPath:work error:nil]; return; }
             if (failure) { [fm removeItemAtPath:work error:nil]; [self updateFailed:@[failure] manual:YES]; return; }
             if (![self.settingsDraft isEqual:self.settings]) {
-                [fm removeItemAtPath:staged error:nil]; [fm removeItemAtPath:work error:nil]; self.updating = NO;
+                [fm removeItemAtPath:staged error:nil]; [fm removeItemAtPath:work error:nil]; self.updating = NO; [self closeUpdateProgress];
                 [self alert:@"更新安装已取消" detail:@"下载期间设置发生了更改。请先保存或撤销，再重新检查更新；当前应用保持原样。"]; return;
             }
-            NSTask *task = [NSTask new]; task.executableURL = [NSURL fileURLWithPath:@"/bin/zsh"];
-            task.arguments = @[script,[NSString stringWithFormat:@"%d",getpid()],current,staged,backup];
-            NSError *error = nil;
-            if (![task launchAndReturnError:&error]) { [fm removeItemAtPath:staged error:nil]; [self updateFailed:@[error.localizedDescription ?: @"无法启动安装步骤。"] manual:YES]; return; }
-            [NSUserDefaults.standardUserDefaults setObject:backup forKey:@"updateBackupPath"];
-            [NSUserDefaults.standardUserDefaults synchronize];
-            [self addLog:[NSString stringWithFormat:@"更新包校验通过，退出并安装 %@",version]];
-            [NSApp terminate:nil];
+            // Point of no return: cancel is disabled, the launcher quits and the helper replaces it.
+            [self updateStep:2 detail:@"校验通过。启动器即将关闭，安装完成后会自动重新打开。Claude 不受影响。" progress:-1];
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)((self.headless ? 0 : 2)*NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                NSTask *task = [NSTask new]; task.executableURL = [NSURL fileURLWithPath:@"/bin/zsh"];
+                task.arguments = @[script,[NSString stringWithFormat:@"%d",getpid()],current,staged,backup];
+                NSError *error = nil;
+                if (![task launchAndReturnError:&error]) { [fm removeItemAtPath:staged error:nil]; [self updateFailed:@[error.localizedDescription ?: @"无法启动安装步骤。"] manual:YES]; return; }
+                [NSUserDefaults.standardUserDefaults setObject:backup forKey:@"updateBackupPath"];
+                [NSUserDefaults.standardUserDefaults synchronize];
+                [self addLog:[NSString stringWithFormat:@"更新包校验通过，退出并安装 %@",version]];
+                [NSApp terminate:nil];
+            });
         });
     });
 }
@@ -2324,10 +2440,10 @@ static int UISettingsTest(NSString *output) {
         launcher.accountSearch.stringValue = @"开发"; [launcher accountFilterChanged:nil]; NSCAssert(!launcher.rows[1].hidden,@"local alias searchable");
         launcher.accountSearch.stringValue = @""; [launcher.accountFilter selectItemAtIndex:0]; [launcher refreshAccountTable]; [launcher showPage:1]; capture(@"accounts.png");
         NetworkEnabled = NO; __block BOOL refused = NO;
-        Fetch([NSURL URLWithString:[GitHubDownloads stringByAppendingString:@"latest-macos.json"]],YES,100,1,^(NSData *data,NSString *failure) { refused = !data && failure.length; });
+        Fetch([NSURL URLWithString:[GitHubDownloads stringByAppendingString:@"latest-macos.json"]],YES,100,1,nil,^(NSData *data,NSString *failure) { refused = !data && failure.length; });
         NSCAssert(refused,@"disabled network rejected before session creation");
         NetworkEnabled = YES; refused = NO;
-        Fetch([NSURL URLWithString:@"https://api.anthropic.com/v1/messages"],YES,100,1,^(NSData *data,NSString *failure) { refused = !data && failure.length; });
+        Fetch([NSURL URLWithString:@"https://api.anthropic.com/v1/messages"],YES,100,1,nil,^(NSData *data,NSString *failure) { refused = !data && failure.length; });
         NSCAssert(refused,@"Claude requests rejected even with update opt-in"); NetworkEnabled = NO;
         NSCAssert(!launcher.timer && !launcher.statusItem && !launcher.projectStore,@"UI checks do not start normal lifecycle or load projects");
         puts("PASS: native settings controls, isolated save/reload, draft cancellation, reset scope, artwork/history/notifications, log retention/filter/paging, account search/status/selection, network rejection before session creation; 8 offscreen renders");
@@ -2363,6 +2479,7 @@ int main(int argc, const char *argv[]) {
             setvbuf(stdout,NULL,_IOLBF,0); TraceNetwork = YES; NetworkEnabled = YES;
             NSApplication *app = NSApplication.sharedApplication; app.activationPolicy = NSApplicationActivationPolicyProhibited;
             Launcher *launcher = [Launcher new]; launcher.headless = YES;
+            launcher.testCancel = argc > 3 && strcmp(argv[3],"--cancel") == 0;
             printf("[test] %s %s\n",NSBundle.mainBundle.bundlePath.UTF8String,[[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] UTF8String]);
             dispatch_async(dispatch_get_main_queue(), ^{ [launcher runUpdateCheck:YES]; });
             [app run]; return 0;
@@ -2419,6 +2536,13 @@ int main(int argc, const char *argv[]) {
                     @{@"path":@"/Users/example/Projects/Website",@"accounts":@[@1,@2]},
                     @{@"path":@"/Users/example/Documents/一个较长的本地项目目录/Notes",@"accounts":@[@2]}]} checks:[NSMutableArray array]];
                 [importPreview layout]; view = importPreview.window.contentView;
+            }
+            if (argc > 4 && strcmp(argv[4],"--update-demo") == 0) {
+                NSInteger stage = argc > 5 ? atoi(argv[5]) : 0;
+                [launcher showUpdateProgress:@"1.7.8"];
+                NSArray *details = @[@"从 GitHub 下载 · 1.2 / 1.7 MB · 70%",@"正在校验安装包：签名、版本与证书…",@"校验通过。启动器即将关闭，安装完成后会自动重新打开。Claude 不受影响。"];
+                [launcher updateStep:stage detail:details[MIN(MAX(stage,0),2)] progress:stage == 0 ? 0.7 : -1];
+                view = launcher.updateWindow.contentView;
             }
             [view layoutSubtreeIfNeeded];
             NSBitmapImageRep *bitmap = [view bitmapImageRepForCachingDisplayInRect:view.bounds];
