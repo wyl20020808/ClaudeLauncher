@@ -186,7 +186,8 @@ try {
     $published = $true
 
     Step 'Verify both sources'
-    $base = [ClaudeLauncher.Updates]::BaseUrl
+    # 客户端已不再读取自建服务；过渡期仍为 1.7.3 及更早客户端发布并复核，地址只保留在发布脚本中。
+    $base = 'https://www.u4139693.nyat.app:53569/claude-launcher/'
     $sources = @(@('self-hosted', $base, 0), @('GitHub', [ClaudeLauncher.Updates]::GitHubBase, 5))
     foreach ($source in $sources) {
         foreach ($platform in @('windows', 'macos')) {

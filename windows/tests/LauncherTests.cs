@@ -89,7 +89,10 @@ public static class LauncherTests {
         }
         // 构造原生界面以验证 XAML 和控件，测试不显示窗口、不启动 Claude。
         new System.Windows.Application();
-        var ui = new LauncherUI();
+        // 合成设置与临时设置路径：不读写用户真实的 settings.json。
+        string settingsDir = Path.Combine(Path.GetTempPath(), "claude-settings-test-" + Guid.NewGuid().ToString("N"));
+        string settingsFile = Path.Combine(settingsDir, "settings.json");
+        var ui = new LauncherUI(new LauncherSettings(), settingsFile);
         // 01 不可删（Core.DeleteBlocker），删除确认框只用于 02～10。
         var dialog = ui.BuildDeleteDialog(3, new[] { @"C:\fixture\Claude-Profile-03" });
         var controls = Children(dialog).ToArray();
@@ -111,8 +114,151 @@ public static class LauncherTests {
         var trayItems = ui.TrayAccounts();
         Check(trayItems.Any(t => t.Item1 == 1 && t.Item2 == "账号 01 · 运行中" && t.Item3) && trayItems.Any(t => t.Item1 == 2 && t.Item2 == "账号 02 · 运行中"), "Tray account items wrong");
         Check(trayItems.All(t => System.Text.RegularExpressions.Regex.IsMatch(t.Item2, "^账号 [0-9]{2} · (运行中|未运行|检查中|启动中|删除未完成)$")), "Tray items must show only number and state");
+        TestSettingsPage(ui, settingsFile, state);
+        TestAccountsPage(ui, settingsFile, state);
+        TestLogsPage(ui, state);
+        Directory.Delete(settingsDir, true);
         Console.WriteLine("PASS: " + checks + " assertions; WPF layout loaded without showing windows.");
         return 0;
+    }
+    // SPEC 系统设置 [Windows]：六分类、草稿跨分类保留、撤销、保存生效、恢复默认只填草稿、更新入口受开关和未保存设置约束。
+    static void TestSettingsPage(LauncherUI ui, string settingsFile, List<Instance> state) {
+        var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+        var all = Children(ui.Snapshot(3, state)).ToArray();
+        Func<string, CheckBox> toggle = name => all.OfType<CheckBox>().Single(b => AutomationProperties.GetName(b) == name);
+        Func<string, ComboBox> choice = name => all.OfType<ComboBox>().Single(b => AutomationProperties.GetName(b) == name);
+        Func<string, Button> button = id => all.OfType<Button>().Single(b => AutomationProperties.GetAutomationId(b) == id || AutomationProperties.GetName(b) == id);
+        Action<System.Windows.Controls.Primitives.ButtonBase> click = b => typeof(System.Windows.Controls.Primitives.ButtonBase).GetMethod("OnClick", flags).Invoke(b, null);
+        Func<bool> dirty = () => button("SaveSettings").IsEnabled;
+        Func<System.Threading.Tasks.Task> check = () => (System.Threading.Tasks.Task)typeof(LauncherUI).GetMethod("CheckUpdate", flags).Invoke(ui, new object[] { false });
+
+        foreach (string tab in new[] { "常规设置", "启动行为", "外观设置", "数据与存储", "消息通知", "关于软件" }) Check(all.OfType<Button>().Count(b => AutomationProperties.GetName(b) == tab) == 1, "Settings tab missing: " + tab);
+        Check(!all.OfType<FrameworkElement>().Any(e => e is TextBlock && new[] { "默认浏览器", "启动间隔", "默认打开方式" }.Contains(((TextBlock)e).Text)), "Fake settings must be removed");
+        Check(!dirty() && toggle("显示水墨插画").IsChecked == true && toggle("允许检查 GitHub 更新").IsChecked == false, "Settings must start from saved defaults");
+        click(toggle("显示水墨插画"));
+        Check(dirty() && toggle("显示水墨插画").IsChecked == false, "Toggle must change the draft");
+        click(button("关于软件"));
+        Check(dirty() && toggle("显示水墨插画").IsChecked == false, "Draft must survive switching categories");
+        click(button("UndoSettings"));
+        Check(!dirty() && toggle("显示水墨插画").IsChecked == true && !File.Exists(settingsFile), "Undo must restore saved values without writing");
+        Check(choice("未恢复时的启动页面").IsEnabled, "Start page selectable when not restoring");
+        click(toggle("恢复启动器上次页面"));
+        Check(!choice("未恢复时的启动页面").IsEnabled, "Start page disabled while restoring last page");
+        click(button("UndoSettings"));
+
+        var addLog = typeof(LauncherUI).GetMethod("AddLog", flags);
+        for (int i = 0; i < 600; i++) addLog.Invoke(ui, new object[] { "合成日志 " + i });
+        var logs = (System.Collections.IList)typeof(LauncherUI).GetField("logs", flags).GetValue(ui);
+        Check(logs.Count == 500, "Default log limit must be 500");
+        choice("本次运行日志保留上限").SelectedIndex = 0;
+        click(toggle("显示水墨插画")); click(toggle("显示窗口内提示"));
+        click(button("SaveSettings"));
+        var saved = LauncherSettings.Load(settingsFile);
+        Check(!dirty() && saved.LogLimit == 100 && !saved.ShowArtwork && !saved.LocalNotifications && saved.LoadError == null, "Save must write the draft");
+        Check(logs.Count == 100, "Saved log limit must trim memory logs");
+        var artwork = (List<UIElement>)typeof(LauncherUI).GetField("artwork", flags).GetValue(ui);
+        Check(artwork.Count > 0 && artwork.All(e => e.Visibility == Visibility.Collapsed), "Artwork must follow the saved setting");
+        Check(!ui.Notify("测试"), "Notifications off must not show the toast");
+        ui.ResetSettingsDraft();
+        Check(dirty() && LauncherSettings.Load(settingsFile).LogLimit == 100, "Reset must only fill the draft");
+        click(button("SaveSettings"));
+        Check(LauncherSettings.Load(settingsFile).SameAs(new LauncherSettings()) && artwork.All(e => e.Visibility == Visibility.Visible) && ui.Notify("测试"), "Saving defaults must apply them");
+
+        // 更新入口：未开启或有未保存设置时不发请求。
+        int before = Updates.Requests;
+        check().Wait();
+        click(toggle("允许检查 GitHub 更新")); click(button("SaveSettings"));
+        click(toggle("显示水墨插画"));
+        check().Wait();
+        Check(Updates.Requests == before, "Update check must not run while disabled or with unsaved settings");
+        click(button("UndoSettings")); click(toggle("允许检查 GitHub 更新")); click(button("SaveSettings"));
+        Check(!LauncherSettings.Load(settingsFile).AllowUpdates, "Updates must be off again");
+        string diagnostics = ui.DiagnosticsText();
+        Check(diagnostics.Contains(Updates.DisplayVersion) && diagnostics.Contains("GitHub updates disabled") && !diagnostics.Contains(":\\"), "Diagnostics must contain only version, OS and network switch");
+    }
+    // SPEC 账号与日志交互：搜索、状态筛选、别名、可见选择（01、02 为合成运行中进程；其余是否显示取决于本机已有目录，不作断言）。
+    static void TestAccountsPage(LauncherUI ui, string settingsFile, List<Instance> state) {
+        var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+        var all = Children(ui.Snapshot(1, state)).ToArray();
+        var search = all.OfType<TextBox>().Single(b => AutomationProperties.GetName(b) == "搜索账号");
+        var status = all.OfType<ComboBox>().Single(b => AutomationProperties.GetName(b) == "账号状态筛选");
+        var selectAll = all.OfType<CheckBox>().Single(b => AutomationProperties.GetName(b) == "全选当前结果");
+        var copy = all.OfType<Button>().Single(b => AutomationProperties.GetAutomationId(b) == "CopySelectedPaths");
+        Action<System.Windows.Controls.Primitives.ButtonBase> click = b => typeof(System.Windows.Controls.Primitives.ButtonBase).GetMethod("OnClick", flags).Invoke(b, null);
+        Func<int, CheckBox> rowBox = n => all.OfType<CheckBox>().Single(b => AutomationProperties.GetName(b) == "选择账号 " + n.ToString("00"));
+        Func<int, bool> shown = n => ((FrameworkElement)((FrameworkElement)rowBox(n).Parent).Parent).Visibility == Visibility.Visible;
+        var selected = (HashSet<int>)typeof(LauncherUI).GetField("selectedAccounts", flags).GetValue(ui);
+
+        Check(shown(1) && shown(2) && !copy.IsEnabled && selectAll.IsChecked == false, "Running accounts listed, nothing selected");
+        search.Text = "账号 02";
+        Check(!shown(1) && shown(2), "Search by number must filter rows");
+        search.Text = "";
+        status.SelectedIndex = Array.IndexOf(new[] { "全部状态", "运行中", "未运行", "处理中", "异常" }, "未运行");
+        Check(!shown(1) && !shown(2), "Status filter must hide running accounts");
+        status.SelectedIndex = 1;
+        Check(shown(1) && shown(2), "Running filter must show running accounts");
+        click(selectAll);
+        Check(selected.SetEquals(new[] { 1, 2 }) && selectAll.IsChecked == true && copy.IsEnabled, "Select all must select current results only");
+        Check(ui.SelectedPathsText().Split(new[] { "\r\n" }, StringSplitOptions.None).Length == 2, "Copy must list visible selected folders");
+        search.Text = "账号 02";
+        Check(selected.SetEquals(new[] { 2 }) && selectAll.IsChecked == true, "Hidden selections must be cleared");
+        search.Text = ""; click(rowBox(1));
+        Check(selected.SetEquals(new[] { 1, 2 }) && selectAll.IsChecked == true, "Row checkbox toggles selection");
+        click(rowBox(2));
+        Check(selected.SetEquals(new[] { 1 }) && selectAll.IsChecked == null, "Partial selection shows mixed state");
+        click(selectAll); click(selectAll);
+        Check(selected.Count == 0 && selectAll.IsChecked == false && !copy.IsEnabled, "Select all toggles off");
+        status.SelectedIndex = 0;
+
+        Check(ui.SetAlias(2, "  工作  ") == null, "Valid alias rejected");
+        var names = AccountNames.Load(Path.Combine(Path.GetDirectoryName(settingsFile), "account-names.json"));
+        Check(names.Count == 1 && names[2] == "工作", "Alias must be saved to the launcher's own file");
+        Check(all.OfType<TextBlock>().Count(t => t.Text == "工作 · 02") == 2, "Card and table must both show alias with number");
+        search.Text = "工作";
+        Check(shown(2) && !shown(1), "Search must match alias");
+        search.Text = "";
+        Check(ui.SetAlias(2, "a\nb") != null && ui.SetAlias(2, new string('长', 25)) != null && AccountNames.Load(Path.Combine(Path.GetDirectoryName(settingsFile), "account-names.json"))[2] == "工作", "Invalid alias must be rejected without changes");
+        Check(ui.SetAlias(2, "   ") == null && all.OfType<TextBlock>().Count(t => t.Text == "账号 02") == 2, "Empty alias restores default name");
+        Check(!new LauncherSettings().ExportJson().Contains("工作"), "Aliases must not be exported with settings");
+    }
+    static void TestLogsPage(LauncherUI ui, List<Instance> state) {
+        var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+        var logs = (List<LogEntry>)typeof(LauncherUI).GetField("logs", flags).GetValue(ui);
+        var addLog = typeof(LauncherUI).GetMethod("AddLog", flags);
+        var render = typeof(LauncherUI).GetMethod("RenderLogs", flags);
+        logs.Clear();
+        addLog.Invoke(ui, new object[] { "账号 02 启动失败" });
+        for (int i = 0; i < 15; i++) addLog.Invoke(ui, new object[] { "普通信息 " + i });
+        logs[logs.Count - 2].At = DateTime.Now.AddMinutes(-10); // “普通信息 0”（系统）
+        var all = Children(ui.Snapshot(2, state)).ToArray();
+        Func<string, ComboBox> choice = name => all.OfType<ComboBox>().Single(b => AutomationProperties.GetName(b) == name);
+        var search = all.OfType<TextBox>().Single(b => AutomationProperties.GetName(b) == "搜索日志");
+        var prev = all.OfType<Button>().Single(b => AutomationProperties.GetAutomationId(b) == "LogPrevious");
+        var next = all.OfType<Button>().Single(b => AutomationProperties.GetAutomationId(b) == "LogNext");
+        var rows = (Canvas)typeof(LauncherUI).GetField("logRows", flags).GetValue(ui);
+        Action<System.Windows.Controls.Primitives.ButtonBase> click = b => typeof(System.Windows.Controls.Primitives.ButtonBase).GetMethod("OnClick", flags).Invoke(b, null);
+        Func<int> visibleEntries = () => rows.Children.OfType<TextBox>().Count();
+
+        render.Invoke(ui, null);
+        Check(visibleEntries() == 10 && !prev.IsEnabled && next.IsEnabled, "First page shows 10 entries");
+        click(next);
+        Check(visibleEntries() == 6 && prev.IsEnabled && !next.IsEnabled, "Second page shows the remainder");
+        search.Text = "失败";
+        Check(visibleEntries() == 1 && !prev.IsEnabled && !next.IsEnabled, "Search resets to first page and filters");
+        search.Text = "";
+        choice("日志级别筛选").SelectedIndex = 3;
+        Check(visibleEntries() == 1, "Level filter");
+        choice("日志级别筛选").SelectedIndex = 0; choice("日志实例筛选").SelectedIndex = 3;
+        Check(visibleEntries() == 1, "Instance filter (Claude 2)");
+        choice("日志实例筛选").SelectedIndex = 1; choice("日志时间范围").SelectedIndex = 1;
+        Check(LauncherUI.FilterLogs(logs, "", "系统", null, DateTime.Now.AddMinutes(-5)).Count == 14 && visibleEntries() == 10, "Time filter excludes entries older than 5 minutes");
+        search.Text = "不存在的内容";
+        Check(visibleEntries() == 0 && rows.Children.OfType<TextBlock>().Any(t => t.Text.StartsWith("没有符合条件")), "Empty filtered result explains itself");
+        search.Text = ""; choice("日志实例筛选").SelectedIndex = 0; choice("日志时间范围").SelectedIndex = 0;
+        string exported = LauncherUI.LogText(LauncherUI.FilterLogs(logs, "信息", null, null, null));
+        string[] lines = exported.Split(new[] { "\r\n" }, StringSplitOptions.RemoveEmptyEntries);
+        Check(lines.Length == 15 && lines[0].EndsWith("普通信息 0") && lines[14].EndsWith("普通信息 14"), "Export writes all filtered entries oldest first");
+        Check(rows.Children.OfType<TextBox>().All(t => t.IsReadOnly && t.ToolTip is string), "Log text is read-only, selectable and has a full-text tooltip");
     }
     static void TestLaunches() {
         string fixture = Path.Combine(Path.GetTempPath(), "claude-launch-test-" + Guid.NewGuid().ToString("N"), "客户 测试 & O'Neil");

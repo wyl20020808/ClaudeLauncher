@@ -2,7 +2,7 @@
 
 ## 本地安全与可操作界面（2026-10-28，macOS feature/local-settings）
 
-本节优先于下方旧版本更新描述。产品核心规则：管理器不向 Claude、Anthropic 或其 Cloud、API、遥测、登录服务发请求，不读取凭据，不通过 CLI、浏览器或官方界面刷新间接查询。设置不改变 Claude 的登录、会话、目录或运行状态。用户主动使用既有启动／激活功能时，官方客户端自身的正常联网不由管理器控制。规则写入根目录 AGENTS.md，后续两端开发均须遵循；本轮实现和验证仅覆盖 macOS，旧 Windows 更新行为尚未按此节改造。
+本节优先于下方旧版本更新描述。产品核心规则：管理器不向 Claude、Anthropic 或其 Cloud、API、遥测、登录服务发请求，不读取凭据，不通过 CLI、浏览器或官方界面刷新间接查询。设置不改变 Claude 的登录、会话、目录或运行状态。用户主动使用既有启动／激活功能时，官方客户端自身的正常联网不由管理器控制。规则写入根目录 AGENTS.md，后续两端开发均须遵循；本轮实现和验证仅覆盖 macOS；Windows 的网络边界于 2026-10-29 在 feature/windows-update-boundary 对齐（见下文「网络边界」中的 [Windows]），系统设置与账号／日志交互待后续分支。
 
 ### 系统设置
 
@@ -19,6 +19,17 @@
 
 不再提供自动恢复 Claude 实例、改默认浏览器、迁移账号目录或未存在的批量启动间隔。默认页面只在「恢复上次页面」关闭时可选。设置保存不修改运行中 Claude 的配置。
 
+**[Windows]**（2026-10-29，feature/windows-settings）同一六分类与草稿规则，WPF 原生控件（开关为带切换状态的复选框，选项为下拉框）：
+
+- 存储：`%LOCALAPPDATA%\Claude-MultiLauncher\settings.json`，`{"version":1,"closeToBackground":true,"showTray":true,"rememberPage":false,"startPage":"instances","refreshInterval":3,"restoreMinimized":true,"showArtwork":true,"logLimit":500,"localNotifications":true,"notificationSound":false,"allowUpdates":false}`。逐项按类型与可选值校验，单项异常只回落该项；文件缺失、损坏或版本不是 1 时全部用默认。同目录临时文件写完后替换；保存失败保留原文件与草稿。`startPage` 存页面名（`instances`／`accounts`／`logs`／`settings`，项目页接入后加 `projects`），不存序号。上次页面只在开启「恢复上次页面」时写入同目录 `last-page`。
+- 常规：关闭窗口继续运行（开：隐藏窗口，托盘或再次打开启动器可恢复；关：关闭窗口即退出启动器，Claude 继续运行）；通知区域图标（关闭后托盘菜单不可用，再次打开启动器即可显示窗口）。
+- 启动行为：开机启动写 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 的 `ClaudeMultiLauncher` 值（带引号的程序路径），单独确认、立即生效、不进草稿；只在程序位于 `%LOCALAPPDATA%\Programs\Claude 多开启动器\ClaudeLauncher.exe` 时允许开启，开发副本拒绝；关闭只删除本值且仅当它指向本启动器。卸载程序不处理该值（升级时 Setup 会先运行旧卸载程序，处理它会丢失用户选择），卸载前请先关闭开机启动。**[Windows 差异]** 本地进程刷新间隔默认 3 秒（实测一次 WMI 扫描约 280 ms，1 秒间隔开销过大），可选 1／3／5 秒。点击账号时恢复最小化窗口：关闭时若目标窗口已最小化，不还原、不切换，只提示从任务栏打开。
+- 外观：显示水墨插画（侧栏山水、主区背景、账号卡片插画）。「显示本地界面用量」在本地界面用量实现前不提供开关，只显示说明；语言／主题为固定说明。
+- 数据与存储：在资源管理器中显示、复制启动器数据目录；导出已保存设置为 `{"version":1,"settings":{…}}`（不含账号、别名、项目、凭据、登录保护、上次页面）；内存日志上限 100／500／1000（默认 500），保存后立即截断。
+- 消息通知：窗口内提示为主区底部的临时提示条（约 5 秒），用于警告与错误；提示音用系统“感叹号”声音，仅在窗口内提示开启时生效；测试按钮按已保存设置显示。安全确认与错误弹窗不受影响。
+- 关于软件：版本、离线帮助、复制基础诊断（仅启动器版本、Windows 版本、联网更新开关、Claude/Anthropic 请求禁止）、更新开关与检查按钮。
+- 退出启动器（托盘「退出启动器」、关闭窗口且未开启继续运行）时有未保存设置：提示保存后退出／放弃更改退出／取消。系统注销或安装程序请求退出时不阻拦。
+
 ### 账号与日志交互
 
 - 账号搜索支持本地别名、固定编号和目录；状态筛选支持运行中／未运行／处理中／异常。进程扫描失败时显示未知，不伪装成确定状态。统计仍按全部已有账号计算。
@@ -29,6 +40,13 @@
 - 日志支持最近 7 天（默认）／最近 24 小时／最近 1 小时／最近 5 分钟／本次运行／全部时间、实例、级别、全文搜索的组合筛选；每页 10 条，数字页码（首页、末页、当前页前后各一页，中间省略）与上一页／下一页根据结果启停。级别以信息／警告／错误色块显示。空结果有说明。全文可选择复制，截断单元格有完整提示。
 - 导出写出全部筛选结果，非仅当前页；清空需确认，只清启动器自己的日志文件。日志保存在 `~/Library/Application Support/Claude Launcher/launcher-log.json`（权限 0600，最新在前），重启和软件更新后保留；按设置限制数量，超出删除最旧记录；损坏或格式不符的记录在读取时丢弃。确认弹窗与文件选择由用户决定。
 
+**[Windows]**（2026-10-29，feature/windows-accounts-logs）同一规则，WPF 原生控件：
+
+- 别名保存在 `%LOCALAPPDATA%\Claude-MultiLauncher\account-names.json`（`{"version":1,"names":{"2":"工作"}}`，键为 1～10，原子替换写入；损坏或版本不符时不显示别名、也不覆盖原文件，提示用户）。卡片与账号表显示“别名 · NN”，无别名显示“账号 NN”，圆形编号始终保留。托盘菜单仍只显示编号与状态。别名不进入设置导出。
+- 搜索匹配别名、“账号 NN”、编号（含不补零形式）、目录路径，不区分大小写。状态筛选：全部／运行中／未运行／处理中（检查或启动中）／异常（失败、删除未完成）；进程扫描失败时状态显示“未知”，只在“全部”中出现。统计卡按全部账号计算。
+- 表头复选框：全选当前结果，部分选中时显示中间态；“复制选中路径”把当前可见且选中的账号目录逐行复制到剪贴板。筛选或账号消失时清除不可见的选择。
+- 日志：时间（本次运行／最近 5 分钟／最近 1 小时）、实例（全部／系统／Claude 1～10）、级别（全部／信息／警告／错误）、全文搜索（时间、级别、实例、内容，不区分大小写）组合筛选；每页 10 条，上一页／下一页按结果启停，显示“第 x / y 页”；事件内容为只读可选择文本，截断时悬停显示全文。空结果区分“暂无日志”与“没有符合条件的日志”。导出为 UTF-8 文本，写出全部筛选结果（按时间正序）；清空需确认。
+
 ### 网络边界
 
 - 不再启动后检查、不设更新定时器。默认关闭 `allowUpdates`；需在设置中保存开启，再主动点击检查。
@@ -36,6 +54,8 @@
 - 重定向只允许本项目 Release 下载路径及 GitHub 的 `objects.githubusercontent.com`／`release-assets.githubusercontent.com`；拒绝所有其他域名，包括 Claude／Anthropic。使用无 Cookie、无凭据存储、无 URL 缓存的临时会话。签名、哈希、版本和安装证书校验保留。
 - `--update-test` 也需明确的 `--allow-updates` 参数，且仍经过同一 URL 白名单；普通自检和 UI 自检不联网。导出、诊断、帮助不产生网络请求。
 - 有未保存设置时不开始更新；下载期间若出现未保存更改，安装前取消并清理临时更新文件，保留当前程序和草稿。
+- **[Windows]** `allowUpdates` 保存在 `%LOCALAPPDATA%\Claude-MultiLauncher\settings.json`（格式见上文「系统设置」[Windows]；缺失、损坏或类型不符按默认关闭）。「关于软件」中的“检查启动器更新”开关先进入草稿，点“保存设置”才生效。开启后每次打开启动器检查一次（只在有新版时提示，失败只记日志），另可从设置页或托盘“检查更新…”手动检查；未开启时这些入口都不联网，只提示先开启并保存。删除自建来源、取较高版本、启动 8 秒后／24 小时自动检查及 `last-update-check` 记录。
+- **[Windows]** 唯一网络入口 `Updates.UrlAllowed` 在创建请求前校验：首次请求只允许 `https://github.com/wyl20020808/ClaudeLauncher/releases/latest/download/` 下的 `latest-windows.json` 与严格版本文件名的 `ClaudeLauncherSetup-<x.y.z>.exe`；跳转只允许同仓库 `releases/download/<标签>/` 下的这两类文件，以及 `objects.githubusercontent.com`／`release-assets.githubusercontent.com`。一律 HTTPS、443、无用户信息，最多 5 跳；请求不带凭据、不预认证、无 Cookie、不缓存，TLS 证书校验保持系统默认。发布脚本与自建服务过渡期仍为 1.7.3 及更早客户端发布，客户端不再读取。
 
 
 macOS（`src/main.m`）和 Windows（`windows/`）各自原生实现，共同遵守本规格。macOS 1.6 是参考实现；规格变化时两端同步修改并在 STATUS 记录。
@@ -184,7 +204,7 @@ Windows 对应：重解析点（符号链接、junction）等同链接；硬链�
 
 ## 更新与安装
 
-> **Windows 已实现（1.7.0，feature/windows-sync）**：`latest-windows.json` 验签、自建 → GitHub 回退、跳转白名单、只升不降、`minimumOS` 判断、下载后大小/SHA-256 核对（不符删除并换下一来源）、静默运行 Setup 并由 Setup 重新打开启动器、启动 8 秒后距上次检查超过 24 小时才自动检查；发布脚本 `windows/scripts/publish-release.ps1`。真实发布与公网下载未验证（见 `windows/README.md`）。
+> **Windows 已实现（1.7.0 起，2026-10-29 按「网络边界」收紧）**：`latest-windows.json` 验签、仅 GitHub 来源、集中 URL 白名单、只升不降、`minimumOS` 判断、下载后大小/SHA-256 核对（不符删除）、静默运行 Setup 并由 Setup 重新打开启动器；检查时机与开关见「网络边界」[Windows]。发布脚本 `windows/scripts/publish-release.ps1`（过渡期仍同步自建服务）。
 >
 > - **[Windows 差异]** 同一证书：当前 Windows 程序与 Setup 都没有 Authenticode 签名。程序已签名时要求 Setup 由同一证书签名且签名有效；当前程序未签名时无法比对签名者，只依赖清单 RSA 签名与 SHA-256。取得代码签名证书后此限制自动消失。
 > - **[Windows 差异]** 回滚：Setup 先卸载旧版再安装，新版安装失败时旧版已卸载，无法自动回滚到旧版（账号数据不受影响，可重新运行 Setup 或从 GitHub 下载）。旧版卸载失败、启动器无法正常关闭时则中止并保留旧版。
@@ -225,7 +245,7 @@ Windows 对应：重解析点（符号链接、junction）等同链接；硬链�
 
 ### 来源与回退
 
-1. **GitHub Releases（唯一来源，2026-10-28 用户决定）**：`https://github.com/wyl20020808/ClaudeLauncher/releases/latest/download/latest-<平台>.json` 与同一 Release 中的安装包。自建更新服务不再作为客户端来源：macOS 自 1.7.8 起移除；Windows 待同步。此前的“自建优先、回退 GitHub”与 1.7.6 的“取较高版本”随之停用。
+1. **GitHub Releases（唯一来源，2026-10-28 用户决定）**：`https://github.com/wyl20020808/ClaudeLauncher/releases/latest/download/latest-<平台>.json` 与同一 Release 中的安装包。自建更新服务不再作为客户端来源：macOS 自 1.7.8 起移除；Windows 于 feature/windows-update-boundary 移除（随下一个 Windows 版本发布）。此前的“自建优先、回退 GitHub”与 1.7.6 的“取较高版本”随之停用。
 2. 取不到有效清单、验签失败或下载失败：提示原因，并提供“前往 GitHub 下载”按钮打开 Releases 页面，由用户手动下载安装。
 
 检查时机：启动器每次打开时检查一次，以及用户手动点“检查更新”；不定时、不在后台重复。两者都只在设置中开启了更新时进行（默认关闭）。启动时的检查只在发现新版本时提示，失败只记日志。
