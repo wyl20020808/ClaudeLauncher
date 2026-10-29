@@ -1,6 +1,13 @@
 # 项目状态
 
-## Windows 本地界面用量（2026-10-29，feature/windows-usage，未发布）
+## Windows 1.8.1 已发布（2026-10-29，windows-v1.8.1）
+
+- 内容：本地界面用量（见下节），发布说明 [RELEASE-windows-1.8.1.md](RELEASE-windows-1.8.1.md)。用户确认“提交发布”后：feature/windows-usage 提交并合并到 dev，版本改为 1.8.1（`30aba6e`），`-DryRun` 通过，推送 dev 并把 main 快进到 `30aba6e`。
+- 标签 windows-v1.8.1，目标 `30aba6e`，已转正式并为 Latest（上一版 Latest 为 windows-v1.8.0）。附件：`ClaudeLauncherSetup-1.8.1.exe` 2819973 字节，SHA-256 `fc8147d11917fd9a6fa32fe0688cda1cb07580cc90b8218e204a1620da72cfde`；`latest-windows.json`；从 windows-v1.8.0 带入并验签核对的 `ClaudeLauncher-1.7.15.dmg` 与 `latest-macos.json`。
+- 复核：草稿附件经 GitHub API 核对一致；GitHub latest/download 四个文件第一轮即为新版本。本机自建更新服务仍未运行，两份自建清单不可达，脚本按设计保留发布并以状态 2 退出（本地 `updates/public` 已切换到 1.8.1）。
+- 未验证：1.8.0 → 1.8.1 软件内更新的实际过程；安装后启动器界面中的用量读取与显示（见下节未验证项）。
+
+## Windows 本地界面用量（2026-10-29，feature/windows-usage，已随 1.8.1 发布）
 
 - 原因：1.8.0 及以前 Windows 版没有用量代码，设置页只显示“Windows 尚未接入”，卡片显示“未接入”。用户本轮授权 D1（只读 UIA 调查），D2 组织指纹不做，D3 展开事件未授权。
 - D1 实测（账号 01）：首次连接后约 2.5 秒网页树可读；Code 页 Document 的 `ValuePattern` 给出地址；用量按钮为可展开 Button，`Name` 格式与 macOS 相同（实测周格式）。详见 [USAGE-RESEARCH-WINDOWS.md](USAGE-RESEARCH-WINDOWS.md) 顶部结果，含诊断程序输出了几句本会话正文的问题记录。
