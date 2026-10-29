@@ -1,5 +1,12 @@
 # 项目状态
 
+## macOS 1.7.14 已发布（2026-10-29，build 21）
+
+- 发布目标 6af3e8e，main 与 dev 已同步并推送。系统设置页改版：顶部分段标签，各分类按小标题分组为卡片行（图标、标题、说明，右侧开关／选项／按钮）与信息提示；勾选框换为基于原生开关的棕色开关，保存／撤销／恢复默认行为不变。
+- DMG 1979106 字节，SHA-256 `5686f896bf0a8a4671262bdca6eaf9ad3f9860b7767c982d4458ba52c3646a9b`；固定证书不变，Windows 1.7.3 清单与 Setup 原样带入。草稿附件经 API 核对后转正式，latest/download 复核通过。
+- 发布前 `--self-test`、`--ui-self-test` 通过，六个设置分类与实例页离屏截图已人工查看。
+- 未验证：安装版真机显示、软件内更新到 1.7.14。未覆盖 /Applications。原 dev 所在的 Codex 工作树（~/.codex/worktrees/usage-limits）改为分离 HEAD，目录保留。
+
 ## macOS 1.7.13 已发布（2026-10-29，build 20）
 
 - 发布目标 4fa09e3，已推送 main。实例卡片去掉目录与 Code 配置标签，运行状态移到左下角，Code 配置状态和目录移入悬停提示；无别名时显示本地 `.claude.json` 的 `oauthAccount.displayName`（只读该字段，不联网、不访问钥匙串或 `config.json`）。
