@@ -258,6 +258,7 @@ namespace ClaudeLauncher {
             return found;
         }
         public static bool IsMinimized(IntPtr window) { return window != IntPtr.Zero && IsIconic(window); }
+        public static int ForegroundProcess() { uint process; GetWindowThreadProcessId(GetForegroundWindow(), out process); return (int)process; }
         public static bool Focus(IntPtr window) {
             if (window == IntPtr.Zero) return false;
             ShowWindow(window, IsIconic(window) ? 9 : 5);

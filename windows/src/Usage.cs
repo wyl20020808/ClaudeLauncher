@@ -25,7 +25,53 @@ namespace ClaudeLauncher {
     public sealed class UsageNode {
         public string Type = "Group", Name = "", Url = "";
         public bool Expandable;
+        public double? Range;
         public List<UsageNode> Children = new List<UsageNode>();
+    }
+
+    // SPEC 本地界面用量 [Windows] D3：只注册 ExpandCollapseState 属性变化这一种通知；用户手动展开官方用量弹窗且该 Claude 在前台时回调一次。
+    public sealed class PopupWatch : IDisposable {
+        readonly AutomationElement root;
+        readonly AutomationPropertyChangedEventHandler handler;
+        readonly Action opened;
+        readonly int processId;
+        int[] open;
+        internal PopupWatch() { } // 仅供自检 Accept
+        PopupWatch(int pid, AutomationElement root, Action opened) {
+            processId = pid; this.root = root; this.opened = opened;
+            handler = Changed;
+            Automation.AddAutomationPropertyChangedEventHandler(root, TreeScope.Subtree, handler, ExpandCollapsePattern.ExpandCollapseStateProperty);
+        }
+        // 应在后台（MTA）线程调用；没有可见窗口或注册失败返回 null，调用方不重试。
+        public static PopupWatch Start(int pid, Action opened) {
+            IntPtr window = Native.WindowFor(pid);
+            if (window == IntPtr.Zero) return null;
+            try { return new PopupWatch(pid, AutomationElement.FromHandle(window), opened); }
+            catch (Exception error) { Diagnostics.Write("usage_watch_error", error.GetType().Name); return null; }
+        }
+        // 同一次展开的重复通知只采集一次；关闭后允许下一次手动展开。
+        internal bool Accept(int[] button, bool expanded) {
+            lock (this) {
+                bool same = open != null && open.SequenceEqual(button);
+                if (!expanded) { if (same) open = null; return false; }
+                if (same) return false;
+                open = button; return true;
+            }
+        }
+        void Changed(object sender, AutomationPropertyChangedEventArgs e) {
+            var element = sender as AutomationElement;
+            if (element == null || e.NewValue == null) return;
+            try {
+                if (element.Current.ControlType != ControlType.Button || UsageInterface.ButtonMetric(element.Current.Name) == null) return;
+                if (!Accept(element.GetRuntimeId(), Convert.ToInt32(e.NewValue) == (int)ExpandCollapseState.Expanded)) return;
+                if (Native.ForegroundProcess() != processId || !UsageInterface.InCodePage(element)) return;
+                opened();
+            } catch (ElementNotAvailableException) { } catch (InvalidOperationException) { } catch (System.Runtime.InteropServices.COMException) { }
+        }
+        public void Dispose() {
+            if (root == null) return;
+            try { Automation.RemoveAutomationPropertyChangedEventHandler(root, handler); } catch (Exception) { }
+        }
     }
 
     public static class UsageInterface {
@@ -59,16 +105,68 @@ namespace ClaudeLauncher {
                 !value.Contains("?") && !value.Contains("#") && (path == "/epitaxy" || (path.StartsWith("/epitaxy/") && path.Length > 9));
         }
 
-        // 有界遍历（同 macOS UsageAXReader，去掉面板解析）；节点访问通过委托，便于用合成树自检。
+        // 弹窗面板里的指标名；模型专属周限额与上下文不是账号周限额。
+        static string MetricKey(string label) {
+            if (label == "5 小时限额" || label == "5-hour limit") return "fh";
+            if (label == "每周 · 所有模型" || label == "Weekly · all models") return "sd";
+            return null;
+        }
+        static bool UsageSettingsUrl(string value) {
+            Uri url;
+            return !String.IsNullOrEmpty(value) && Uri.TryCreate(value, UriKind.Absolute, out url) && url.Scheme == "https" && url.Host == "claude.ai" &&
+                url.IsDefaultPort && url.UserInfo == "" && url.AbsolutePath == "/settings/usage";
+        }
+
+        // 有界遍历（同 macOS UsageAXReader）；节点访问通过委托，便于用合成树自检。
         sealed class Walker<T> where T : class {
             public Func<T, string> Type, Name, Url;
             public Func<T, bool> Expandable;
+            public Func<T, double?> Range;
             public Func<T, IList<T>> Children;
             public long Deadline;
             int count, codeAreas;
-            bool limited;
-            readonly List<UsageRecord> matches = new List<UsageRecord>();
+            bool limited, conflicted;
+            readonly List<Tuple<string, UsageMetric>> buttons = new List<Tuple<string, UsageMetric>>();
+            readonly List<Dictionary<string, UsageMetric>> panels = new List<Dictionary<string, UsageMetric>>();
             bool Budget() { if (++count > MaxNodes || Stopwatch.GetTimestamp() > Deadline) limited = true; return !limited; }
+            IList<T> Kids(T node) {
+                IList<T> children = Children(node);
+                if (children != null && children.Count > 2000) { limited = true; return new T[0]; }
+                return children ?? new T[0];
+            }
+            // 弹窗必须含官方用量设置链接，才读取其中的文字。
+            bool HasUsageLink(T node, int depth) {
+                if (depth > 12 || limited || !Budget()) return false;
+                string type = Type(node);
+                if (type == "Hyperlink") return UsageSettingsUrl(Url(node));
+                if (type == "Document" || type == "Edit" || type == "Text" || type == "Image" || type == "Button" || type == "ProgressBar") return false;
+                foreach (T child in Kids(node)) if (HasUsageLink(child, depth + 1)) return true;
+                return false;
+            }
+            bool Panel(T node, Dictionary<string, UsageMetric> metrics, ref string reset, int depth) {
+                if (depth > 12) { limited = true; return false; }
+                if (!Budget()) return false;
+                string type = Type(node);
+                if (type == "Document" || type == "Edit") return false;
+                if (type == "Hyperlink") return true;
+                if (type == "Text") {
+                    string text = Name(node) ?? "";
+                    if (text.Length > 512) return false;
+                    if (MetricKey(text) != null) reset = null;
+                    else if (text.Contains("重置") || text.StartsWith("Resets ") || text.Contains("第一条消息")) reset = text;
+                    return true;
+                }
+                if (type == "ProgressBar" || type == "Slider") {
+                    string key = MetricKey(Name(node));
+                    if (key == null) return true;
+                    double? value = Range(node);
+                    if (value == null || Double.IsNaN(value.Value) || value < 0 || value > 100 || metrics.ContainsKey(key)) return false;
+                    metrics[key] = new UsageMetric { Percent = value.Value, Reset = reset ?? "" }; reset = null;
+                    return true;
+                }
+                foreach (T child in Kids(node)) if (!Panel(child, metrics, ref reset, depth + 1)) return false;
+                return !limited;
+            }
             void Walk(T node, bool inPage, int depth) {
                 if (limited || depth > MaxDepth || !Budget()) return;
                 string type = Type(node);
@@ -80,31 +178,42 @@ namespace ClaudeLauncher {
                 if (type == "Button") {
                     if (!inPage || !Expandable(node)) return;
                     var shown = ButtonMetric(Name(node));
-                    if (shown == null) return;
-                    var metric = new UsageMetric { Percent = shown.Item2, Reset = shown.Item3 };
-                    matches.Add(new UsageRecord { Status = Observed, FiveHour = shown.Item1 == "fh" ? metric : null, Weekly = shown.Item1 == "sd" ? metric : null });
+                    if (shown != null) buttons.Add(Tuple.Create(shown.Item1, new UsageMetric { Percent = shown.Item2, Reset = shown.Item3 }));
+                    return;
+                }
+                if (type == "Window" && inPage && HasUsageLink(node, 0)) {
+                    var metrics = new Dictionary<string, UsageMetric>(); string reset = null;
+                    if (Panel(node, metrics, ref reset, 0)) panels.Add(metrics); else conflicted = true;
                     return;
                 }
                 if (Skipped.Contains(type)) return;
-                IList<T> children = Children(node);
-                if (children == null) return;
-                if (children.Count > 2000) { limited = true; return; }
-                foreach (T child in children) Walk(child, inPage, depth + 1);
+                foreach (T child in Kids(node)) Walk(child, inPage, depth + 1);
             }
             public UsageRecord Result(T root) {
                 try { Walk(root, false, 0); } catch (ElementNotAvailableException) { limited = true; } catch (InvalidOperationException) { limited = true; } catch (System.Runtime.InteropServices.COMException) { limited = true; }
                 if (limited) return new UsageRecord { Status = "界面读取未完成" };
-                if (matches.Count > 1) return new UsageRecord { Status = "多个用量界面，待核对" };
-                return matches.FirstOrDefault() ?? new UsageRecord { Status = codeAreas > 0 ? "未观察到 Code 用量控件" : "未观察到 Code 用量页面" };
+                if (buttons.Count > 1) return new UsageRecord { Status = "多个用量界面，待核对" };
+                if (buttons.Count == 0) return new UsageRecord { Status = codeAreas > 0 ? "未观察到 Code 用量控件" : "未观察到 Code 用量页面" };
+                string key = buttons[0].Item1; UsageMetric shown = buttons[0].Item2;
+                var found = new Dictionary<string, UsageMetric> { { key, shown } };
+                if (conflicted || panels.Count > 1) return new UsageRecord { Status = "界面数据待核对" };
+                if (panels.Count == 1) {
+                    UsageMetric same;
+                    // 面板必须与按钮同项一致，才采用面板中的两项。
+                    if (!panels[0].TryGetValue(key, out same) || same.Percent != shown.Percent) return new UsageRecord { Status = "界面数据待核对" };
+                    found = panels[0];
+                }
+                UsageMetric fh, sd; found.TryGetValue("fh", out fh); found.TryGetValue("sd", out sd);
+                return new UsageRecord { Status = Observed, FiveHour = fh, Weekly = sd };
             }
         }
         static long After(double seconds) { return Stopwatch.GetTimestamp() + (long)(seconds * Stopwatch.Frequency); }
 
         public static UsageRecord ReadSynthetic(UsageNode root, double seconds) {
-            return new Walker<UsageNode> { Type = n => n.Type, Name = n => n.Name, Url = n => n.Url, Expandable = n => n.Expandable, Children = n => n.Children, Deadline = After(seconds) }.Result(root);
+            return new Walker<UsageNode> { Type = n => n.Type, Name = n => n.Name, Url = n => n.Url, Expandable = n => n.Expandable, Range = n => n.Range, Children = n => n.Children, Deadline = After(seconds) }.Result(root);
         }
 
-        // 真实读取：UIA 只批量取控件类型与“是否支持展开”；只对 Document 取地址、对可展开按钮取名称。
+        // 真实读取：UIA 只批量取控件类型与“是否支持展开”；只对 Document／链接取地址、对可展开按钮取名称，面板内才读文字与进度值。
         static UsageRecord ReadWindow(IntPtr window, double seconds) {
             var request = new CacheRequest { TreeScope = TreeScope.Element | TreeScope.Children, TreeFilter = Automation.RawViewCondition, AutomationElementMode = AutomationElementMode.Full };
             request.Add(AutomationElement.ControlTypeProperty);
@@ -116,6 +225,7 @@ namespace ClaudeLauncher {
                     Expandable = e => (bool)e.GetCachedPropertyValue(AutomationElement.IsExpandCollapsePatternAvailableProperty),
                     Name = e => e.Current.Name,
                     Url = e => { object p; return e.TryGetCurrentPattern(ValuePattern.Pattern, out p) ? ((ValuePattern)p).Current.Value : ""; },
+                    Range = e => { object p; return e.TryGetCurrentPattern(RangeValuePattern.Pattern, out p) ? ((RangeValuePattern)p).Current.Value : (double?)null; },
                     Children = e => e.FindAll(TreeScope.Children, Condition.TrueCondition).Cast<AutomationElement>().ToList(),
                     Deadline = After(seconds)
                 }.Result(root);
@@ -146,6 +256,17 @@ namespace ClaudeLauncher {
             worker.Start();
             if (!worker.Join(TimeSpan.FromSeconds(first ? 3.0 : 2.0))) return new UsageRecord { Status = "界面读取未完成" };
             return result ?? new UsageRecord { Status = "界面读取未完成" };
+        }
+
+        // 用量按钮所在的最近 Document 必须是官方 Code 页。
+        internal static bool InCodePage(AutomationElement element) {
+            AutomationElement node = element;
+            for (int depth = 0; depth < 40 && node != null; depth++) {
+                node = TreeWalker.RawViewWalker.GetParent(node);
+                if (node == null || node.Current.ControlType != ControlType.Document) continue;
+                object p; return node.TryGetCurrentPattern(ValuePattern.Pattern, out p) && CodeUrl(((ValuePattern)p).Current.Value);
+            }
+            return false;
         }
 
         // 身份 = 编号 | PID | 进程启动时间 | 账号目录及其创建时间。任一项变化即不沿用缓存。

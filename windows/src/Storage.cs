@@ -418,6 +418,24 @@ namespace ClaudeLauncher {
             Check(UsageInterface.ReadSynthetic(page(code, new[] { new UsageNode { Type = "Text", Children = { button("用量：5 小时限额的 52%") } } }), 5).FiveHour == null, "正文分支不得进入");
             Check(UsageInterface.ReadSynthetic(page(code, new[] { page(code, new[] { button("用量：5 小时限额的 52%") }) }), 5).FiveHour == null, "嵌套网页不得进入");
             Check(UsageInterface.ReadSynthetic(page(code, new[] { button("用量：5 小时限额的 52%"), button("用量：5 小时限额的 53%") }), 5).Status == "多个用量界面，待核对", "多个用量按钮不得采用");
+            // 弹窗面板（D3，按 Windows 4.29 实测结构）：链接核实后读取两项；与按钮不一致、重复、缺链接、模型专属周限额均不采用。
+            Func<string, double, UsageNode> bar = (name, value) => new UsageNode { Type = "ProgressBar", Name = name, Range = value };
+            Func<string, UsageNode> text = value => new UsageNode { Type = "Text", Name = value };
+            Func<string, UsageNode[], UsageNode> popup = (link, rows) => new UsageNode { Type = "Window", Name = "用量", Children = { group(new[] { text("用量"), new UsageNode { Type = "Hyperlink", Name = "查看全部：设置中的用量", Url = link }, group(rows) }) } };
+            UsageNode[] limits = { group(new[] { text("5 小时限额"), text("15:20 重置") }), bar("5 小时限额", 71), group(new[] { text("每周 · 所有模型"), text("周二19:00 重置") }), bar("每周 · 所有模型", 11) };
+            UsageNode weekButton = button("用量：每周 · 所有模型：11%周二19:00 重置");
+            read = UsageInterface.ReadSynthetic(page(code, new[] { group(new[] { weekButton, popup("https://claude.ai/settings/usage", limits) }) }), 5);
+            Check(read.Status == UsageInterface.Observed && read.FiveHour.Percent == 71 && read.FiveHour.Reset == "15:20 重置" && read.Weekly.Percent == 11 && read.Weekly.Reset == "周二19:00 重置", "面板应读到五小时与每周");
+            Check(UsageInterface.ReadSynthetic(page(code, new[] { button("用量：每周 · 所有模型：12%周二19:00 重置"), popup("https://claude.ai/settings/usage", limits) }), 5).Status == "界面数据待核对", "面板与按钮不一致必须拒绝");
+            Check(UsageInterface.ReadSynthetic(page(code, new[] { weekButton, popup("https://evil.test/settings/usage", limits) }), 5).FiveHour == null, "没有官方用量链接的弹窗不得读取");
+            Check(UsageInterface.ReadSynthetic(page(code, new[] { weekButton, popup("https://claude.ai/settings/usage", limits.Concat(new[] { bar("5 小时限额", 70) }).ToArray()) }), 5).Status == "界面数据待核对", "重复指标必须拒绝");
+            Check(UsageInterface.ReadSynthetic(page(code, new[] { weekButton, popup("https://claude.ai/settings/usage", limits), popup("https://claude.ai/settings/usage", limits) }), 5).Status == "界面数据待核对", "多个面板必须拒绝");
+            read = UsageInterface.ReadSynthetic(page(code, new[] { weekButton, popup("https://claude.ai/settings/usage", new[] { bar("每周 · Opus", 40), bar("每周 · 所有模型", 11), bar("上下文", 52) }) }), 5);
+            Check(read.Status == UsageInterface.Observed && read.Weekly.Percent == 11 && read.FiveHour == null, "模型专属周限额与上下文不得采用");
+            Check(UsageInterface.ReadSynthetic(page(code, new[] { popup("https://claude.ai/settings/usage", limits) }), 5).Status == "未观察到 Code 用量控件", "没有用量按钮时不采用面板");
+            Check(UsageInterface.ReadSynthetic(page(code, new[] { weekButton, popup("https://claude.ai/settings/usage", new[] { bar("5 小时限额", 101), bar("每周 · 所有模型", 11) }) }), 5).Status == "界面数据待核对", "越界进度值必须拒绝");
+            var watch = new PopupWatch();
+            Check(watch.Accept(new[] { 1, 2 }, true) && !watch.Accept(new[] { 1, 2 }, true) && !watch.Accept(new[] { 1, 2 }, false) && watch.Accept(new[] { 1, 2 }, true) && !watch.Accept(new[] { 9 }, false), "同一次展开只采集一次，关闭后重新允许，关闭本身不采集");
             UsageNode deep = button("用量：5 小时限额的 52%"); for (int i = 0; i < 45; i++) deep = group(new[] { deep });
             Check(UsageInterface.ReadSynthetic(page(code, new[] { deep }), 5).FiveHour == null, "超过 40 层不采用");
             Check(UsageInterface.ReadSynthetic(page(code, new[] { button("用量：5 小时限额的 52%") }), -1).Status == "界面读取未完成", "预算耗尽不采用");

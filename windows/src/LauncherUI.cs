@@ -81,6 +81,8 @@ namespace ClaudeLauncher {
         Dictionary<int, UsageRecord> savedUsage = new Dictionary<int, UsageRecord>();
         readonly string usagePath;
         int usageGeneration;
+        readonly Dictionary<string, PopupWatch> popupWatches = new Dictionary<string, PopupWatch>(); // 身份 → 展开通知（null：注册中或失败，不重试）
+        readonly HashSet<int> pendingPopups = new HashSet<int>();
         bool readingUsage;
         DateTime lastUsageRead = DateTime.MinValue;
         int loginAccount, page;
@@ -362,7 +364,7 @@ namespace ClaudeLauncher {
                 // SPEC 网络边界：已保存开启时，每次打开启动器检查一次；只在有新版时提示，失败只记日志。
                 if (!closed && settings.AllowUpdates) await CheckUpdate(false);
             };
-            window.Closed += delegate { closed = true; timer.Stop(); processWatch.Dispose(); Diagnostics.Write("window_closed", "正常关闭启动器"); };
+            window.Closed += delegate { closed = true; timer.Stop(); processWatch.Dispose(); SyncPopupWatches(); Diagnostics.Write("window_closed", "正常关闭启动器"); };
             window.Closing += delegate(object sender, System.ComponentModel.CancelEventArgs e) {
                 if (deleting) { e.Cancel = true; Message("请先完成或取消当前删除操作。", true); return; }
                 // 正式运行（Show 建立托盘后）：开启“关闭窗口后继续运行”时只隐藏；关闭该设置时关闭窗口即退出启动器（走统一的退出流程）。不退出 Claude。
@@ -1095,6 +1097,7 @@ namespace ClaudeLauncher {
             accountsShown = shown;
             UpdateSelection();
             RenderUsage();
+            SyncPopupWatches();
             if (healthy && loginAccount != 0)
                 Message("账号 " + Two(loginAccount) + " 登录保护中。" + (instances.Any(x => x.Number != loginAccount) ? "检测到其他 Claude！请停止登录，并正常退出其他实例。" : "完成登录并核对身份后，点「结束登录保护」恢复多开。"), false);
         }
@@ -1104,9 +1107,13 @@ namespace ClaudeLauncher {
                 window.IsVisible && window.WindowState != WindowState.Minimized && !readingUsage && DateTime.UtcNow - lastUsageRead >= TimeSpan.FromSeconds(1);
         }
         // 后台读取每个只有一个已核实主进程的账号；读取前后身份一致才采用。读取中保留旧值。
-        async Task ReadUsage() {
-            if (!CanObserveUsage()) return;
-            readingUsage = true; lastUsageRead = DateTime.UtcNow;
+        // trigger 非 0：用户手动展开了该 PID 的官方用量弹窗（D3），只读这一个账号，不要求停在实例页；忙碌时排队合并。
+        async Task ReadUsage(int trigger = 0) {
+            if (trigger != 0) {
+                if (!settings.ShowUsage || snapshotMode || closed || !healthy || loginAccount != 0) return;
+                if (readingUsage) { pendingPopups.Add(trigger); return; }
+            } else if (!CanObserveUsage()) return;
+            readingUsage = true; if (trigger == 0) lastUsageRead = DateTime.UtcNow;
             int generation = usageGeneration;
             var before = instances.ToList();
             Dictionary<int, Tuple<UsageRecord, string, DateTime>> results;
@@ -1115,7 +1122,7 @@ namespace ClaudeLauncher {
                     var read = new Dictionary<int, Tuple<UsageRecord, string, DateTime>>();
                     for (int n = 1; n <= 10; n++) {
                         var found = before.Where(x => x.Number == n).ToList();
-                        if (found.Count != 1) continue;
+                        if (found.Count != 1 || (trigger != 0 && found[0].ProcessId != trigger)) continue;
                         string identity = UsageInterface.Identity(n, found[0]);
                         read[n] = Tuple.Create(UsageInterface.ReadProcess(found[0].ProcessId, identity), identity, DateTime.Now);
                     }
@@ -1148,6 +1155,30 @@ namespace ClaudeLauncher {
             }
             if (changed) try { UsageInterface.Save(usagePath, savedUsage.Values); } catch (Exception error) { Diagnostics.Error("usage_save_error", error); }
             RenderUsage();
+            if (pendingPopups.Count > 0) { int next = pendingPopups.First(); pendingPopups.Remove(next); await ReadUsage(next); }
+        }
+        // D3：为每个只有一个主进程、有可见窗口的账号注册一次展开通知；注册失败不重试；进程变化、登录保护、扫描失败或关闭显示时注销。
+        void SyncPopupWatches() {
+            if (snapshotMode) return;
+            var wanted = new Dictionary<string, int>();
+            if (settings.ShowUsage && healthy && loginAccount == 0 && !closed)
+                foreach (var group in instances.Where(x => x.Number > 0).GroupBy(x => x.Number))
+                    if (group.Count() == 1) wanted[UsageInterface.Identity(group.Key, group.First())] = group.First().ProcessId;
+            foreach (string key in popupWatches.Keys.Where(k => !wanted.ContainsKey(k)).ToList()) {
+                PopupWatch old = popupWatches[key]; popupWatches.Remove(key);
+                if (old != null) Task.Run(() => old.Dispose());
+            }
+            foreach (var pair in wanted) {
+                if (popupWatches.ContainsKey(pair.Key) || Native.WindowFor(pair.Value) == IntPtr.Zero) continue; // 托盘中无窗口：等窗口出现再注册
+                string key = pair.Key; int pid = pair.Value;
+                popupWatches[key] = null;
+                Action opened = () => window.Dispatcher.BeginInvoke(new Action(async () => { await Task.Delay(200); await ReadUsage(pid); }));
+                Task.Run(() => PopupWatch.Start(pid, opened)).ContinueWith(task => {
+                    if (!popupWatches.ContainsKey(key)) { if (task.Result != null) Task.Run(() => task.Result.Dispose()); return; }
+                    popupWatches[key] = task.Result;
+                    if (task.Result == null) AddLog("PID " + pid + " 未提供用量展开通知；仍可在实例页主动读取。");
+                }, TaskScheduler.FromCurrentSynchronizationContext());
+            }
         }
         string CurrentUsageIdentity(int n) {
             var found = instances.Where(x => x.Number == n).ToList();
@@ -1156,9 +1187,9 @@ namespace ClaudeLauncher {
         void ClearUsage() {
             usageGeneration++; usage.Clear(); savedUsage.Clear();
             try { if (File.Exists(usagePath)) File.Delete(usagePath); } catch (Exception error) { Diagnostics.Error("usage_clear_error", error); }
-            RenderUsage();
+            RenderUsage(); SyncPopupWatches();
         }
-        const string UsageNote = "在实例页激活窗口、切到实例页或点击时，读取一次 Claude Code 已显示的用量按钮。不定时读取、不代点、不调用用量查询，不读官方历史、Cookies 或登录信息。首次读取会让该 Claude 进程开启本机网页辅助功能树，直到它退出。时间是本机观察时间，不是服务器实时额度，两项时间独立。未做组织核对：同一账号内切换组织后，在 Claude 重启前可能仍显示上一组织的数值。";
+        const string UsageNote = "在实例页激活窗口、切到实例页或点击时，或你在 Claude 中手动展开官方用量弹窗时，读取一次已显示的用量按钮和弹窗。不定时读取、不代点、不调用用量查询，不读官方历史、Cookies 或登录信息。首次读取会让该 Claude 进程开启本机网页辅助功能树，直到它退出。时间是本机观察时间，不是服务器实时额度，两项时间独立。未做组织核对：同一账号内切换组织后，在 Claude 重启前可能仍显示上一组织的数值。";
         void RenderUsage() {
             if (cards.Count < 10) return;
             DateTime now = DateTime.Now;

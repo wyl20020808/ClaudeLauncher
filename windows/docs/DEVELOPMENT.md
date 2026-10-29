@@ -11,7 +11,7 @@
 - `src/Diagnostics.cs`：本地日志与账号进程退出观察。
 - `src/Updates.cs`：版本号、唯一更新来源（本项目 GitHub Releases）、集中 URL 白名单 `UrlAllowed`、开关未开启时的提前拒绝、清单验签、下载校验、Authenticode 签名者比对、运行 Setup；以及 1.2.0 兼容的 `--apply-update` 原地替换。新的联网入口必须经过 `UrlAllowed` 并在 `--self-test` 中加离线拒绝用例。
 - `src/Settings.cs`：启动器自己的设置 `%LOCALAPPDATA%\Claude-MultiLauncher\settings.json`（SPEC 系统设置 [Windows] 的 12 项，逐项白名单校验、异常回落默认、原子替换写入、导出 version 1），上次页面 `last-page`，以及 HKCU Run 开机启动项 `AutoStart`（只接受正式安装路径）、账号本地别名 `AccountNames`（`account-names.json`，损坏时停止写入）与账号搜索匹配、启动器日志文件 `LogStore`（`launcher-log.json`，与 macOS 同格式，坏记录丢弃）、本地 Claude Code 用户名 `CodeUserName`（只取 `oauthAccount.displayName`；界面测试通过 `LauncherUI.CodeNameFiles` 注入合成文件，默认构造的测试实例不读取真实文件）。
-- `src/Usage.cs`：本地界面用量（SPEC 本地界面用量 [Windows]）。UIA 只读官方 Code 页的可展开用量按钮，有界遍历（40 层、16000 节点、1.5／2.5 秒），不进入正文／输入框／列表／链接分支，不调用任何模式方法；合并与观察记录 `usage-observations.json`。遍历逻辑通过委托同时服务真实 UIA 与合成 `UsageNode`，自检只用合成树；界面测试用 `LauncherUI.SetUsage` 注入记录。`ClaudeLauncher.exe --usage-interface-check` 只输出账号编号、状态、是否观察到与耗时。
+- `src/Usage.cs`：本地界面用量（SPEC 本地界面用量 [Windows]）。UIA 只读官方 Code 页的可展开用量按钮，有界遍历（40 层、16000 节点、1.5／2.5 秒），不进入正文／输入框／列表／链接分支（只有含官方用量设置链接的弹窗 Window 内才读文字与进度），不调用任何模式方法；`PopupWatch` 只注册 ExpandCollapseState 通知（D3）；合并与观察记录 `usage-observations.json`。遍历逻辑通过委托同时服务真实 UIA 与合成 `UsageNode`，自检只用合成树；界面测试用 `LauncherUI.SetUsage` 注入记录。`ClaudeLauncher.exe --usage-interface-check` 只输出账号编号、状态、是否观察到与耗时。
 - 界面测试与离屏预览用 `new LauncherUI(new LauncherSettings(), <临时路径>)`，不读写用户真实设置。
 - `assets/update-public-key.xml`：客户端公开验签密钥，允许随源码分发。
 
