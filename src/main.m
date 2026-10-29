@@ -284,6 +284,17 @@ static NSString *CodeStatus(NSInteger account, BOOL running, BOOL configured) {
     if (!running) return @"Code 待启动";
     return configured ? @"Code 已指定" : @"Code 未确认";
 }
+// Local file only, no network: Claude Code caches the signed-in profile in <config>/.claude.json (tokens live in Keychain).
+// Take just oauthAccount.displayName; never keep, log or export anything else from the file.
+static NSString *LocalDisplayName(NSString *file) {
+    struct stat info;
+    if (lstat(file.fileSystemRepresentation, &info) != 0 || !S_ISREG(info.st_mode) || info.st_uid != getuid() || info.st_size > 32*1024*1024) return nil;
+    NSData *data = [NSData dataWithContentsOfFile:file options:NSDataReadingUncached error:nil];
+    id root = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+    id account = [root isKindOfClass:NSDictionary.class] ? root[@"oauthAccount"] : nil;
+    NSString *name = [account isKindOfClass:NSDictionary.class] ? ValidatedAccountName(account[@"displayName"]) : nil;
+    return name.length ? name : nil;
+}
 static NSArray<NSString *> *Arguments(pid_t pid) {
     int mib[] = {CTL_KERN, KERN_PROCARGS2, pid};
     size_t length = 0;
@@ -553,7 +564,6 @@ static const unsigned CardFill = 0xFFFCF7;
 @interface AccountCard : NSView
 @property NSInteger number;
 @property NSImage *art;
-@property NSArray<NSString *> *chips;
 @property NSColor *dot;
 @property NSTextField *status, *nameLabel;
 @property ActionButton *button;
@@ -578,15 +588,7 @@ static const unsigned CardFill = 0xFFFCF7;
     NSBezierPath *badge = [NSBezierPath bezierPathWithOvalInRect:circle];
     [Hex(palette[0]) setFill]; [badge fill]; [[Hex(palette[1]) colorWithAlphaComponent:0.25] setStroke]; [badge stroke];
     DrawCentered([NSString stringWithFormat:@"%ld",(long)self.number], circle, @{NSFontAttributeName:[NSFont systemFontOfSize:20 weight:NSFontWeightMedium],NSForegroundColorAttributeName:Hex(palette[1])});
-    [self.dot setFill]; [[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(86,51,9,9)] fill];
-    NSDictionary *chipText = @{NSFontAttributeName:[NSFont systemFontOfSize:12],NSForegroundColorAttributeName:Hex(0x6E655C)};
-    CGFloat x = 84;
-    for (NSString *chip in self.chips) {
-        NSRect rect = NSMakeRect(x,80,[chip sizeWithAttributes:chipText].width+16,24);
-        NSBezierPath *path = [NSBezierPath bezierPathWithRoundedRect:rect xRadius:6 yRadius:6];
-        [Hex(0xFAF6EF) setFill]; [path fill]; [Hex(0xE8DFD3) setStroke]; [path stroke];
-        DrawCentered(chip, rect, chipText); x = NSMaxX(rect)+8;
-    }
+    [self.dot setFill]; [[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(86,89,9,9)] fill];
     // Missing or ambiguous interface observations leave empty tracks; never invent a current quota.
     for (NSInteger row = 0; row < 2; row++) {
         NSBezierPath *track = [NSBezierPath bezierPathWithRoundedRect:NSMakeRect(436,44+row*46,150,6) xRadius:3 yRadius:3];
@@ -626,7 +628,7 @@ static const unsigned CardFill = 0xFFFCF7;
 @property NSInteger logPage, settingsSection;
 @property NSUInteger toastGeneration;
 @property NSMutableSet<NSNumber *> *selectedAccounts;
-@property NSMutableDictionary *accountNames, *settingsDraft;
+@property NSMutableDictionary *accountNames, *settingsDraft, *localNames;
 @property NSDictionary *settings;
 @property NSUserDefaults *preferences;
 @property NSView *settingsContent, *mainCanvas;
@@ -746,9 +748,8 @@ static const unsigned CardFill = 0xFFFCF7;
     NSColor *ink = Hex(0x2B2622), *muted = Hex(0x6E655C);
     AccountCard *card = [[AccountCard alloc] initWithFrame:frame];
     card.number = n; card.art = art; card.dot = Hex(0xB9B1A7);
-    card.chips = @[(n == 1 ? @"默认目录" : [ProfilePath(n).lastPathComponent stringByReplacingOccurrencesOfString:@"Claude-" withString:@""]),CodeStatus(n,NO,NO)];
-    card.nameLabel = Text([self accountName:n], NSMakeRect(84,18,270,24), [NSFont systemFontOfSize:18 weight:NSFontWeightSemibold], ink); [card addSubview:card.nameLabel];
-    card.status = Text(@"读取状态…", NSMakeRect(102,44,160,20), [NSFont systemFontOfSize:13], muted); [card addSubview:card.status];
+    card.nameLabel = Text([self accountName:n], NSMakeRect(84,26,270,24), [NSFont systemFontOfSize:18 weight:NSFontWeightSemibold], ink); [card addSubview:card.nameLabel];
+    card.status = Text(@"读取状态…", NSMakeRect(102,82,160,20), [NSFont systemFontOfSize:13], muted); [card addSubview:card.status];
     NSArray *rows = @[@[@"clock",@"5小时限额"],@[@"calendar",@"周限额"]];
     NSMutableArray *usageLabels = [NSMutableArray array], *usageTimes = [NSMutableArray array];
     for (NSInteger row = 0; row < 2; row++) {
@@ -1991,8 +1992,8 @@ static const unsigned CardFill = 0xFFFCF7;
         NSRunningApplication *configured = self.configuredApps[key];
         BOOL knownLaunch = !failure && pids.count == 1 && configured && !configured.terminated && [pids.firstObject intValue] == configured.processIdentifier;
         if (!failure && !knownLaunch) [self.configuredApps removeObjectForKey:key];
-        self.cards[n-1].chips = @[(n == 1 ? @"默认目录" : [ProfilePath(n).lastPathComponent stringByReplacingOccurrencesOfString:@"Claude-" withString:@""]),CodeStatus(n,pids.count > 0,knownLaunch)];
-        self.cards[n-1].toolTip = n == 1 ? @"01 沿用默认 Code 配置，与普通终端 CLI 共用。" : knownLaunch ? @"本次启动时已指定独立 Code 配置；尚未验证 Code 的实际写入位置。" : @"运行中实例的 Code 配置未确认。保存工作后正常退出该 Claude，再从这里启动；不会迁移或删除旧记录。";
+        NSString *codeNote = n == 1 ? @"01 沿用默认 Code 配置，与普通终端 CLI 共用。" : knownLaunch ? @"本次启动时已指定独立 Code 配置；尚未验证 Code 的实际写入位置。" : @"运行中实例的 Code 配置未确认。保存工作后正常退出该 Claude，再从这里启动；不会迁移或删除旧记录。";
+        self.cards[n-1].toolTip = [NSString stringWithFormat:@"%@\n%@\n%@",ProfilePath(n),CodeStatus(n,pids.count > 0,knownLaunch),codeNote];
         NSDate *since = self.starting[key];
         BOOL launchPending = [self.pendingLaunches containsObject:key];
         if (since && !launchPending && pids.count && VisibleWindow([pids.firstObject intValue])) { [self.starting removeObjectForKey:key]; since = nil; }
@@ -2074,7 +2075,21 @@ static const unsigned CardFill = 0xFFFCF7;
     self.selectAllAccounts.state = selected == 0 ? NSControlStateValueOff : selected == shown ? NSControlStateValueOn : NSControlStateValueMixed;
 }
 - (NSString *)accountName:(NSInteger)account {
-    return self.accountNames[@(account).stringValue] ?: [NSString stringWithFormat:@"账号 %02ld",(long)account];
+    return self.accountNames[@(account).stringValue] ?: [self localName:account] ?: [NSString stringWithFormat:@"账号 %02ld",(long)account];
+}
+- (NSString *)localName:(NSInteger)account {
+    if (self.snapshotMode) return nil; // Offscreen renders and UI tests never read real account files.
+    NSString *file = [(CodeConfigPath(account) ?: NSHomeDirectory()) stringByAppendingPathComponent:@".claude.json"];
+    struct stat info;
+    if (lstat(file.fileSystemRepresentation, &info) != 0) return nil;
+    // Re-parse only when the file changes; Claude Code rewrites it during sessions.
+    NSString *stamp = [NSString stringWithFormat:@"%ld.%ld.%lld",(long)info.st_mtimespec.tv_sec,info.st_mtimespec.tv_nsec,(long long)info.st_size];
+    if (!self.localNames) self.localNames = [NSMutableDictionary dictionary];
+    NSArray *cached = self.localNames[@(account)];
+    if ([cached.firstObject isEqual:stamp]) return cached.count > 1 ? cached[1] : nil;
+    NSString *name = LocalDisplayName(file);
+    self.localNames[@(account)] = name ? @[stamp,name] : @[stamp];
+    return name;
 }
 - (void)accountFilterChanged:(id)sender { [self refreshAccountTable]; }
 - (void)selectAccountRow:(NSButton *)sender {
@@ -2443,6 +2458,14 @@ static int SelfTest(void) {
         NSCAssert([CodeStatus(2,YES,YES) isEqual:@"Code 已指定"],@"launch evidence means configured, not verified storage");
         NSCAssert([CodeStatus(2,NO,YES) isEqual:@"Code 待启动"],@"exited process loses running configuration claim");
         NSCAssert([CodeStatus(1,YES,YES) isEqual:@"Code 默认"],@"default remains shared with CLI");
+        NSString *nameFixture = [NSTemporaryDirectory() stringByAppendingPathComponent:[NSUUID.UUID.UUIDString stringByAppendingString:@".json"]];
+        [@"{\"oauthAccount\":{\"displayName\":\"  Eric \",\"emailAddress\":\"x@example.invalid\"}}" writeToFile:nameFixture atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        NSCAssert([LocalDisplayName(nameFixture) isEqual:@"Eric"],@"local display name is read and trimmed");
+        [@"{\"oauthAccount\":{\"displayName\":\"a\\nb\"}}" writeToFile:nameFixture atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        NSCAssert(!LocalDisplayName(nameFixture),@"control characters rejected");
+        [@"not json" writeToFile:nameFixture atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        NSCAssert(!LocalDisplayName(nameFixture) && !LocalDisplayName(@"/nonexistent/.claude.json"),@"bad or missing file falls back");
+        [NSFileManager.defaultManager removeItemAtPath:nameFixture error:nil];
         Launcher *state = [Launcher new];
         state.processes = @{}; [state.checking addObject:@2];
         NSCAssert([state deletionBlocker:2] && ![state deletionBlocker:3],@"in-flight check blocks deletion only for that account");
