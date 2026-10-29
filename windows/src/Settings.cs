@@ -8,7 +8,7 @@ using Microsoft.Win32;
 namespace ClaudeLauncher {
     // 启动器自己的偏好（SPEC 系统设置 [Windows]）：%LOCALAPPDATA%\Claude-MultiLauncher\settings.json，不写 Claude 数据。
     public sealed class LauncherSettings {
-        public bool CloseToBackground = true, ShowTray = true, RememberPage, RestoreMinimized = true, ShowArtwork = true, LocalNotifications = true, NotificationSound, AllowUpdates;
+        public bool CloseToBackground = true, ShowTray = true, RememberPage, RestoreMinimized = true, ShowArtwork = true, ShowUsage = true, LocalNotifications = true, NotificationSound, AllowUpdates;
         public string StartPage = "instances";
         public int RefreshInterval = 3, LogLimit = 500;
         // 读取失败的原因（已回落默认）；由调用方决定是否记录。
@@ -27,7 +27,7 @@ namespace ClaudeLauncher {
         public Dictionary<string, object> Values() {
             return new Dictionary<string, object> {
                 { "closeToBackground", CloseToBackground }, { "showTray", ShowTray }, { "rememberPage", RememberPage }, { "startPage", StartPage },
-                { "refreshInterval", RefreshInterval }, { "restoreMinimized", RestoreMinimized }, { "showArtwork", ShowArtwork }, { "logLimit", LogLimit },
+                { "refreshInterval", RefreshInterval }, { "restoreMinimized", RestoreMinimized }, { "showArtwork", ShowArtwork }, { "showUsage", ShowUsage }, { "logLimit", LogLimit },
                 { "localNotifications", LocalNotifications }, { "notificationSound", NotificationSound }, { "allowUpdates", AllowUpdates } };
         }
         // 逐项按类型与可选值校验，异常项回落默认；不接受未知键以外的任何路径、命令或地址。
@@ -37,7 +37,7 @@ namespace ClaudeLauncher {
                 CloseToBackground = Flag(values, "closeToBackground", d.CloseToBackground), ShowTray = Flag(values, "showTray", d.ShowTray),
                 RememberPage = Flag(values, "rememberPage", d.RememberPage), StartPage = Pick(values, "startPage", Pages, d.StartPage),
                 RefreshInterval = Pick(values, "refreshInterval", Intervals, d.RefreshInterval), RestoreMinimized = Flag(values, "restoreMinimized", d.RestoreMinimized),
-                ShowArtwork = Flag(values, "showArtwork", d.ShowArtwork), LogLimit = Pick(values, "logLimit", LogLimits, d.LogLimit),
+                ShowArtwork = Flag(values, "showArtwork", d.ShowArtwork), ShowUsage = Flag(values, "showUsage", d.ShowUsage), LogLimit = Pick(values, "logLimit", LogLimits, d.LogLimit),
                 LocalNotifications = Flag(values, "localNotifications", d.LocalNotifications), NotificationSound = Flag(values, "notificationSound", d.NotificationSound),
                 AllowUpdates = Flag(values, "allowUpdates", d.AllowUpdates) };
         }

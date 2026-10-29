@@ -21,10 +21,10 @@
 
 **[Windows]**（2026-10-29，feature/windows-settings）同一六分类与草稿规则，WPF 原生控件（开关为带切换状态的复选框，选项为下拉框）。布局对应 macOS 1.7.14（feature/windows-settings-layout）：顶部分段标签（常规／启动行为／外观／数据与存储／通知／关于）切换分类；各分类按小标题分组为白色圆角卡片，每行 60 px，左侧图标、标题与说明，右侧开关／下拉／按钮／只读值；分组后可有带信息图标的提示框；内容超出时在面板内纵向滚动。草稿、保存、撤销、恢复默认及退出前提示不变。
 
-- 存储：`%LOCALAPPDATA%\Claude-MultiLauncher\settings.json`，`{"version":1,"closeToBackground":true,"showTray":true,"rememberPage":false,"startPage":"instances","refreshInterval":3,"restoreMinimized":true,"showArtwork":true,"logLimit":500,"localNotifications":true,"notificationSound":false,"allowUpdates":false}`。逐项按类型与可选值校验，单项异常只回落该项；文件缺失、损坏或版本不是 1 时全部用默认。同目录临时文件写完后替换；保存失败保留原文件与草稿。`startPage` 存页面名（`instances`／`accounts`／`logs`／`settings`，项目页接入后加 `projects`），不存序号。上次页面只在开启「恢复上次页面」时写入同目录 `last-page`。
+- 存储：`%LOCALAPPDATA%\Claude-MultiLauncher\settings.json`，`{"version":1,"closeToBackground":true,"showTray":true,"rememberPage":false,"startPage":"instances","refreshInterval":3,"restoreMinimized":true,"showArtwork":true,"showUsage":true,"logLimit":500,"localNotifications":true,"notificationSound":false,"allowUpdates":false}`。逐项按类型与可选值校验，单项异常只回落该项；文件缺失、损坏或版本不是 1 时全部用默认。同目录临时文件写完后替换；保存失败保留原文件与草稿。`startPage` 存页面名（`instances`／`accounts`／`logs`／`settings`，项目页接入后加 `projects`），不存序号。上次页面只在开启「恢复上次页面」时写入同目录 `last-page`。
 - 常规：关闭窗口继续运行（开：隐藏窗口，托盘或再次打开启动器可恢复；关：关闭窗口即退出启动器，Claude 继续运行）；通知区域图标（关闭后托盘菜单不可用，再次打开启动器即可显示窗口）。
 - 启动行为：开机启动写 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 的 `ClaudeMultiLauncher` 值（带引号的程序路径），单独确认、立即生效、不进草稿；只在程序位于 `%LOCALAPPDATA%\Programs\Claude 多开启动器\ClaudeLauncher.exe` 时允许开启，开发副本拒绝；关闭只删除本值且仅当它指向本启动器。卸载程序不处理该值（升级时 Setup 会先运行旧卸载程序，处理它会丢失用户选择），卸载前请先关闭开机启动。**[Windows 差异]** 本地进程刷新间隔默认 3 秒（实测一次 WMI 扫描约 280 ms，1 秒间隔开销过大），可选 1／3／5 秒。点击账号时恢复最小化窗口：关闭时若目标窗口已最小化，不还原、不切换，只提示从任务栏打开。
-- 外观：显示水墨插画（侧栏山水、主区背景、账号卡片插画）。「显示本地界面用量」在本地界面用量实现前不提供开关，只显示说明；语言／主题为固定说明。
+- 外观：显示水墨插画（侧栏山水、主区背景、账号卡片插画）；显示本地界面用量（默认开，`showUsage`，行为见「本地界面用量」[Windows]）。语言／主题为固定说明。
 - 数据与存储：在资源管理器中显示、复制启动器数据目录；导出已保存设置为 `{"version":1,"settings":{…}}`（不含账号、别名、项目、凭据、登录保护、上次页面）；启动器日志上限 100／500／1000（默认 500），保存后立即截断内存与日志文件。
 - 消息通知：窗口内提示为主区底部的临时提示条（约 5 秒），用于警告与错误；提示音用系统“感叹号”声音，仅在窗口内提示开启时生效；测试按钮按已保存设置显示。安全确认与错误弹窗不受影响。
 - 关于软件：版本、离线帮助、复制基础诊断（仅启动器版本、Windows 版本、联网更新开关、Claude/Anthropic 请求禁止）、更新开关与检查按钮。
@@ -193,7 +193,7 @@ Windows 对应：重解析点（符号链接、junction）等同链接；硬链�
 
 ## 本地界面用量（macOS）
 
-- macOS 1.7.9 起，只读官方 Claude Code 已显示的用量控件。Windows 未接入：书面调查与待授权事项见 [Windows 用量调查](USAGE-RESEARCH-WINDOWS.md)，授权前不读取 Claude 界面、Cookies、`Local State` 或任何加密数据。`UsageHistory.m` 留作历史实现，不再编译或调用；不再读取 `plan-usage-history.json` 或访问 Claude Safe Storage，也不回退到旧历史。仅为缓存归属定向读取已获授权的非登录 `lastActiveOrg` 字段并生成 SHA-256 指纹，不读取登录字段、不解密。
+- macOS 1.7.9 起，只读官方 Claude Code 已显示的用量控件。Windows 见本节末尾 [Windows]。`UsageHistory.m` 留作历史实现，不再编译或调用；不再读取 `plan-usage-history.json` 或访问 Claude Safe Storage，也不回退到旧历史。仅为缓存归属定向读取已获授权的非登录 `lastActiveOrg` 字段并生成 SHA-256 指纹，不读取登录字段、不解密。
 - 先用官方主进程可执行路径、内核启动参数及固定账号目录定位 PID，排除 Helper、GPU、renderer、CLI 和未管理进程。同账号多个主进程、路径异常或进程扫描失败时不显示数值。读取前后重核 PID、进程启动时间、目录身份和组织选择指纹；读取后再扫描进程，异步返回时复核。Cookies／journal／wal／shm 元数据变化仅触发组织字段重新核对，普通 Cookie 写入不会清空观察记录。固定查询只选官方域名、根路径、未过期的 lastActiveOrg；schema 24 / v10、只读 immutable、不复制、不建锁或日志，拒绝 WAL、活动日志、歧义及读取期间的变化。只保留指纹，既不保存原值也不访问钥匙串。元数据未变时复用指纹最多 60 秒；它不证明服务器身份或尚未落盘的组织切换。
 - 只通过系统辅助功能复制现有 AX 属性，不执行动作、不激活 Claude、不启用调试。当已验证官方主进程的 `AXManualAccessibility` 明确为 false 时，可按 Electron 官方文档将它设为 true，仅启用该进程的本机网页辅助功能树；这是唯一允许设置的用量相关 AX 属性，不是系统权限授权，也不导航或刷新页面。不能将此初始化步骤描述为“只复制属性”。需要用户已经授予启动器的辅助功能权限；没有权限就显示“需辅助功能权限”，不自动弹出授权或改 TCC。固定签名身份不变。
 - 限定官方 `https://claude.ai/epitaxy` Code 首页及 `https://claude.ai/epitaxy/…` 对话页面，拒绝嵌套浏览器页面。仅解析用量弹出按钮和相邻、带官方用量设置链接的面板；读取五小时及“每周 · 所有模型”，不将上下文 token 百分比或模型专属周限额混入。文本正文、输入框内容不读取。多个用量页面、重复或矛盾指标、遍历预算耗尽、未知格式均不采用新的不确定结果。
@@ -204,6 +204,17 @@ Windows 对应：重解析点（符号链接、junction）等同链接；硬链�
 - 用户要求记录最近查看结果：仅把两项百分比、重置说明、各自观察时间和用于匹配的进程／目录元数据及组织指纹保存到启动器自己的 `usageInterfaceObservations` 偏好，不存页面／会话标识、正文或凭据，不写官方目录。重启启动器先校验记录格式和时间，再匹配当前主进程、目录和组织指纹后恢复，均标“上次显示”。同账号切换 Code 对话或关闭弹窗不会丢失已观察值；界面暂时不可读可继续显示已验证归属的最近观察值。账号／PID／进程启动时间／目录／组织指纹确认改变时清除；登录保护、进程歧义、权限丢失或身份文件写入中则隐藏，后续身份一致时恢复。关闭显示设置清空缓存。设置沿用旧 `showUsageHistory` 键以保持开关选择，名称改为“显示本地界面用量”。
 - 每次读取最多 16000 次属性访问、1.5 秒预算；只处理 40 层内的用量布局，更深分支跳过（不是用量候选），重复结构节点去重；普通节点只批量读取角色与子节点，单次系统 IPC 超时 0.1 秒；首次启用网页辅助功能树后，可在本次主动查看的总计 2.5 秒预算内等待并重读准备好的结构，不设置后台定时器；超时／读取中页面变化不采用新结果。只注册用量展开通知，不注册布局／值变化等广泛通知；不调用任何官方查询 IPC 或认证提供器。
 - `--usage-interface-check` 只输出账号编号、读取状态、两项是否观察到及耗时；不输出百分比、页面会话标识或正文。从终端执行时权限归属可能与 GUI 启动不同，不据此自动修改授权。GUI、合成自检和离屏渲染分开报告。旧 `--usage-history-check` 已移除。限制与研究证据见 [用量调查](USAGE-RESEARCH.md)。
+
+**[Windows]**（2026-10-29，feature/windows-usage；用户授权 D1 只读界面调查，D2 组织指纹不做，D3 展开事件未授权）调查与实测见 [Windows 用量调查](USAGE-RESEARCH-WINDOWS.md)。
+
+- 读取方式：Windows UI 自动化（UIA）只读。从 `Core.Scan` 核实的官方主进程（每账号恰好一个）的最大可见顶层窗口进入，只批量读取控件类型与“是否支持展开”；只对 Document 读取地址、对支持展开的 Button 读取名称。不调用 Invoke／Expand／SetFocus 等任何模式方法，不设置属性，不激活窗口，不注册事件，不读取文本、编辑框、列表或链接内容（这些分支不进入）。首次连接会使 Chromium 为该进程启用网页辅助功能树并保持到进程退出（实测首轮只有原生外壳，约 2.5 秒后可读）；这是 UIA 客户端连接的固有效果，与 macOS 的 `AXManualAccessibility` 性质相同，不改系统设置、不加启动参数。
+- 页面：只接受 `https://claude.ai/epitaxy` 与 `https://claude.ai/epitaxy/<会话>` 的 Document（无端口、用户信息、查询和片段），不进入嵌套 Document；会话标识不保存不输出。按钮格式同 macOS：`用量：5 小时限额的 N%…`、`Usage: N% of (the) 5-hour limit…`、`用量：每周 · 所有模型：N%…`（实测 Windows 4.29 为后者，层级为 Pane×9 → Document → Group×21 → Button）。百分比 0～100，其余为重置说明。多个用量按钮、未知格式、预算耗尽、读取中出错不采用。
+- **[Windows 差异]** 不解析展开后的面板：只采用按钮本身的数值（五小时窗口进行中给五小时值，窗口未开始时给周值）。另一项保留同一身份下的上次观察值和原时间，不推算。
+- 归属（无组织指纹）：身份 = 账号编号 + PID + 进程启动时间（UTC ticks）+ 账号目录（01 为默认）。读取前后各扫描一次进程，身份不一致则丢弃本次结果；任一项变化即清除缓存与保存记录。限制：同一账号目录内切换组织后，进程重启前旧值可能被当作新组织的值；卡片悬停说明此限制。
+- 触发：同 macOS 1.7.10——启动器显示／激活且停在实例页、切换到实例页、在实例页点击时读取一次；1 秒内合并。没有定时器，进程刷新定时器不触发读取，不监听展开事件（D3 未授权）。登录保护中、扫描失败、窗口隐藏或最小化时不读取。托盘中无可见窗口的实例显示“未观察到窗口”，不为读取而唤出。
+- 预算：后台线程执行，每账号首轮 1.5 秒；首轮未见 Code 页面时同一次查看内最多等到 2.5 秒重读；遍历 40 层、16000 个节点上限；超时的线程结果丢弃，前一次读取未结束时不开始新读取。
+- 显示与保存：卡片右侧两行「5小时限额」「周限额」，百分比与观察时间（HH:mm:ss，跨日 MM-dd HH:mm），悬停显示完整时间与官方重置说明；未读到显示“—／尚未观察到”和状态说明。读取中保留旧值。观察记录（两项百分比、重置说明、观察时间和身份）写入 `%LOCALAPPDATA%\Claude-MultiLauncher\usage-observations.json`（原子写入，version 1），不存页面、会话、正文或凭据；重启后逐项校验，身份与当前进程一致才恢复。关闭「显示本地界面用量」立即停止读取、清空缓存并删除该文件。
+- `ClaudeLauncher.exe --usage-interface-check` 只输出账号编号、状态、两项是否观察到及耗时，不输出百分比、页面或正文。自检只用合成节点树，不访问真实 Claude。
 
 ## 更新与安装
 

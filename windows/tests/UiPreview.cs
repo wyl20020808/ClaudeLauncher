@@ -20,6 +20,9 @@ public static class UiPreview {
         string temp = Path.Combine(Path.GetTempPath(), "claude-preview-" + Guid.NewGuid().ToString("N"));
         var ui = new LauncherUI(new LauncherSettings(), Path.Combine(temp, "settings.json"));
         var state = new List<Instance> { new Instance { Number = 1, ProcessId = 111 } };
+        ui.Snapshot(0, state);
+        // 合成用量观察：五小时与周各一项，验证卡片右侧布局。
+        ui.SetUsage(1, new UsageRecord { Status = UsageInterface.Observed, FiveHour = new UsageMetric { Percent = 71, Reset = "3:20 重置", Observed = DateTime.Now.AddMinutes(-40) }, Weekly = new UsageMetric { Percent = 11, Reset = "周三19:00 重置", Observed = DateTime.Now.AddMinutes(-2) } });
         string[] names = { "instances", "accounts", "logs" };
         Directory.CreateDirectory(args[0]);
         for (int page = 0; page < 3; page++) Save(ui.Snapshot(page, state), new Size(1080, 720), Path.Combine(args[0], names[page] + ".png"));

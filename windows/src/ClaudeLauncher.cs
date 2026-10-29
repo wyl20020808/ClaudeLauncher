@@ -276,6 +276,7 @@ namespace ClaudeLauncher {
             AppDomain.CurrentDomain.ProcessExit += delegate { Diagnostics.Write("process_exit", "exitCode=" + Environment.ExitCode); };
             if (args.Length == 1 && args[0] == "--apply-update") return Updates.Install();
             if (args.Length == 1 && args[0] == "--self-test") return SelfTest.Entry();
+            if (args.Length == 1 && args[0] == "--usage-interface-check") return UsageInterface.Check();
             string sid = WindowsIdentity.GetCurrent().User.Value;
             using (var mutex = new Mutex(false, @"Local\ClaudeProfileLauncher-" + sid)) {
                 bool owns;

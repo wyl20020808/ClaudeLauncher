@@ -117,6 +117,7 @@ public static class LauncherTests {
         TestSettingsPage(ui, settingsFile, state);
         TestAccountsPage(ui, settingsFile, state);
         TestLogsPage(ui, settingsFile, state);
+        TestUsageCards(ui, settingsFile, state);
         Directory.Delete(settingsDir, true);
         Console.WriteLine("PASS: " + checks + " assertions; WPF layout loaded without showing windows.");
         return 0;
@@ -247,6 +248,28 @@ public static class LauncherTests {
         var cards = (System.Collections.IDictionary)typeof(LauncherUI).GetField("cards", flags).GetValue(ui);
         string tip = ((Border)cards[2].GetType().GetField("Root").GetValue(cards[2])).ToolTip as string;
         Check(tip != null && tip.Contains("目录：") && tip.Contains("Code "), "Card tooltip must carry folder and Code status");
+    }
+    // SPEC 本地界面用量 [Windows]：卡片显示合成观察记录；关闭显示后清空并删除记录文件。不读取真实 Claude。
+    static void TestUsageCards(LauncherUI ui, string settingsFile, List<Instance> state) {
+        var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+        var page = ui.Snapshot(0, state);
+        Func<IEnumerable<string>> texts = () => Children(page).OfType<TextBlock>().Select(t => t.Text).ToList();
+        Check(!texts().Contains("未接入") && texts().Count(t => t == "尚未观察到") >= 4, "Usage rows must show not-yet-observed instead of placeholder");
+        DateTime at = DateTime.Now.AddMinutes(-1);
+        ui.SetUsage(2, new UsageRecord { Status = UsageInterface.Observed, Weekly = new UsageMetric { Percent = 11, Reset = "周三19:00 重置", Observed = at } });
+        Check(texts().Contains("11%") && texts().Contains(at.ToString("HH:mm:ss")), "Weekly observation must render on the card");
+        var cards = (System.Collections.IDictionary)typeof(LauncherUI).GetField("cards", flags).GetValue(ui);
+        var values = (TextBlock[])cards[2].GetType().GetField("Values").GetValue(cards[2]);
+        Check(values[0].Text == "—" && (values[1].ToolTip as string).Contains("周三19:00 重置") && (values[1].ToolTip as string).Contains("组织"), "Tooltip must carry reset text and the organization limit");
+        string usageFile = Path.Combine(Path.GetDirectoryName(settingsFile), "usage-observations.json");
+        File.WriteAllText(usageFile, "{}");
+        var all = Children(ui.Snapshot(3, state)).ToArray();
+        var toggle = all.OfType<CheckBox>().Single(b => AutomationProperties.GetName(b) == "显示本地界面用量");
+        Check(toggle.IsChecked == true, "Usage display defaults on");
+        typeof(System.Windows.Controls.Primitives.ButtonBase).GetMethod("OnClick", flags).Invoke(toggle, null);
+        typeof(LauncherUI).GetMethod("SaveSettings", flags).Invoke(ui, null);
+        page = ui.Snapshot(0, state);
+        Check(!File.Exists(usageFile) && !texts().Contains("11%") && texts().Contains("本地用量显示已关闭"), "Turning usage off must clear values and delete observations");
     }
     static void TestLogsPage(LauncherUI ui, string settingsFile, List<Instance> state) {
         var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
