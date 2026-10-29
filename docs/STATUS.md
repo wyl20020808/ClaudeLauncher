@@ -1,5 +1,12 @@
 # 项目状态
 
+## Windows 1.8.3 已发布（2026-10-29，windows-v1.8.3）
+
+- 内容：客户机关闭 UAC（普通命令行为 High Mandatory Level），启动器与 Claude 新建文件所有者为 BUILTIN\Administrators，01、02 均报“存储项不属于当前用户”。所有者校验改为接受当前用户或启动器令牌默认所有者（`d1fda96`），SPEC 同步；发布说明 [RELEASE-windows-1.8.3.md](RELEASE-windows-1.8.3.md)。用户确认“发布 1.8.3”后：版本改为 1.8.3（`ccb8cd2`），build 通过（LauncherTests 315、自检 245），`-DryRun` 通过，推送 dev 并把 main 快进到 `ccb8cd2`。
+- 标签 windows-v1.8.3，目标 `ccb8cd2`，已转正式并为 Latest（上一版 Latest 为 windows-v1.8.2）。附件：`ClaudeLauncherSetup-1.8.3.exe` 2823828 字节，SHA-256 `2b3149f5e74df72b4091544eeb2f166ea03e912316548172e921a34506b332c9`；`latest-windows.json`；从 windows-v1.8.2 带入的 `ClaudeLauncher-1.7.15.dmg` 与 `latest-macos.json`。
+- 复核：草稿附件经 GitHub API 核对一致；GitHub latest/download 四个文件均为新版本。本机自建更新服务未运行，两份自建清单不可达，脚本按设计保留发布并以状态 2 退出。
+- 未验证：客户机（关闭 UAC）上 01、02 实际启动；1.8.2 → 1.8.3 软件内更新过程。
+
 ## Windows 1.8.2 已发布（2026-10-29，windows-v1.8.2）
 
 - 内容：手动展开官方用量弹窗时读取五小时与每周（D3，见下节），发布说明 [RELEASE-windows-1.8.2.md](RELEASE-windows-1.8.2.md)。用户确认“提交发布 1.8.2”后：feature/windows-usage-popup 提交（`3884ec0`）并合并到 dev，版本改为 1.8.2（`08ba175`），build 通过（LauncherTests 315、自检 244），`-DryRun` 通过，推送 dev 并把 main 快进到 `08ba175`。
