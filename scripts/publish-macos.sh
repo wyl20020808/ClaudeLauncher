@@ -1,7 +1,9 @@
 #!/bin/zsh
 # macOS 独立发布（SPEC“更新与安装”）：构建 DMG → 用钥匙串中的 Mac 私钥签名 latest-macos.json 并验签 →
 # 从当前最新 Release 带入已签名的 Windows 清单与 Setup（共用公钥验签、核对大小与 SHA-256，不重签）→
-# 草稿 macos-v<版本> 上传四个文件 → 转正式并设为 Latest → 从 GitHub latest/download 复核两端；复核失败改回草稿。
+# 草稿 macos-v<版本> 上传四个文件 → 经 API 下载草稿逐字节核对 → 转正式并设为 Latest →
+# 等待 latest/download 缓存更新（最多 10 分钟）后复核两端。内容不符才回滚：改回草稿并把上一版设回 Latest；
+# 只是缓存未及时更新则保留发布（附件已核对），提示稍后复核并以状态 2 退出。
 # 自建服务由 Windows 端定时同步，这里不操作。私钥不导出、不打印。
 #   用法：scripts/publish-macos.sh [--dry-run]     --dry-run 只构建、签名、本地校验与带入核对，不创建 Release
 set -euo pipefail
@@ -72,15 +74,33 @@ gh release create "$TAG" --repo $REPO --draft --target "$HEAD" --title "macOS $V
 ASSETS=$(gh release view "$TAG" --repo $REPO --json assets --jq '[.assets[].name] | sort | join(",")')
 [[ "$ASSETS" == "$(print -l "${DMG:t}" "$WFILE" latest-macos.json latest-windows.json | sort | paste -sd, -)" ]] || die "草稿附件不全：$ASSETS（草稿保留，未发布）"
 
-step '转为正式并设为 Latest'
-gh release edit "$TAG" --repo $REPO --draft=false --latest >/dev/null
-revert() { gh release edit "$TAG" --repo $REPO --draft=true >/dev/null 2>&1 || true; die "$1（已改回草稿）"; }
+step '经 API 下载草稿附件核对（不经 latest/download 缓存）'
+mkdir "$WORK/draft"
+gh release download "$TAG" --repo $REPO -D "$WORK/draft" || die '无法下载草稿附件（草稿保留，未发布）'
+for f in latest-macos.json latest-windows.json; do cmp -s "$WORK/draft/$f" "$WORK/$f" || die "草稿 $f 与本地不一致（草稿保留，未发布）"; done
+[[ "$(shasum -a 256 "$WORK/draft/${DMG:t}" | cut -d' ' -f1)" == "$SHA" ]] || die '草稿 DMG 哈希不一致（草稿保留，未发布）'
+[[ "$(shasum -a 256 "$WORK/draft/$WFILE" | cut -d' ' -f1)" == "$WSHA" ]] || die '草稿 Windows Setup 哈希不一致（草稿保留，未发布）'
 
-step '从 GitHub latest/download 复核'
-for attempt in {1..10}; do
-    curl -fsSL "$DOWNLOAD/latest-macos.json" -o "$WORK/check-macos.json" 2>/dev/null && [[ "$(field "$WORK/check-macos.json" version 2>/dev/null)" == "$VERSION" ]] && break
-    sleep 3
+step '转为正式并设为 Latest'
+PREV=$(gh api "repos/$REPO/releases/latest" --jq .tag_name)
+gh release edit "$TAG" --repo $REPO --draft=false --latest >/dev/null
+# 只在确认内容不符时回滚；显式恢复上一版 Latest，避免 GitHub 自动选到更早的版本导致 latest/download 失效。
+revert() {
+    gh release edit "$TAG" --repo $REPO --draft=true >/dev/null 2>&1 || true
+    gh release edit "$PREV" --repo $REPO --latest >/dev/null 2>&1 || true
+    die "$1（已改回草稿，$PREV 恢复为 Latest）"
+}
+
+step '等待 latest/download 更新（最多 10 分钟）并复核'
+SERVED=''
+for attempt in {1..40}; do
+    curl -fsSL "$DOWNLOAD/latest-macos.json" -o "$WORK/check-macos.json" 2>/dev/null && SERVED=$(field "$WORK/check-macos.json" version 2>/dev/null) && [[ "$SERVED" == "$VERSION" ]] && break
+    sleep 15
 done
+if [[ "$SERVED" != "$VERSION" ]]; then
+    print -u2 "提醒：已发布 $TAG（附件已经 API 核对），但 latest/download 10 分钟内仍返回 ${SERVED:-无法读取}。属于缓存未更新，未回滚；请稍后重新复核。"
+    exit 2
+fi
 cmp -s "$WORK/check-macos.json" "$WORK/latest-macos.json" || revert 'latest-macos.json 与本地签名不一致'
 curl -fsSL "$DOWNLOAD/latest-windows.json" -o "$WORK/check-windows.json" && cmp -s "$WORK/check-windows.json" "$WORK/latest-windows.json" || revert 'latest-windows.json 不一致'
 curl -fsSL "$DOWNLOAD/${DMG:t}" -o "$WORK/check.dmg" && [[ "$(shasum -a 256 "$WORK/check.dmg" | cut -d' ' -f1)" == "$SHA" ]] || revert 'DMG 哈希不一致'

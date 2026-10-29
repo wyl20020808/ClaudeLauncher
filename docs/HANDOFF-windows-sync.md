@@ -1,5 +1,7 @@
 # 交接：Windows 同步 macOS 1.7.10 功能
 
+> 2026-10-29：后续增量见 [HANDOFF-windows-1.7.14.md](HANDOFF-windows-1.7.14.md)。本文保留原 1.7.10 内容。
+
 > 用法：在 Windows 开发机上 `git pull` 后，把下面「提示词」整段交给那边的 Claude Code。
 
 ## 现状（2026-10-28，Mac 侧整理）

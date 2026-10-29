@@ -90,15 +90,18 @@ static NSString *MetricKey(NSString *label) {
     if ([@[@"每周 · 所有模型",@"Weekly · all models"] containsObject:label]) return @"sd";
     return nil; // Model-specific weekly and context utilization are not the account's weekly limit.
 }
+// Before the first message of a new five-hour window, the official button shows the weekly limit instead.
 static NSDictionary *ButtonMetric(NSString *label) {
-    for (NSString *pattern in @[@"^用量[：:]\\s*5 小时限额的 ([0-9]{1,3}(?:\\.[0-9]+)?)%(.*)$",
-                                @"^Usage: ([0-9]{1,3}(?:\\.[0-9]+)?)% of (?:the )?5-hour limit(.*)$"]) {
+    NSDictionary *patterns = @{@"^用量[：:]\\s*5 小时限额的 ([0-9]{1,3}(?:\\.[0-9]+)?)%(.*)$":@"fh",
+                               @"^Usage: ([0-9]{1,3}(?:\\.[0-9]+)?)% of (?:the )?5-hour limit(.*)$":@"fh",
+                               @"^用量[：:]\\s*每周 · 所有模型[：:]\\s*([0-9]{1,3}(?:\\.[0-9]+)?)%(.*)$":@"sd"};
+    for (NSString *pattern in patterns) {
         NSTextCheckingResult *match = [[NSRegularExpression regularExpressionWithPattern:pattern options:0 error:nil] firstMatchInString:label options:0 range:NSMakeRange(0,label.length)];
         if (!match) continue;
         NSNumber *percent = Percent(@([[label substringWithRange:[match rangeAtIndex:1]] doubleValue]));
         if (!percent) return nil;
         NSString *reset = [[label substringWithRange:[match rangeAtIndex:2]] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-        return @{@"percent":percent,@"reset":reset};
+        return @{@"key":patterns[pattern],@"percent":percent,@"reset":reset};
     }
     return nil;
 }
@@ -106,7 +109,7 @@ static BOOL CodeURL(NSString *value) {
     if (![value isKindOfClass:NSString.class]) return NO;
     NSURL *url = [NSURL URLWithString:value];
     return [url.scheme isEqual:@"https"] && [url.host isEqual:@"claude.ai"] && !url.user && !url.password && !url.port && !url.query && !url.fragment &&
-        [url.path hasPrefix:@"/epitaxy/"] && url.path.length > 9;
+        ([url.path isEqual:@"/epitaxy"] || ([url.path hasPrefix:@"/epitaxy/"] && url.path.length > 9)); // Code home or a conversation.
 }
 static BOOL UsageURL(NSString *value) {
     NSURL *url = [NSURL URLWithString:value];
@@ -121,6 +124,7 @@ static BOOL UsageURL(NSString *value) {
 @property BOOL limited;
 @property NSMutableArray *matches;
 @property NSHashTable *visited;
+@property NSUInteger codeAreas;
 @end
 @implementation UsageAXReader
 - (id)read:(id)node key:(NSString *)key {
@@ -157,7 +161,7 @@ static BOOL UsageURL(NSString *value) {
     if ([role isEqual:@"AXStaticText"]) {
         NSString *text = String([self read:node key:@"AXValue"]);
         if (MetricKey(text)) *reset = nil;
-        else if ([text containsString:@"重置"] || [text hasPrefix:@"Resets "]) *reset = text;
+        else if ([text containsString:@"重置"] || [text hasPrefix:@"Resets "] || [text containsString:@"第一条消息"]) *reset = text;
         return YES;
     }
     if ([role isEqual:@"AXLevelIndicator"] || [role isEqual:@"AXProgressIndicator"]) {
@@ -180,20 +184,21 @@ static BOOL UsageURL(NSString *value) {
     if (codeArea) {
         if (page) return; // Never enter Code's embedded browser or other nested web content.
         NSString *url = [self url:node];
-        if (CodeURL(url)) page = url;
+        if (CodeURL(url)) { page = url; self.codeAreas++; }
         else return; // The native wrapper is a sibling of Code, not its parent in Claude 4.29.0.
     }
     if (page && [role isEqual:@"AXPopUpButton"]) {
-        NSDictionary *five = ButtonMetric([self name:node]);
-        if (!five) return;
-        NSMutableDictionary *result = [@{@"status":@"界面已读取",@"page":page,@"fh":five} mutableCopy];
+        NSDictionary *shown = ButtonMetric([self name:node]);
+        if (!shown) return;
+        NSString *key = shown[@"key"];
+        NSMutableDictionary *result = [@{@"status":@"界面已读取",@"page":page,key:@{@"percent":shown[@"percent"],@"reset":shown[@"reset"]}} mutableCopy];
         NSUInteger panels = 0;
         for (id sibling in [self children:parent]) {
             // Chromium's generic container role/name varies. Verify the dedicated settings link before reading text.
             if (sibling == node || ![self hasUsageLink:sibling depth:0]) continue;
             NSMutableDictionary *metrics = [NSMutableDictionary dictionary]; NSString *reset = nil; BOOL linked = NO;
-            if (![self panel:sibling metrics:metrics reset:&reset linked:&linked depth:0] || !linked || !metrics[@"fh"] ||
-                ![metrics[@"fh"][@"percent"] isEqual:five[@"percent"]]) { result = nil; break; }
+            if (![self panel:sibling metrics:metrics reset:&reset linked:&linked depth:0] || !linked || !metrics[key] ||
+                ![metrics[key][@"percent"] isEqual:shown[@"percent"]]) { result = nil; break; }
             [result addEntriesFromDictionary:metrics]; panels++;
         }
         if (!result || panels > 1) [self.matches addObject:@{@"status":@"界面数据待核对"}];
@@ -210,20 +215,29 @@ static BOOL UsageURL(NSString *value) {
     for (id window in windows) [self walk:window parent:nil page:nil depth:0];
     if (self.limited) return @{@"status":@"界面读取未完成"};
     if (self.matches.count > 1) return @{@"status":@"多个用量界面，待核对"};
-    return self.matches.firstObject ?: @{@"status":@"未观察到 Code 用量"};
+    return self.matches.firstObject ?: @{@"status":self.codeAreas ? @"未观察到 Code 用量控件" : @"未观察到 Code 用量页面"};
 }
 @end
 
-NSDictionary *ReadUsageInterface(pid_t pid) {
+static NSDictionary *ReadUsageInterfaceAttempt(pid_t pid, BOOL allowInitialization, NSTimeInterval deadline) {
     if (pid <= 0) return @{@"status":@"进程待核对"};
     if (!AXIsProcessTrusted()) return @{@"status":@"需辅助功能权限"};
     AXUIElementRef app = AXUIElementCreateApplication(pid);
     AXUIElementSetMessagingTimeout(app,0.1f); // Local IPC timeout only; does not set any attribute in Claude.
-    UsageAXReader *reader = [UsageAXReader new]; reader.deadline = NSProcessInfo.processInfo.systemUptime+1.5;
+    CFTypeRef manual = NULL;
+    AXError manualStatus = AXUIElementCopyAttributeValue(app,CFSTR("AXManualAccessibility"),&manual);
+    BOOL initialized = NO;
+    if (allowInitialization && manualStatus == kAXErrorSuccess && manual == kCFBooleanFalse) {
+        // Electron's documented local AX-tree switch, not a permission grant, click, navigation or usage refresh.
+        initialized = AXUIElementSetAttributeValue(app,CFSTR("AXManualAccessibility"),kCFBooleanTrue) == kAXErrorSuccess;
+    }
+    if (manual) CFRelease(manual);
+    UsageAXReader *reader = [UsageAXReader new]; reader.deadline = MIN(deadline,NSProcessInfo.processInfo.systemUptime+1.5);
     __weak UsageAXReader *weakReader = reader;
     NSMapTable *structure = [NSMapTable strongToStrongObjectsMapTable];
     reader.attribute = ^id(id node, NSString *key) {
         if (!node || CFGetTypeID((__bridge CFTypeRef)node) != AXUIElementGetTypeID()) return nil;
+        AXUIElementSetMessagingTimeout((__bridge AXUIElementRef)node,0.1f); // Per element; keeps one call within the read deadline.
         if ([key isEqual:@"AXRole"] || [key isEqual:@"AXChildren"]) {
             NSDictionary *cached = [structure objectForKey:node];
             if (!cached) {
@@ -245,7 +259,72 @@ NSDictionary *ReadUsageInterface(pid_t pid) {
     };
     id windows = [reader read:(__bridge id)app key:@"AXWindows"];
     NSDictionary *result = [reader result:[windows isKindOfClass:NSArray.class] ? windows : @[]];
-    reader.attribute = nil; CFRelease(app); return result;
+    reader.attribute = nil; CFRelease(app);
+    while (initialized && !result[@"fh"] && [result[@"status"] hasPrefix:@"未观察到 Code 用量"] && NSProcessInfo.processInfo.systemUptime+0.15 < deadline) {
+        // Initial tree construction is asynchronous; preparation stays inside this one bounded viewing action.
+        usleep(150000); result = ReadUsageInterfaceAttempt(pid,NO,deadline);
+    }
+    return result;
+}
+NSDictionary *ReadUsageInterface(pid_t pid) { return ReadUsageInterfaceAttempt(pid,YES,NSProcessInfo.processInfo.systemUptime+2.5); }
+
+static BOOL UsagePopoverOpens(NSString *role, NSString *label, id expanded) {
+    return [role isEqual:@"AXPopUpButton"] && ButtonMetric(label) && expanded == (__bridge id)kCFBooleanTrue;
+}
+@interface UsagePopoverObserver : NSObject
+@property AXObserverRef observer;
+@property (copy) void (^opened)(void);
+@property id openButton;
+- (BOOL)acceptButton:(id)button role:(NSString *)role title:(NSString *)title expanded:(id)expanded;
+@end
+@implementation UsagePopoverObserver
+- (BOOL)acceptButton:(id)button role:(NSString *)role title:(NSString *)title expanded:(id)expanded {
+    if ([role isEqual:@"AXPopUpButton"] && ButtonMetric(title) && expanded == (__bridge id)kCFBooleanFalse) {
+        if ([self.openButton isEqual:button]) self.openButton = nil; return NO;
+    }
+    if (!UsagePopoverOpens(role,title,expanded) || [self.openButton isEqual:button]) return NO;
+    self.openButton = button; return YES; // Repeated notifications for the same opening do not recapture.
+}
+- (void)dealloc {
+    if (_observer) { CFRunLoopRemoveSource(CFRunLoopGetMain(),AXObserverGetRunLoopSource(_observer),kCFRunLoopCommonModes); CFRelease(_observer); }
+}
+@end
+static id PopoverAttribute(AXUIElementRef element, CFStringRef key) {
+    // Runs on the main thread: a hung Claude must not stall the launcher for the ~6s default timeout.
+    AXUIElementSetMessagingTimeout(element,0.1f);
+    CFTypeRef value = NULL; AXUIElementCopyAttributeValue(element,key,&value); return CFBridgingRelease(value);
+}
+static void UsagePopoverChanged(AXObserverRef observer, AXUIElementRef element, CFStringRef notification, void *context) {
+    if (!CFEqual(notification,CFSTR("AXExpandedChanged"))) return;
+    NSString *role = String(PopoverAttribute(element,kAXRoleAttribute));
+    if (![role isEqual:@"AXPopUpButton"]) return;
+    NSString *title = String(PopoverAttribute(element,kAXTitleAttribute));
+    if (!title.length) title = String(PopoverAttribute(element,kAXDescriptionAttribute));
+    UsagePopoverObserver *target = (__bridge UsagePopoverObserver *)context;
+    if (![target acceptButton:(__bridge id)element role:role title:title expanded:PopoverAttribute(element,kAXExpandedAttribute)]) return;
+    // Only the nearest, non-embedded official Code web area can authorize a quota snapshot.
+    AXUIElementRef ancestor = element; CFRetain(ancestor); BOOL code = NO;
+    for (NSUInteger depth=0;depth<40;depth++) {
+        id parent = PopoverAttribute(ancestor,kAXParentAttribute); CFRelease(ancestor); ancestor = NULL;
+        if (!parent || CFGetTypeID((__bridge CFTypeRef)parent) != AXUIElementGetTypeID()) break;
+        ancestor = (AXUIElementRef)CFRetain((__bridge CFTypeRef)parent);
+        if ([String(PopoverAttribute(ancestor,kAXRoleAttribute)) isEqual:@"AXWebArea"]) {
+            id url = PopoverAttribute(ancestor,kAXURLAttribute);
+            code = CodeURL([url isKindOfClass:NSURL.class] ? [url absoluteString] : String(url)); break;
+        }
+    }
+    if (ancestor) CFRelease(ancestor);
+    if (code && target.opened) target.opened();
+}
+id ObserveUsagePopover(pid_t pid, void (^opened)(void)) {
+    if (pid <= 0 || !AXIsProcessTrusted()) return nil;
+    AXObserverRef observer = NULL;
+    if (AXObserverCreate(pid,UsagePopoverChanged,&observer) != kAXErrorSuccess) return nil;
+    UsagePopoverObserver *target = [UsagePopoverObserver new]; target.observer = observer; target.opened = opened;
+    AXUIElementRef app = AXUIElementCreateApplication(pid); AXUIElementSetMessagingTimeout(app,0.1f);
+    AXError result = AXObserverAddNotification(observer,app,CFSTR("AXExpandedChanged"),(__bridge void *)target); CFRelease(app);
+    if (result != kAXErrorSuccess) return nil;
+    CFRunLoopAddSource(CFRunLoopGetMain(),AXObserverGetRunLoopSource(observer),kCFRunLoopCommonModes); return target;
 }
 
 NSDictionary *MergeUsageInterface(NSDictionary *previous, NSDictionary *snapshot, NSArray *identity, NSDate *now) {
@@ -275,14 +354,14 @@ NSString *UsageInterfaceTimeLabel(NSDictionary *metric, NSDate *now) {
     if (![date isKindOfClass:NSDate.class] || [now timeIntervalSinceDate:date] < 0) return @"尚未观察到";
     NSDateFormatter *format = [NSDateFormatter new]; format.dateFormat = @"HH:mm:ss";
     if (![NSCalendar.currentCalendar isDate:date inSameDayAsDate:now]) format.dateFormat = @"MM-dd HH:mm";
-    return [NSString stringWithFormat:@"%@ %@",[metric[@"visible"] boolValue] ? @"读取于" : @"上次显示",[format stringFromDate:date]];
+    return [format stringFromDate:date]; // Time only; tooltips explain it is a local observation time.
 }
 
 NSArray *StoredUsageInterface(NSDictionary *records) {
     NSMutableArray *items = [NSMutableArray array];
     for (NSNumber *account in [[records allKeys] sortedArrayUsingSelector:@selector(compare:)]) {
         NSDictionary *record = records[account];
-        if (![record[@"status"] isEqual:@"界面已读取"] || !record[@"identity"] || !record[@"fh"]) continue;
+        if (![record[@"status"] isEqual:@"界面已读取"] || !record[@"identity"] || !(record[@"fh"] || record[@"sd"])) continue;
         NSMutableDictionary *item = [@{@"identity":record[@"identity"]} mutableCopy];
         for (NSString *key in @[@"fh",@"sd"]) if (record[key]) item[key] = [record[key] dictionaryWithValuesForKeys:@[@"percent",@"reset",@"observedAt"]];
         [items addObject:item]; // No page/session identifier, conversation content or credentials are persisted.
@@ -318,12 +397,22 @@ NSDictionary *LoadedUsageInterface(id stored, NSDate *now) {
                 ![metric[@"observedAt"] isKindOfClass:NSDate.class] || !isfinite([now timeIntervalSinceDate:metric[@"observedAt"]]) || [now timeIntervalSinceDate:metric[@"observedAt"]] < 0) continue;
             record[key] = @{@"percent":metric[@"percent"],@"reset":metric[@"reset"],@"observedAt":metric[@"observedAt"],@"visible":@NO};
         }
-        if (record[@"fh"]) records[@(account)] = record;
+        if (record[@"fh"] || record[@"sd"]) records[@(account)] = record;
     }
     return records;
 }
 
 void TestUsageInterface(void) {
+    NSCAssert(UsagePopoverOpens(@"AXPopUpButton",@"用量：5 小时限额的 52%",@YES),@"manual quota expansion can trigger one observation");
+    NSCAssert(!UsagePopoverOpens(@"AXPopUpButton",@"用量：5 小时限额的 52%",@NO) &&
+        !UsagePopoverOpens(@"AXPopUpButton",@"用量：5 小时限额的 52%",@1) &&
+        !UsagePopoverOpens(@"AXStaticText",@"用量：5 小时限额的 52%",@YES) &&
+        !UsagePopoverOpens(@"AXPopUpButton",@"其他菜单",@YES),@"closing, malformed state, text and unrelated menus cannot trigger quota reads");
+    UsagePopoverObserver *events = [UsagePopoverObserver new]; NSObject *eventButton = [NSObject new];
+    NSCAssert([events acceptButton:eventButton role:@"AXPopUpButton" title:@"用量：5 小时限额的 52%" expanded:@YES] &&
+        ![events acceptButton:eventButton role:@"AXPopUpButton" title:@"用量：5 小时限额的 52%" expanded:@YES],@"one opening produces one observation despite duplicate notifications");
+    NSCAssert(![events acceptButton:eventButton role:@"AXPopUpButton" title:@"用量：5 小时限额的 52%" expanded:@NO] &&
+        [events acceptButton:eventButton role:@"AXPopUpButton" title:@"用量：5 小时限额的 53%" expanded:@YES],@"closing rearms the next manual opening without observing on close");
     NSDictionary *(^node)(NSString *,NSDictionary *,NSArray *) = ^NSDictionary *(NSString *role,NSDictionary *attrs,NSArray *children) {
         NSMutableDictionary *n = [attrs mutableCopy]; n[@"AXRole"] = role; n[@"AXChildren"] = children; n[@"testNodeID"] = NSUUID.UUID.UUIDString; return n;
     };
@@ -367,7 +456,7 @@ void TestUsageInterface(void) {
     NSMutableDictionary *otherPage = [closed mutableCopy]; otherPage[@"page"] = [url stringByAppendingString:@"2"];
     NSCAssert(MergeUsageInterface(first,otherPage,@[@1,@123,@456],now)[@"sd"],@"same validated account retains quota across Code conversations");
     NSCAssert(!MergeUsageInterface(first,@{@"status":@"需辅助功能权限"},@[@1,@123,@456],now)[@"fh"],@"permission loss clears values");
-    NSCAssert([UsageInterfaceTimeLabel(nil,now) isEqual:@"尚未观察到"] && [UsageInterfaceTimeLabel(second[@"sd"],now) hasPrefix:@"上次显示"],@"missing and last observation remain explicit");
+    NSCAssert([UsageInterfaceTimeLabel(nil,now) isEqual:@"尚未观察到"] && [UsageInterfaceTimeLabel(second[@"sd"],now) rangeOfString:@"^[0-9]{2}:[0-9]{2}:[0-9]{2}$|^[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}$" options:NSRegularExpressionSearch].location != NSNotFound,@"missing observation is explicit; observed values show time only");
     NSMutableDictionary *wrongWeek = [panel mutableCopy];
     wrongWeek[@"AXChildren"] = [panel[@"AXChildren"] arrayByAddingObject:node(@"AXLevelIndicator",@{@"AXDescription":@"每周 · 所有模型",@"AXValue":@8},@[])];
     NSCAssert(!read(@[page(@[button,wrongWeek])])[@"fh"],@"conflicting weekly values fail closed");
@@ -385,6 +474,21 @@ void TestUsageInterface(void) {
     NSDictionary *deep = node(@"AXGroup",@{},@[secondButton]);
     for (NSUInteger i=0;i<45;i++) deep = node(@"AXGroup",@{},@[deep]);
     NSCAssert(read(@[page(@[deep,button])])[@"fh"] && !read(@[page(@[deep])])[@"fh"],@"deep unrelated branches cannot block supported quota controls or become quota candidates");
+    NSDictionary *weeklyButton = node(@"AXPopUpButton",@{@"AXDescription":@"用量：每周 · 所有模型：7%周三19:00 重置"},@[]);
+    NSDictionary *idle = read(@[node(@"AXWebArea",@{@"AXURL":@"https://claude.ai/epitaxy"},@[node(@"AXGroup",@{},@[weeklyButton])])]);
+    NSCAssert(!idle[@"fh"] && [idle[@"sd"][@"percent"] isEqual:@7] && [idle[@"sd"][@"reset"] isEqual:@"周三19:00 重置"],@"idle five-hour window: Code home weekly button supplies only weekly");
+    NSDictionary *idlePanel = node(@"AXGroup",@{},@[
+        node(@"AXLink",@{@"AXURL":@"https://claude.ai/settings/usage"},@[]),
+        node(@"AXStaticText",@{@"AXValue":@"发送第一条消息后开始计时"},@[]),
+        node(@"AXLevelIndicator",@{@"AXDescription":@"5 小时限额",@"AXValue":@0},@[]),
+        node(@"AXLevelIndicator",@{@"AXDescription":@"每周 · 所有模型",@"AXValue":@7},@[])]);
+    NSDictionary *idleOpen = read(@[page(@[weeklyButton,idlePanel])]);
+    NSCAssert([idleOpen[@"fh"][@"percent"] isEqual:@0] && [idleOpen[@"fh"][@"reset"] isEqual:@"发送第一条消息后开始计时"] && [idleOpen[@"sd"][@"percent"] isEqual:@7],@"expanded weekly button refreshes reset five-hour value");
+    NSCAssert(!read(@[page(@[node(@"AXPopUpButton",@{@"AXDescription":@"用量：每周 · 所有模型：8%"},@[]),idlePanel])])[@"sd"],@"weekly button must match its panel");
+    NSCAssert(UsagePopoverOpens(@"AXPopUpButton",@"用量：每周 · 所有模型：7%周三19:00 重置",@YES),@"manual expansion of weekly button triggers one observation");
+    NSDictionary *idleMerged = MergeUsageInterface(first,idle,@[@1,@123,@456],[now dateByAddingTimeInterval:30]);
+    NSCAssert([idleMerged[@"fh"][@"observedAt"] isEqual:now] && ![idleMerged[@"fh"][@"visible"] boolValue] && [idleMerged[@"sd"][@"observedAt"] isEqual:[now dateByAddingTimeInterval:30]],@"weekly-only read keeps five-hour as last observation");
+    NSCAssert(!read(@[node(@"AXWebArea",@{@"AXURL":@"https://claude.ai/epitaxyx"},@[button])])[@"fh"],@"only Code home or conversation pages accepted");
     NSData *syntheticMarker = [NSMutableData dataWithLength:CC_SHA256_DIGEST_LENGTH];
     NSArray *identity = @[@1,@123,@456,@0,@[@1,@2],syntheticMarker];
     NSDictionary *persisted = MergeUsageInterface(nil,open,identity,now);
@@ -400,6 +504,8 @@ void TestUsageInterface(void) {
     NSDictionary *hidden = MergeUsageInterface(restored[@1],@{@"status":@"未观察到 Code 用量"},identity,[now dateByAddingTimeInterval:60]);
     NSCAssert([hidden[@"sd"][@"percent"] isEqual:@7] && [hidden[@"sd"][@"observedAt"] isEqual:now] && ![hidden[@"sd"][@"visible"] boolValue],@"closed interface retains last observation without fabricating freshness");
     NSCAssert(!MergeUsageInterface(restored[@1],closed,@[@2,@123,@456,@0,@[@1,@2],syntheticMarker],now)[@"sd"],@"persisted quota never crosses accounts");
+    NSDictionary *weeklyOnly = LoadedUsageInterface(StoredUsageInterface(@{@1:MergeUsageInterface(nil,idle,identity,now)}),now);
+    NSCAssert([weeklyOnly[@1][@"sd"][@"percent"] isEqual:@7] && !weeklyOnly[@1][@"fh"],@"weekly-only observation persists without inventing five-hour value");
     // Production rejects shared writable ancestors; keep fixtures under the owned home directory.
     NSString *folder = [NSHomeDirectory() stringByAppendingPathComponent:[@".claude-launcher-marker-test-" stringByAppendingString:NSUUID.UUID.UUIDString]];
     NSCAssert([NSFileManager.defaultManager createDirectoryAtPath:folder withIntermediateDirectories:NO attributes:@{NSFilePosixPermissions:@0700} error:nil],@"marker fixture directory");
