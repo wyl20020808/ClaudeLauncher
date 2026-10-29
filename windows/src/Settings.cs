@@ -130,6 +130,40 @@ namespace ClaudeLauncher {
         }
     }
 
+    // SPEC 账号与日志交互 [Windows]：本地 Claude Code 用户名（AGENTS 账号显示名例外）。只读 oauthAccount.displayName，
+    // 不保存、不记录、不导出；纯本地文件读取，不联网、不启动 CLI。
+    public static class CodeUserName {
+        public const long SizeLimit = 32L * 1024 * 1024;
+        // 01：%USERPROFILE%\.claude.json；02～10：账号数据目录（%APPDATA% 与 MSIX 虚拟化两处）下的 ClaudeCodeConfig\.claude.json。
+        public static string[] Candidates(int number, string profile, string roaming, string local) {
+            if (number == 1) return new[] { Path.Combine(profile, ".claude.json") };
+            return ProfileDeletion.Candidates(number, roaming, local).Select(folder => Path.Combine(folder, "ClaudeCodeConfig", ".claude.json")).ToArray();
+        }
+        // 普通文件（非重解析点、非目录）返回“修改时间.大小”，用于判断是否需要重读；不存在或不是普通文件返回 null。
+        public static string Stamp(string path) {
+            try {
+                var info = new FileInfo(path);
+                if (!info.Exists || (info.Attributes & (FileAttributes.ReparsePoint | FileAttributes.Directory)) != 0) return null;
+                return info.LastWriteTimeUtc.Ticks + "." + info.Length;
+            } catch (Exception) { return null; }
+        }
+        // 文件须为当前用户所有、≤32 MB；只取 oauthAccount.displayName 并按别名规则校验，其余内容不保留。任何异常都返回 null。
+        public static string Read(string path) {
+            try {
+                var info = new FileInfo(path);
+                if (Stamp(path) == null || info.Length > SizeLimit) return null;
+                var owner = (System.Security.Principal.SecurityIdentifier)File.GetAccessControl(path, System.Security.AccessControl.AccessControlSections.Owner).GetOwner(typeof(System.Security.Principal.SecurityIdentifier));
+                if (!System.Security.Principal.WindowsIdentity.GetCurrent().User.Equals(owner)) return null;
+                var root = new JavaScriptSerializer { MaxJsonLength = (int)SizeLimit }.DeserializeObject(File.ReadAllText(path)) as Dictionary<string, object>;
+                object account, name;
+                if (root == null || !root.TryGetValue("oauthAccount", out account) || !(account is Dictionary<string, object>)) return null;
+                if (!((Dictionary<string, object>)account).TryGetValue("displayName", out name) || !(name is string)) return null;
+                string valid = AccountNames.Validate((string)name);
+                return String.IsNullOrEmpty(valid) ? null : valid;
+            } catch (Exception) { return null; }
+        }
+    }
+
     // SPEC 账号与日志交互 [Windows]：启动器日志文件 launcher-log.json，与 macOS 同格式，最新在前；只处理启动器自己的文件。
     static class LogStore {
         public static readonly string DefaultPath = Path.Combine(LauncherSettings.DataDirectory, "launcher-log.json");

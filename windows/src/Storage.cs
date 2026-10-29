@@ -366,6 +366,22 @@ namespace ClaudeLauncher {
             }
             Check(AccountNames.Matches(2, "工作", @"C:\x\Claude-Second", "工作") && AccountNames.Matches(2, null, "", "账号 02") && AccountNames.Matches(2, null, "", "2") &&
                 AccountNames.Matches(3, null, @"C:\x\Claude-Profile-03", "profile-03") && AccountNames.Matches(3, null, "", "  ") && !AccountNames.Matches(3, "家", @"C:\x\Claude-Profile-03", "工作"), "账号搜索匹配错误");
+            // 默认用户名：只取 oauthAccount.displayName（合成文件，不读真实 .claude.json）；校验与别名相同；坏文件、缺失、目录、类型不符均为空。
+            string nameFile = Path.Combine(root, "settings", ".claude.json");
+            File.WriteAllText(nameFile, "{\"oauthAccount\":{\"displayName\":\"  Eric \",\"emailAddress\":\"x@example.invalid\"},\"other\":1}");
+            Check(CodeUserName.Read(nameFile) == "Eric", "本地用户名应读取并去除空白");
+            string firstStamp = CodeUserName.Stamp(nameFile);
+            foreach (string bad in new[] { "{\"oauthAccount\":{\"displayName\":\"a\\nb\"}}", "not json", "{\"oauthAccount\":{\"displayName\":5}}", "{\"oauthAccount\":\"x\"}", "{}", "[]",
+                "{\"oauthAccount\":{\"displayName\":\"" + new string('长', 25) + "\"}}", "{\"oauthAccount\":{\"displayName\":\"   \"}}" }) {
+                File.WriteAllText(nameFile, bad);
+                Check(CodeUserName.Read(nameFile) == null, "无效用户名文件必须回落：" + bad);
+            }
+            Check(CodeUserName.Stamp(nameFile) != firstStamp, "文件变化时修改戳应变化");
+            Check(CodeUserName.Read(Path.Combine(root, "missing.json")) == null && CodeUserName.Stamp(Path.Combine(root, "missing.json")) == null && CodeUserName.Read(root) == null && CodeUserName.Stamp(root) == null, "缺失文件或目录必须回落");
+            string[] firstCandidates = CodeUserName.Candidates(1, @"C:\Users\x", @"C:\Users\x\AppData\Roaming", @"C:\Users\x\AppData\Local");
+            string[] secondCandidates = CodeUserName.Candidates(2, @"C:\Users\x", @"C:\Users\x\AppData\Roaming", @"C:\Users\x\AppData\Local");
+            Check(firstCandidates.SequenceEqual(new[] { @"C:\Users\x\.claude.json" }) &&
+                secondCandidates.SequenceEqual(new[] { @"C:\Users\x\AppData\Roaming\Claude-Second\ClaudeCodeConfig\.claude.json", @"C:\Users\x\AppData\Local\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\Claude-Second\ClaudeCodeConfig\.claude.json" }), "用户名候选路径错误");
             // 日志文件：与 macOS 同格式往返、最新在前；整体损坏为空；单条类型／级别／实例不符丢弃；数字页码规则。
             string logFile = Path.Combine(root, "settings", "launcher-log.json");
             Check(LogStore.Load(logFile).Count == 0, "缺少日志文件应为空");

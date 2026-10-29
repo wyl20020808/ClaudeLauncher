@@ -140,6 +140,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup.ps1
 
 ## 验证记录
 
+### 账号默认用户名与实例卡片精简（2026-10-29，feature/windows-account-names，对应 macOS 1.7.13）
+
+- 位置核对（已执行，只读元数据，未读内容）：本机只有 01 的 `%USERPROFILE%\.claude.json`（当前用户所有、非链接）；02～10 的 `ClaudeCodeConfig\.claude.json` 都不存在，03 的 `ClaudeCodeConfig` 为空目录。02～10 的位置按 macOS 规则推定，**未实测**。
+- 自检（已执行）：`build.ps1 -Preview` 通过，LauncherTests 310 项、`--self-test` 210 项。新增：合成文件读取与去空白、控制字符／超长／非字符串／坏 JSON／缺失／目录回落、修改戳变化、候选路径；界面中默认名显示、别名优先与清除后回落、文件变化重读、缺失回落、按用户名搜索、不进入诊断和导出、卡片不再显示目录与 Code 标签、悬停提示包含两者。测试与离屏预览均不读取真实 `.claude.json`。
+- GUI（**未验证**）：真实启动器中 01 是否显示本机 Code 用户名、02～10 在使用 Claude Code 后的显示、卡片悬停提示。
+
 ### 日志持久化与日志页改版（2026-10-29，feature/windows-log-persist，对应 macOS 1.7.11）
 
 - 自检（已执行）：`build.ps1 -Preview` 通过，LauncherTests 302 项、`--self-test` 198 项。新增：日志文件与 macOS 同格式往返、坏记录与整体损坏处理、数字页码规则；界面中 6 个时间选项与 7 天默认、页码导航、汇总文字、写入文件、重启后恢复、“本次运行”只含新进程记录。日志页与设置页离屏图已人工查看；预览与测试的日志文件写在临时目录并清理。

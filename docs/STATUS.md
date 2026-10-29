@@ -1,5 +1,13 @@
 # 项目状态
 
+## Windows 账号默认用户名与实例卡片精简（2026-10-29，feature/windows-account-names，基于 feature/windows-log-persist，对应 macOS 1.7.13，未发布）
+
+- 按 AGENTS「账号显示名例外」与 SPEC：无别名时显示本地 Claude Code 用户名“用户名 · NN”，01 读 `%USERPROFILE%\.claude.json`，02～10 读数据目录（`%APPDATA%` 与 MSIX 虚拟化两处候选）下的 `ClaudeCodeConfig\.claude.json`；只取 `oauthAccount.displayName`，按别名规则校验，文件须为当前用户所有的普通文件、≤32 MB；只在内存缓存并按修改时间与大小重读，不保存、不记录、不导出、不进诊断。搜索也匹配该用户名。
+- 位置核对只读元数据：本机只有 01 的文件存在；02～10 无此文件（03 的 `ClaudeCodeConfig` 为空），位置按 macOS 规则推定，未实测。
+- 实例卡片只显示名称（上）和运行状态（左下），目录与 Code 配置状态移到卡片悬停提示；限额区仍为“未接入”占位。
+- 自检：`build.ps1 -Preview` 通过，LauncherTests 310 项、`--self-test` 210 项、离屏预览；测试与预览不读取真实 `.claude.json`。
+- 未验证：真实启动器中的用户名显示（01 及使用 Code 后的 02～10）、卡片悬停提示。
+
 ## Windows 日志持久化与日志页改版（2026-10-29，feature/windows-log-persist，对应 macOS 1.7.11，未发布）
 
 - 1.7.10 交接第 1～3 项已于本日推送 dev／main（`37b5573`），Windows 未发布新版本，Release 仍为 windows-v1.7.3。第 4 项（项目管理）未做；第 5、6 项未调查，未读写 Claude 目录、Cookies 或加密数据。

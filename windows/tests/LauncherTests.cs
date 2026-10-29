@@ -220,6 +220,33 @@ public static class LauncherTests {
         Check(ui.SetAlias(2, "a\nb") != null && ui.SetAlias(2, new string('长', 25)) != null && AccountNames.Load(Path.Combine(Path.GetDirectoryName(settingsFile), "account-names.json"))[2] == "工作", "Invalid alias must be rejected without changes");
         Check(ui.SetAlias(2, "   ") == null && all.OfType<TextBlock>().Count(t => t.Text == "账号 02") == 2, "Empty alias restores default name");
         Check(!new LauncherSettings().ExportJson().Contains("工作"), "Aliases must not be exported with settings");
+
+        // 默认用户名（合成 .claude.json，不读真实文件）：无别名时显示“用户名 · NN”，别名优先，文件变化后重读，缺失回落“账号 NN”。
+        string nameFile = Path.Combine(Path.GetDirectoryName(settingsFile), "code-02.claude.json");
+        File.WriteAllText(nameFile, "{\"oauthAccount\":{\"displayName\":\"Eric\",\"emailAddress\":\"x@example.invalid\"}}");
+        ui.CodeNameFiles = n => n == 2 ? new[] { nameFile } : new string[0];
+        var renderAccounts = typeof(LauncherUI).GetMethod("Render", flags);
+        renderAccounts.Invoke(ui, null);
+        Check(all.OfType<TextBlock>().Count(t => t.Text == "Eric · 02") == 2 && all.OfType<TextBlock>().Count(t => t.Text == "账号 01") == 2, "Default name from local Claude Code profile");
+        search.Text = "eric";
+        Check(shown(2) && !shown(1), "Search must match the default user name");
+        search.Text = "";
+        Check(ui.SetAlias(2, "工作") == null && all.OfType<TextBlock>().Count(t => t.Text == "工作 · 02") == 2, "Alias overrides the default name");
+        Check(ui.SetAlias(2, "") == null && all.OfType<TextBlock>().Count(t => t.Text == "Eric · 02") == 2, "Clearing alias falls back to the default name");
+        File.WriteAllText(nameFile, "{\"oauthAccount\":{\"displayName\":\"Eric Wang\"}}");
+        renderAccounts.Invoke(ui, null);
+        Check(all.OfType<TextBlock>().Count(t => t.Text == "Eric Wang · 02") == 2, "Changed file must be re-read");
+        File.Delete(nameFile);
+        renderAccounts.Invoke(ui, null);
+        Check(all.OfType<TextBlock>().Count(t => t.Text == "账号 02") == 2 && !ui.DiagnosticsText().Contains("Eric") && !new LauncherSettings().ExportJson().Contains("Eric"), "Missing file falls back; name never exported or in diagnostics");
+        ui.CodeNameFiles = n => new string[0];
+
+        // 实例卡片只显示名称与状态；目录与 Code 状态在悬停提示中。
+        var cardTexts = Children(ui.Snapshot(0, state)).OfType<TextBlock>().Select(t => t.Text).ToList();
+        Check(!cardTexts.Any(t => t.StartsWith("Code ") || t == "默认目录" || t == "Second"), "Cards must not show folder or Code chips");
+        var cards = (System.Collections.IDictionary)typeof(LauncherUI).GetField("cards", flags).GetValue(ui);
+        string tip = ((Border)cards[2].GetType().GetField("Root").GetValue(cards[2])).ToolTip as string;
+        Check(tip != null && tip.Contains("目录：") && tip.Contains("Code "), "Card tooltip must carry folder and Code status");
     }
     static void TestLogsPage(LauncherUI ui, string settingsFile, List<Instance> state) {
         var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;

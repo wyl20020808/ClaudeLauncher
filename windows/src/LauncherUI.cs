@@ -29,7 +29,7 @@ namespace ClaudeLauncher {
         static readonly string[][] Palette = { new[] { "#FCE7D4", "#C0743A" }, new[] { "#E9E3FA", "#6A55C8" }, new[] { "#DDF0E6", "#3C8A68" }, new[] { "#FCE3DD", "#C75F47" } };
         static readonly FontFamily Icons = new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets");
 
-        sealed class Card { public Border Root; public Ellipse Dot; public TextBlock Title, Status, Code, Folder; public Button Action; }
+        sealed class Card { public Border Root; public Ellipse Dot; public TextBlock Title, Status; public Button Action; }
         sealed class Row { public Border Root; public Ellipse Dot; public TextBlock Name, Status, Recent; public CheckBox Select; }
 
         // 账号页：本地别名、搜索与状态筛选、可见选择（SPEC 账号与日志交互）。
@@ -142,7 +142,28 @@ namespace ClaudeLauncher {
             } catch (Exception error) { Diagnostics.Error("ui_art_error", error); return null; }
         }
 
-        public LauncherUI() : this(LauncherSettings.Load(LauncherSettings.DefaultPath), LauncherSettings.DefaultPath) { }
+        public LauncherUI() : this(LauncherSettings.Load(LauncherSettings.DefaultPath), LauncherSettings.DefaultPath) {
+            string profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            CodeNameFiles = n => CodeUserName.Candidates(n, profile, Core.Root, ProfileDeletion.Local);
+            Render();
+        }
+        // 默认用户名的候选文件；测试与离屏预览不读取真实文件（默认无候选，可注入合成文件）。
+        internal Func<int, string[]> CodeNameFiles = n => new string[0];
+        // 内存缓存：账号 → (文件, 修改时间.大小, 用户名)。不持久化。
+        readonly Dictionary<int, Tuple<string, string, string>> codeNames = new Dictionary<int, Tuple<string, string, string>>();
+        string CodeName(int n) {
+            foreach (string file in CodeNameFiles(n)) {
+                string stamp = CodeUserName.Stamp(file);
+                if (stamp == null) continue;
+                Tuple<string, string, string> cached;
+                if (codeNames.TryGetValue(n, out cached) && cached.Item1 == file && cached.Item2 == stamp) return cached.Item3;
+                string name = CodeUserName.Read(file);
+                codeNames[n] = Tuple.Create(file, stamp, name);
+                return name;
+            }
+            codeNames.Remove(n);
+            return null;
+        }
         // 测试与离屏预览传入合成设置和临时路径，不读写用户的真实设置。
         internal LauncherUI(LauncherSettings initial, string path) {
             settings = initial; draft = initial.Clone(); settingsPath = path;
@@ -453,12 +474,10 @@ namespace ClaudeLauncher {
             var badge = At(canvas, new Grid(), 22, 39, 44, 44);
             badge.Children.Add(new Ellipse { Fill = B(palette[0]), Stroke = B("#40" + palette[1].Substring(1)), StrokeThickness = 1 });
             badge.Children.Add(new TextBlock { Text = n.ToString(), FontSize = 20, FontWeight = FontWeights.Medium, Foreground = B(palette[1]), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center });
-            card.Title = At(canvas, T(DisplayName(n), 18, Ink, FontWeights.SemiBold), 84, 16, 300);
-            card.Dot = At(canvas, new Ellipse { Fill = B("#B9B1A7") }, 86, 51, 9, 9);
-            card.Status = At(canvas, T("读取状态…", 13, Muted, FontWeights.Normal), 102, 44, 150);
-            var chips = At(canvas, new StackPanel { Orientation = Orientation.Horizontal }, 84, 80);
-            card.Folder = Chip(chips, n == 1 ? "默认目录" : IOPath.GetFileName(Core.Folder(n, Core.Root)).Replace("Claude-", ""));
-            card.Code = Chip(chips, Core.CodeState(n, new Instance[0], null));
+            // SPEC 实例卡片：只显示名称（上）与运行状态（左下）；目录与 Code 配置状态在悬停提示中。
+            card.Title = At(canvas, T(DisplayName(n), 18, Ink, FontWeights.SemiBold), 84, 26, 300);
+            card.Dot = At(canvas, new Ellipse { Fill = B("#B9B1A7") }, 86, 81, 9, 9);
+            card.Status = At(canvas, T("读取状态…", 13, Muted, FontWeights.Normal), 102, 74, 280);
             string[][] quota = { new[] { "", "5小时限额" }, new[] { "", "周限额" } };
             for (int row = 0; row < 2; row++) {
                 double y = 18 + row * 46;
@@ -475,11 +494,6 @@ namespace ClaudeLauncher {
             };
             At(canvas, MoreButton(n), 738, 47, 30, 30);
             return card;
-        }
-        static TextBlock Chip(StackPanel chips, string text) {
-            var label = new TextBlock { Text = text, FontSize = 12, Foreground = B(Muted) };
-            chips.Children.Add(new Border { Child = label, CornerRadius = new CornerRadius(6), Background = B("#FAF6EF"), BorderBrush = B("#E8DFD3"), BorderThickness = new Thickness(1), Padding = new Thickness(8, 3, 8, 3), Margin = new Thickness(0, 0, 8, 0) });
-            return label;
         }
         Row BuildRow(int n) {
             var row = new Row();
@@ -857,9 +871,11 @@ namespace ClaudeLauncher {
 
         // ---- 账号页：别名、筛选、选择 ----
         int accountsShown;
+        // 别名优先，其次本地 Claude Code 用户名，最后“账号 NN”；编号始终保留。
         string DisplayName(int n) {
             string alias;
-            return accountNames.TryGetValue(n, out alias) ? alias + " · " + Two(n) : "账号 " + Two(n);
+            if (!accountNames.TryGetValue(n, out alias)) alias = CodeName(n);
+            return alias != null ? alias + " · " + Two(n) : "账号 " + Two(n);
         }
         // 当前可见且选中的账号；隐藏的选择在此清除，避免误操作。
         void UpdateSelection() {
@@ -969,10 +985,13 @@ namespace ClaudeLauncher {
                 card.Status.Text = state; card.Status.Foreground = B(broken ? "#C9604A" : Muted);
                 card.Status.ToolTip = errors.ContainsKey(n) ? errors[n] : found.Count > 0 ? "主进程 PID：" + String.Join("、", found.Select(x => x.ProcessId)) : Core.DisplayFolder(n);
                 card.Dot.Fill = B(dot);
+                // 目录与 Code 配置状态移入卡片悬停提示（SPEC 实例卡片）。
                 LaunchRecord record; launched.TryGetValue(n, out record);
-                card.Code.Text = healthy ? Core.CodeState(n, instances, record) : "Code 未确认";
-                ((FrameworkElement)card.Code.Parent).ToolTip = n == 1 ? "01 沿用默认 Code 配置，与普通终端 CLI 共用。" : card.Code.Text == "Code 已指定" ? "本次启动时已指定独立 Code 配置；尚未验证 Code 的实际写入位置。" :
-                    card.Code.Text == "Code 待启动" ? "从启动器启动后才会指定独立 Code 配置。" : "运行中实例的 Code 配置未确认。保存工作后正常退出该 Claude，再从这里启动；不会迁移或删除旧记录。";
+                string code = healthy ? Core.CodeState(n, instances, record) : "Code 未确认";
+                string codeNote = n == 1 ? "01 沿用默认 Code 配置，与普通终端 CLI 共用。" : code == "Code 已指定" ? "本次启动时已指定独立 Code 配置；尚未验证 Code 的实际写入位置。" :
+                    code == "Code 待启动" ? "从启动器启动后才会指定独立 Code 配置。" : "运行中实例的 Code 配置未确认。保存工作后正常退出该 Claude，再从这里启动；不会迁移或删除旧记录。";
+                card.Root.ToolTip = "目录：" + Core.DisplayFolder(n) + "\n" + code + "：" + codeNote;
+                if (visible) { string name = DisplayName(n); card.Title.Text = rows[n].Name.Text = name; rows[n].Name.ToolTip = name; }
                 string title = incomplete ? "重试删除" : isChecking ? "检查中" : starting ? "启动中" : found.Count > 0 ? "打开" : hasData ? "启动" : "创建";
                 card.Action.Content = title;
                 card.Action.Style = (Style)window.FindResource(title == "打开" ? "Primary" : title == "创建" ? "Create" : "Btn");
@@ -987,7 +1006,7 @@ namespace ClaudeLauncher {
                 bool rowBusy = starting || isChecking;
                 // 进程扫描失败时不伪装成确定状态（SPEC 账号与日志交互）。
                 string category = !healthy ? "未知" : broken ? "异常" : rowBusy ? "处理中" : found.Count > 0 ? "运行中" : "未运行";
-                string alias; accountNames.TryGetValue(n, out alias);
+                string alias; if (!accountNames.TryGetValue(n, out alias)) alias = CodeName(n);
                 bool matches = AccountNames.Matches(n, alias, Core.DisplayFolder(n), accountSearch.Text) &&
                     (accountStatus.SelectedIndex <= 0 || StatusFilters[accountStatus.SelectedIndex] == category);
                 row.Root.Visibility = matches ? Visibility.Visible : Visibility.Collapsed;
