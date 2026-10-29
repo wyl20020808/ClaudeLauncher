@@ -1,8 +1,8 @@
-# Claude 多开启动器 1.7 使用说明（Windows）
+# Claude 多开启动器 1.8 使用说明（Windows）
 
 ## 安装
 
-运行 `ClaudeLauncherSetup-1.7.0.exe`（需 Windows 10 2004 / 19041 及以上）。已安装旧版时会先提示并卸载旧版（只卸载启动器本身，不删账号数据、不退出 Claude），再安装新版。安装到当前用户的 `%LOCALAPPDATA%\Programs\Claude 多开启动器`，不需要管理员权限；开始菜单会出现「Claude 多开启动器」，桌面快捷方式可选。需已安装官方 Claude 桌面版，系统需支持 .NET Framework 4.8 / WPF。
+运行 `ClaudeLauncherSetup-<版本>.exe`（需 Windows 10 2004 / 19041 及以上）。已安装旧版时会先提示并卸载旧版（只卸载启动器本身，不删账号数据、不退出 Claude），再安装新版。安装到当前用户的 `%LOCALAPPDATA%\Programs\Claude 多开启动器`，不需要管理员权限；开始菜单会出现「Claude 多开启动器」，桌面快捷方式可选。需已安装官方 Claude 桌面版，系统需支持 .NET Framework 4.8 / WPF。
 
 安装程序和启动器目前没有代码签名，首次运行时 Windows 可能提示“Windows 已保护你的电脑”，点「更多信息 → 仍要运行」即可。卸载在“设置 → 应用”中进行，只删除启动器本身，**不会删除任何账号数据**。
 

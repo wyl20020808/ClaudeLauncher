@@ -1,5 +1,13 @@
 # 项目状态
 
+## Windows 1.8.0 发布准备（2026-10-29，dev，未发布）
+
+- dev 依次快进到 C1～C5（`392db6b`），再合并 origin/main（macOS 1.7.15，无冲突）。版本改为 1.8.0（程序集 1.8.0.0）：`Updates.cs`、`installer/ClaudeLauncher.iss`、windows/README、使用说明；发布说明 [RELEASE-windows-1.8.0.md](RELEASE-windows-1.8.0.md)。
+- 版本递增暴露 `tests/UpdateTests.cs` 把 1.8.0 写死为“更高版本”，已改为相对当前版本构造。
+- 自检：LauncherTests 310 项、`--self-test` 210 项；`test-install.ps1` 成功／回滚／篡改 3 个场景通过；`publish-release.ps1 -DryRun` 使用正式发布私钥（仅内存解密）31 秒通过：私钥与客户端公钥一致，windows-v1.8.0 尚不存在，从 Latest `macos-v1.7.15` 带入 macOS 清单并验签、DMG 1984327 字节哈希一致，三份清单签名并本地验签。演练 Setup 2810807 字节、SHA-256 `88c45065cb0b2866b6f3bd67513d89f9a7053b740a878da016520ba18b92f8c7`（正式发布会重新构建，以发布记录为准）。
+- 未验证：C1～C3 的桌面 GUI；真实发布路径（草稿 API 核对、转正式、缓存等待、回滚）；客户端 1.7.3 → 1.8.0 软件内更新（1.7.3 仍会先读自建服务，过渡期发布脚本同步自建）。
+- 尚未执行：推送 dev／main、正式发布 windows-v1.8.0（待用户确认）。
+
 ## Windows 发布脚本加固（2026-10-29，feature/windows-publish-hardening，未发布）
 
 - `windows/scripts/publish-release.ps1` 按 `scripts/publish-macos.sh` 加固：上传后经 GitHub API 下载草稿附件核对清单与哈希（不经 latest/download），不符停在草稿，原 Latest 与自建服务不变；转正式前记下上一版 Latest；只有内容确认不符才回滚（恢复自建清单、改回草稿、显式恢复上一版 Latest）；latest/download 最多等 10 分钟，仅缓存未更新或自建服务暂时不可达时保留发布、列出未完成项并以状态 2 退出。`-DryRun` 遇同名 Release 只警告。过渡期仍同步自建服务。
