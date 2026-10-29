@@ -122,7 +122,7 @@ macOS（`src/main.m`）和 Windows（`windows/`）各自原生实现，共同遵
 只检查元数据，从不读取内容。目录及各级上级不得为链接或非目录；以下存储项不得为链接、非本人所有、普通文件硬链接：
 `Cookies`、`Cookies-journal`、`Network`、`Local Storage`、`Session Storage`、`IndexedDB`、`Partitions`、`Local State`、`Preferences`、`config.json`、`Cache`、`Code Cache`、`Service Worker`、`ClaudeCodeConfig`。
 
-Windows 对应：重解析点（符号链接、junction）等同链接；硬链接数通过文件信息查询。所有者按 ACL 所有者 SID 判断，以管理员身份创建的文件属于 Administrators 组，会被拒绝。
+Windows 对应：重解析点（符号链接、junction）等同链接；硬链接数通过文件信息查询。所有者按 ACL 所有者 SID 判断：接受当前用户，或启动器自身令牌的默认所有者（启动器以管理员运行或关闭 UAC 时为 Administrators 组，与其自建目录一致）；其他所有者拒绝。
 
 ## 项目清单
 

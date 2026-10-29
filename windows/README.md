@@ -128,7 +128,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup.ps1
 1. **01 数据目录**：MSIX 版为 `%LOCALAPPDATA%\Claude-Data\claude_pzs8sxrjxfjjc`，旧安装可能是 `%APPDATA%\Claude`。02～10 的基础目录为 `%APPDATA%`，沿用已有数据。商店版可能把目录虚拟化到 `Packages\…\LocalCache\Roaming\`，识别、校验、显示和删除都同时覆盖这两处。（SPEC 已确认）
 2. **托盘中没有可见窗口的实例**：仅当该账号恰好一个已核实主进程且无可见窗口时，用**该 PID 自身的可执行文件**、同一 `--user-data-dir` 再启动一次，由 Claude 单实例锁转交给已有进程显示窗口。5 秒后重新扫描，若同账号出现第二个主进程则报错，不结束任何进程。（SPEC 已确认）
 3. **新目录权限**：不修改 ACL，继承 `%APPDATA%` 的默认权限（本人、SYSTEM、Administrators），不等同于 macOS 的 0700。（SPEC 已确认）
-4. **所有者校验**：以管理员身份创建的文件，所有者是 Administrators 组，会被拒绝（失败即停止）。（SPEC 已确认）
+4. **所有者校验**：接受当前用户或启动器令牌默认所有者（提权／关闭 UAC 时为 Administrators 组）；其他所有者拒绝（失败即停止）。（SPEC 已确认）
 5. **进程范围**：只扫描当前登录会话中的进程。（SPEC 已确认）
 6. **额外功能**：本地诊断日志（设置页“本地诊断日志 → 打开”）；1.2.0 兼容的 `--apply-update`。
 10. **更新签名者比对**：程序与 Setup 尚无 Authenticode 签名，当前无法执行“同一证书”检查，只依赖清单 RSA 签名与 SHA-256；签名后自动生效。

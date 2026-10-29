@@ -52,8 +52,12 @@ namespace ClaudeLauncher {
         }
         public static void Validate(int number, string roaming, string local) { Validate(number, roaming, local, true); }
         // recursive=false 只复查目录链与顶层存储项，用于后台递归检查完成后、启动前的快速复核。
+        // 本进程新建文件的所有者：当前用户，或令牌默认所有者（已提权或关闭 UAC 的管理员为 Administrators 组）。
+        public static bool OwnedByMe(SecurityIdentifier owner) {
+            var me = WindowsIdentity.GetCurrent();
+            return owner != null && (owner.Equals(me.User) || owner.Equals(me.Owner));
+        }
         public static void Validate(int number, string roaming, string local, bool recursive) {
-            var user = WindowsIdentity.GetCurrent().User;
             foreach (string folder in ProfileDeletion.Candidates(number, roaming, local)) {
                 for (string entry = folder; entry != null; entry = Path.GetDirectoryName(entry)) {
                     FileAttributes? attributes = Attributes(entry);
@@ -62,11 +66,11 @@ namespace ClaudeLauncher {
                     if ((attributes.Value & FileAttributes.Directory) == 0) throw new IOException("账号目录路径不是文件夹，已停止：" + entry);
                 }
                 if (Attributes(folder) == null) continue;
-                foreach (string name in Items) Check(Path.Combine(folder, name), user, recursive);
+                foreach (string name in Items) Check(Path.Combine(folder, name), recursive);
             }
         }
         // 逐项检查存储项及其内部：不跟随链接，检查期间消失的条目跳过，其余异常一律停止。
-        static void Check(string root, SecurityIdentifier user, bool recursive) {
+        static void Check(string root, bool recursive) {
             var pending = new Stack<string>(); pending.Push(Extended(root));
             while (pending.Count > 0) {
                 string path = pending.Pop(), shown = Display(path);
@@ -80,7 +84,7 @@ namespace ClaudeLauncher {
                     owner = (SecurityIdentifier)security.GetOwner(typeof(SecurityIdentifier));
                 } catch (FileNotFoundException) { continue; } catch (DirectoryNotFoundException) { continue; }
                 catch (UnauthorizedAccessException) { throw new IOException("无法读取存储项所有者，已停止：" + shown); }
-                if (!user.Equals(owner)) throw new IOException("存储项不属于当前用户，已停止：" + shown);
+                if (!OwnedByMe(owner)) throw new IOException("存储项不属于当前用户，已停止：" + shown);
                 if (!directory && LinkCount(path) > 1) throw new IOException("存储项是硬链接，已停止：" + shown);
                 if (!directory || !recursive) continue;
                 try { foreach (string entry in Directory.EnumerateFileSystemEntries(path)) pending.Push(entry); }
@@ -111,6 +115,8 @@ namespace ClaudeLauncher {
             const string app = @"""C:\Program Files\WindowsApps\Claude_4.29.0.0_x64__pzs8sxrjxfjjc\app\claude.exe""";
             try {
                 Directory.CreateDirectory(root);
+                var me = WindowsIdentity.GetCurrent();
+                Check(Storage.OwnedByMe(me.User) && Storage.OwnedByMe(me.Owner) && !Storage.OwnedByMe(new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null)) && !Storage.OwnedByMe(null), "所有者判断错误");
                 UpdateChecks(root);
                 // 账号与 Code 配置映射
                 var folders = Enumerable.Range(1, 10).Select(n => Core.Folder(n, roaming)).ToArray();

@@ -153,7 +153,7 @@ namespace ClaudeLauncher {
                 var info = new FileInfo(path);
                 if (Stamp(path) == null || info.Length > SizeLimit) return null;
                 var owner = (System.Security.Principal.SecurityIdentifier)File.GetAccessControl(path, System.Security.AccessControl.AccessControlSections.Owner).GetOwner(typeof(System.Security.Principal.SecurityIdentifier));
-                if (!System.Security.Principal.WindowsIdentity.GetCurrent().User.Equals(owner)) return null;
+                if (!Storage.OwnedByMe(owner)) return null;
                 var root = new JavaScriptSerializer { MaxJsonLength = (int)SizeLimit }.DeserializeObject(File.ReadAllText(path)) as Dictionary<string, object>;
                 object account, name;
                 if (root == null || !root.TryGetValue("oauthAccount", out account) || !(account is Dictionary<string, object>)) return null;
