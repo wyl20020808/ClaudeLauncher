@@ -1578,7 +1578,7 @@ static const unsigned CardFill = 0xFFFCF7;
 }
 - (void)runUpdateCheck:(BOOL)manual {
     if (!NetworkEnabled) {
-        if (manual) [self alert:@"联网更新未启用" detail:@"如需检查启动器更新，请在系统设置 → 关于软件中启用 GitHub 更新并保存，然后再次点击检查更新。不会访问 Claude 或 Anthropic。"];
+        if (manual) [self alert:@"联网更新未启用" detail:@"如需检查启动器更新，请在系统设置 → 关于中启用 GitHub 更新并保存，然后再次点击检查更新。不会访问 Claude 或 Anthropic。"];
         return;
     }
     if (self.updating) { if (manual) [self alert:@"正在检查更新" detail:@"请稍候。"]; return; }
