@@ -512,6 +512,7 @@ static void DrawPanel(NSRect rect, CGFloat radius, CGFloat alpha) {
 @property NSString *symbol;   // Optional leading SF Symbol.
 @property CGFloat fontSize;   // 0 keeps the card-button default.
 @property BOOL primary;       // Filled brown style regardless of title.
+@property BOOL plain;         // No fill or border unless primary (segmented tabs).
 @end
 @implementation ActionButton
 - (void)drawRect:(NSRect)dirtyRect {
@@ -522,9 +523,10 @@ static void DrawPanel(NSRect rect, CGFloat radius, CGFloat alpha) {
     NSColor *fill = filled ? Hex(0xA8765A) : Hex(0xFFFFFF);
     NSColor *text = filled ? NSColor.whiteColor : [self.title isEqualToString:@"创建"] ? Hex(0x9A6447) : Hex(0x2B2622);
     if (!self.enabled) { fill = Hex(0xEFE9E1); text = Hex(0xA59B90); }
+    if (self.plain && !filled) { fill = NSColor.clearColor; text = Hex(0x5A524A); }
     if (self.highlighted && self.enabled) fill = [fill blendedColorWithFraction:0.12 ofColor:NSColor.blackColor];
     [fill setFill]; [shape fill];
-    if (!filled) { [Hex(0xE3D9CD) setStroke]; shape.lineWidth = 1; [shape stroke]; }
+    if (!filled && !self.plain) { [Hex(0xE3D9CD) setStroke]; shape.lineWidth = 1; [shape stroke]; }
     NSDictionary *attributes = @{NSFontAttributeName:[NSFont systemFontOfSize:self.fontSize ?: (pill ? 16 : 17) weight:NSFontWeightMedium],NSForegroundColorAttributeName:text};
     if (self.symbol) {
         NSImage *icon = Tinted(self.symbol, (self.fontSize ?: 14)-1, text);
@@ -533,6 +535,25 @@ static void DrawPanel(NSRect rect, CGFloat radius, CGFloat alpha) {
         [icon drawInRect:NSMakeRect(x,NSMidY(self.bounds)-icon.size.height/2,icon.size.width,icon.size.height) fromRect:NSZeroRect operation:NSCompositingOperationSourceOver fraction:1 respectFlipped:YES hints:nil];
         [self.title drawAtPoint:NSMakePoint(x+icon.size.width+gap,NSMidY(self.bounds)-size.height/2) withAttributes:attributes];
     } else DrawCentered(self.title, self.bounds, attributes);
+    if (self.window.firstResponder == self && NSApp.active) {
+        [NSColor.keyboardFocusIndicatorColor setStroke]; shape.lineWidth = 3; [shape stroke];
+    }
+}
+@end
+
+// Brown pill switch; a real NSButtonTypeSwitch underneath so state, clicks and accessibility stay native.
+@interface ToggleSwitch : NSButton
+@end
+@implementation ToggleSwitch
+- (void)drawRect:(NSRect)dirtyRect {
+    BOOL on = self.state == NSControlStateValueOn;
+    NSRect track = NSInsetRect(self.bounds,1,1);
+    NSBezierPath *shape = [NSBezierPath bezierPathWithRoundedRect:track xRadius:NSHeight(track)/2 yRadius:NSHeight(track)/2];
+    NSColor *fill = on ? Hex(0xA8765A) : Hex(0xDCD3C8);
+    if (!self.enabled) fill = [fill colorWithAlphaComponent:0.45];
+    [fill setFill]; [shape fill];
+    CGFloat d = NSHeight(track)-4;
+    [NSColor.whiteColor setFill]; [[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(on ? NSMaxX(track)-d-2 : NSMinX(track)+2,NSMinY(track)+2,d,d)] fill];
     if (self.window.firstResponder == self && NSApp.active) {
         [NSColor.keyboardFocusIndicatorColor setStroke]; shape.lineWidth = 3; [shape stroke];
     }
@@ -659,6 +680,8 @@ static const unsigned CardFill = 0xFFFCF7;
 @property NSStatusItem *statusItem;
 @property NSString *lastLogged;
 @property NSTextField *accessibilityStatus;
+@property CGFloat settingsY; // Layout cursor while renderSettings stacks groups and rows.
+@property Canvas *settingsGroup;
 @property NSTextField *message;
 @property NSMutableDictionary<NSNumber *, NSDate *> *starting;
 @property NSMutableSet<NSNumber *> *pendingLaunches;
@@ -1274,95 +1297,143 @@ static const unsigned CardFill = 0xFFFCF7;
 - (NSView *)settingsPage:(NSRect)frame {
     Canvas *page = [self pageTitled:@"系统设置" subtitle:@"只管理本地启动器。更改不会修改 Claude 登录、会话或账号配置。" frame:frame];
     page.paint = ^(NSRect bounds) {
-        DrawPanel(NSMakeRect(36,140,736,556),16,0.9);
-        [Hex(0xEDE4D8) setFill]; NSRectFill(NSMakeRect(206,154,1,524));
+        DrawPanel(NSMakeRect(36,140,736,40),12,0.75);
+        DrawPanel(NSMakeRect(36,192,736,504),16,0.9);
     };
-    NSArray *titles = @[@"常规设置",@"启动行为",@"外观设置",@"数据与存储",@"消息通知",@"关于软件"];
+    NSArray *titles = @[@"常规",@"启动行为",@"外观",@"数据与存储",@"通知",@"关于"];
     NSMutableArray *tabs = [NSMutableArray array];
+    CGFloat width = 728.0/titles.count;
     for (NSInteger i=0;i<(NSInteger)titles.count;i++) {
-        ActionButton *tab = [self toolButton:titles[i] symbol:nil frame:NSMakeRect(48,156+i*48,146,38) action:@selector(settingsTabChanged:)];
-        tab.tag = i; [page addSubview:tab]; [tabs addObject:tab];
+        ActionButton *tab = [self toolButton:titles[i] symbol:nil frame:NSMakeRect(40+i*width,144,width,32) action:@selector(settingsTabChanged:)];
+        tab.tag = i; tab.plain = YES; tab.fontSize = 13; [page addSubview:tab]; [tabs addObject:tab];
     }
     self.settingsTabs = tabs;
-    self.settingsContent = [[Canvas alloc] initWithFrame:NSMakeRect(230,158,518,448)]; [page addSubview:self.settingsContent];
-    self.settingsFeedback = Text(@"更改后点击保存设置",NSMakeRect(230,609,518,22),[NSFont systemFontOfSize:12],Hex(0x6E655C)); [page addSubview:self.settingsFeedback];
-    [page addSubview:[self toolButton:@"恢复默认…" symbol:nil frame:NSMakeRect(424,646,104,34) action:@selector(resetSettings:)]];
-    [page addSubview:[self toolButton:@"撤销更改" symbol:nil frame:NSMakeRect(536,646,104,34) action:@selector(discardSettings:)]];
-    self.saveSettingsButton = [self toolButton:@"保存设置" symbol:nil frame:NSMakeRect(648,646,108,34) action:@selector(saveSettings:)];
+    self.settingsContent = [[Canvas alloc] initWithFrame:NSMakeRect(56,208,696,428)]; [page addSubview:self.settingsContent];
+    self.settingsFeedback = Text(@"更改后点击保存设置",NSMakeRect(58,656,350,20),[NSFont systemFontOfSize:12],Hex(0x6E655C)); [page addSubview:self.settingsFeedback];
+    [page addSubview:[self toolButton:@"恢复默认…" symbol:nil frame:NSMakeRect(424,648,104,34) action:@selector(resetSettings:)]];
+    [page addSubview:[self toolButton:@"撤销更改" symbol:nil frame:NSMakeRect(536,648,104,34) action:@selector(discardSettings:)]];
+    self.saveSettingsButton = [self toolButton:@"保存设置" symbol:nil frame:NSMakeRect(648,648,108,34) action:@selector(saveSettings:)];
     self.saveSettingsButton.primary = YES; [page addSubview:self.saveSettingsButton];
     [self renderSettings]; return page;
 }
 - (void)settingsTabChanged:(NSButton *)sender { self.settingsSection = sender.tag; [self renderSettings]; }
-- (void)settingsText:(NSString *)text y:(CGFloat)y height:(CGFloat)height bold:(BOOL)bold {
-    NSTextField *label = Text(text,NSMakeRect(0,y,518,height),[NSFont systemFontOfSize:bold ? 17 : 13 weight:bold ? NSFontWeightSemibold : NSFontWeightRegular],Hex(bold ? 0x2B2622 : 0x6E655C));
-    label.maximumNumberOfLines = 0; label.lineBreakMode = NSLineBreakByWordWrapping; [self.settingsContent addSubview:label];
+// Starts a titled group card; following rows grow it by 60pt each.
+- (void)settingsHeader:(NSString *)title {
+    if (self.settingsY > 0) self.settingsY += 16;
+    [self.settingsContent addSubview:Text(title,NSMakeRect(2,self.settingsY,400,20),[NSFont systemFontOfSize:13 weight:NSFontWeightSemibold],Hex(0x2B2622))];
+    self.settingsY += 26;
+    Canvas *group = [[Canvas alloc] initWithFrame:NSMakeRect(0,self.settingsY,696,0)];
+    group.paint = ^(NSRect bounds) {
+        NSBezierPath *path = [NSBezierPath bezierPathWithRoundedRect:NSInsetRect(bounds,0.5,0.5) xRadius:12 yRadius:12];
+        [Hex(0xFFFFFF) setFill]; [path fill]; [Hex(0xEDE4D8) setStroke]; [path stroke];
+        [Hex(0xF1EAE1) setFill]; for (CGFloat y=60;y<NSHeight(bounds)-1;y+=60) NSRectFill(NSMakeRect(48,y,NSWidth(bounds)-64,1));
+    };
+    [self.settingsContent addSubview:group]; self.settingsGroup = group;
 }
-- (void)settingToggle:(NSString *)key title:(NSString *)title detail:(NSString *)detail y:(CGFloat)y {
-    NSButton *check = [NSButton checkboxWithTitle:title target:self action:@selector(settingChanged:)];
-    check.identifier = key; check.state = [self.settingsDraft[key] boolValue] ? NSControlStateValueOn : NSControlStateValueOff;
-    check.frame = NSMakeRect(0,y,518,28); check.font = [NSFont systemFontOfSize:14]; [self.settingsContent addSubview:check];
-    [self settingsText:detail y:y+30 height:38 bold:NO];
+// Adds icon, title and detail for one row and returns its top; the caller places the control on the right.
+- (CGFloat)settingsRow:(NSString *)title detail:(NSString *)detail icon:(NSString *)icon detailLabel:(NSTextField **)detailLabel {
+    CGFloat y = self.settingsY; NSFont *small = [NSFont systemFontOfSize:12];
+    BOOL twoLines = detail && [detail boundingRectWithSize:NSMakeSize(410,0) options:NSStringDrawingUsesLineFragmentOrigin attributes:@{NSFontAttributeName:small}].size.height > 18;
+    CGFloat top = !detail ? 20 : twoLines ? 6 : 11;
+    [self.settingsContent addSubview:Symbol(icon,NSMakeRect(16,y+20,20,20),Hex(0xA8765A))];
+    [self.settingsContent addSubview:Text(title,NSMakeRect(48,y+top,420,20),[NSFont systemFontOfSize:14 weight:NSFontWeightMedium],Hex(0x2B2622))];
+    if (detail) {
+        NSTextField *label = Text(detail,NSMakeRect(48,y+top+20,420,twoLines ? 32 : 17),small,Hex(0x8A8178));
+        label.maximumNumberOfLines = 2; label.lineBreakMode = NSLineBreakByWordWrapping; label.toolTip = detail;
+        [self.settingsContent addSubview:label]; if (detailLabel) *detailLabel = label;
+    }
+    NSRect frame = self.settingsGroup.frame; frame.size.height += 60; self.settingsGroup.frame = frame;
+    self.settingsY += 60; return y;
 }
-- (void)settingChoice:(NSString *)key title:(NSString *)title choices:(NSArray *)titles values:(NSArray *)values y:(CGFloat)y {
-    [self settingsText:title y:y+5 height:24 bold:NO];
-    NSPopUpButton *popup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(270,y,248,30) pullsDown:NO];
+- (void)settingToggle:(NSString *)key title:(NSString *)title detail:(NSString *)detail icon:(NSString *)icon {
+    CGFloat y = [self settingsRow:title detail:detail icon:icon detailLabel:nil];
+    ToggleSwitch *toggle = [ToggleSwitch buttonWithTitle:title target:self action:@selector(settingChanged:)];
+    [toggle setButtonType:NSButtonTypeSwitch]; toggle.bordered = NO;
+    toggle.identifier = key; toggle.state = [self.settingsDraft[key] boolValue] ? NSControlStateValueOn : NSControlStateValueOff;
+    toggle.frame = NSMakeRect(696-16-42,y+18,42,24); [self.settingsContent addSubview:toggle];
+}
+- (void)settingChoice:(NSString *)key title:(NSString *)title choices:(NSArray *)titles values:(NSArray *)values icon:(NSString *)icon {
+    CGFloat y = [self settingsRow:title detail:nil icon:icon detailLabel:nil];
+    NSPopUpButton *popup = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(696-16-170,y+15,170,30) pullsDown:NO];
     for (NSUInteger i=0;i<titles.count;i++) { [popup addItemWithTitle:titles[i]]; popup.lastItem.representedObject = values[i]; }
     NSUInteger index = [values indexOfObject:self.settingsDraft[key]]; [popup selectItemAtIndex:index == NSNotFound ? 0 : index];
     popup.enabled = ![key isEqual:@"startPage"] || ![self.settingsDraft[@"rememberPage"] boolValue];
     popup.identifier = key; popup.accessibilityLabel = title; popup.target = self; popup.action = @selector(settingChanged:); [self.settingsContent addSubview:popup];
 }
-- (void)settingsAction:(NSString *)title action:(SEL)action y:(CGFloat)y {
-    [self.settingsContent addSubview:[self toolButton:title symbol:nil frame:NSMakeRect(0,y,250,34) action:action]];
+- (NSTextField *)settingsAction:(NSString *)button action:(SEL)action title:(NSString *)title detail:(NSString *)detail icon:(NSString *)icon {
+    NSTextField *label = nil;
+    CGFloat y = [self settingsRow:title detail:detail icon:icon detailLabel:&label];
+    CGFloat width = MAX(96,[button sizeWithAttributes:@{NSFontAttributeName:[NSFont systemFontOfSize:13 weight:NSFontWeightMedium]}].width+36);
+    ActionButton *control = [self toolButton:button symbol:nil frame:NSMakeRect(696-16-width,y+14,width,32) action:action];
+    control.fontSize = 13; [self.settingsContent addSubview:control]; return label;
+}
+- (void)settingsValue:(NSString *)value title:(NSString *)title icon:(NSString *)icon {
+    CGFloat y = [self settingsRow:title detail:nil icon:icon detailLabel:nil];
+    NSTextField *label = Text(value,NSMakeRect(696-16-240,y+20,240,20),[NSFont systemFontOfSize:13],Hex(0x6E655C));
+    label.alignment = NSTextAlignmentRight; [self.settingsContent addSubview:label];
+}
+- (void)settingsNote:(NSString *)text {
+    NSFont *font = [NSFont systemFontOfSize:12];
+    CGFloat height = ceil([text boundingRectWithSize:NSMakeSize(640,0) options:NSStringDrawingUsesLineFragmentOrigin attributes:@{NSFontAttributeName:font}].size.height);
+    self.settingsY += 14;
+    Canvas *note = [[Canvas alloc] initWithFrame:NSMakeRect(0,self.settingsY,696,height+20)];
+    note.paint = ^(NSRect bounds) { [[Hex(0xF5EEE6) colorWithAlphaComponent:0.8] setFill]; [[NSBezierPath bezierPathWithRoundedRect:bounds xRadius:10 yRadius:10] fill]; };
+    [note addSubview:Symbol(@"info.circle",NSMakeRect(16,11,16,16),Hex(0x8A8178))];
+    NSTextField *label = Text(text,NSMakeRect(42,10,640,height+2),font,Hex(0x6E655C));
+    label.maximumNumberOfLines = 0; label.lineBreakMode = NSLineBreakByWordWrapping; [note addSubview:label];
+    [self.settingsContent addSubview:note]; self.settingsY += height+20;
 }
 - (void)renderSettings {
     for (NSView *view in self.settingsContent.subviews.copy) [view removeFromSuperview];
-    self.accessibilityStatus = nil;
+    self.accessibilityStatus = nil; self.settingsY = 0; self.settingsGroup = nil;
     for (ActionButton *tab in self.settingsTabs) { tab.primary = tab.tag == self.settingsSection; tab.needsDisplay = YES; }
     switch (self.settingsSection) {
         case 0:
-            [self settingsText:@"常规设置" y:0 height:28 bold:YES];
-            [self settingToggle:@"closeToBackground" title:@"关闭窗口后继续运行" detail:@"关闭窗口后仍可从 Dock 重新打开；退出启动器不退出 Claude。" y:48];
-            [self settingToggle:@"showMenuBar" title:@"显示菜单栏图标" detail:@"从 macOS 菜单栏查看账号状态、显示启动器窗口。" y:134];
-            [self settingsText:@"辅助功能权限" y:232 height:26 bold:YES];
-            self.accessibilityStatus = Text(AXIsProcessTrusted() ? @"已授权：可恢复窗口、只读界面用量。" : @"未授权：仍可激活账号，无法恢复窗口或读取界面用量。",NSMakeRect(0,266,518,24),[NSFont systemFontOfSize:12],Hex(0x6E655C));
-            [self.settingsContent addSubview:self.accessibilityStatus];
-            [self settingsAction:@"打开辅助功能设置" action:@selector(openAccessibility:) y:304];
-            [self settingsText:@"权限由你在系统设置中管理，启动器不会自动授权。" y:352 height:48 bold:NO]; break;
+            [self settingsHeader:@"窗口与启动"];
+            [self settingToggle:@"closeToBackground" title:@"关闭窗口后继续运行" detail:@"关闭窗口后仍可从 Dock 重新打开；退出启动器不退出 Claude。" icon:@"macwindow"];
+            [self settingToggle:@"showMenuBar" title:@"显示菜单栏图标" detail:@"从 macOS 菜单栏查看账号状态、显示启动器窗口。" icon:@"menubar.rectangle"];
+            [self settingsHeader:@"权限"];
+            self.accessibilityStatus = [self settingsAction:@"打开辅助功能设置" action:@selector(openAccessibility:) title:@"辅助功能权限"
+                detail:AXIsProcessTrusted() ? @"已授权：可恢复窗口、只读界面用量。" : @"未授权：仍可激活账号，无法恢复窗口或读取界面用量。" icon:@"lock.shield"];
+            [self settingsNote:@"权限由你在系统设置中管理，启动器不会自动授权。"]; break;
         case 1:
-            [self settingsText:@"启动行为" y:0 height:28 bold:YES];
-            [self settingsAction:@"管理登录启动…" action:@selector(manageLoginItem:) y:42];
-            [self settingsText:[self loginItemDescription] y:84 height:42 bold:NO];
-            [self settingToggle:@"rememberPage" title:@"恢复启动器上次页面" detail:@"只恢复本管理器的页面，不自动启动或激活任何 Claude。" y:136];
-            [self settingChoice:@"startPage" title:@"未恢复时的启动页面" choices:@[@"实例管理",@"账号管理",@"项目管理",@"日志记录",@"系统设置"] values:@[@0,@1,@2,@3,@4] y:218];
-            [self settingChoice:@"refreshInterval" title:@"本地进程状态刷新间隔" choices:@[@"1 秒",@"3 秒",@"5 秒"] values:@[@1,@3,@5] y:270];
-            [self settingToggle:@"restoreMinimized" title:@"点击账号时恢复最小化窗口" detail:@"只处理经过核对的目标 PID；需辅助功能权限。" y:324]; break;
+            [self settingsHeader:@"启动与刷新"];
+            [self settingsAction:@"管理登录启动…" action:@selector(manageLoginItem:) title:@"登录时启动" detail:[self loginItemDescription] icon:@"power"];
+            [self settingToggle:@"rememberPage" title:@"恢复启动器上次页面" detail:@"只恢复本管理器的页面，不自动启动或激活任何 Claude。" icon:@"arrow.uturn.backward"];
+            [self settingChoice:@"startPage" title:@"未恢复时的启动页面" choices:@[@"实例管理",@"账号管理",@"项目管理",@"日志记录",@"系统设置"] values:@[@0,@1,@2,@3,@4] icon:@"house"];
+            [self settingChoice:@"refreshInterval" title:@"本地进程状态刷新间隔" choices:@[@"1 秒",@"3 秒",@"5 秒"] values:@[@1,@3,@5] icon:@"arrow.clockwise"];
+            [self settingToggle:@"restoreMinimized" title:@"点击账号时恢复最小化窗口" detail:@"只处理经过核对的目标 PID；需辅助功能权限。" icon:@"macwindow.on.rectangle"]; break;
         case 2:
-            [self settingsText:@"外观设置" y:0 height:28 bold:YES];
-            [self settingToggle:@"showArtwork" title:@"显示水墨插画" detail:@"关闭后保留浅色纸张背景和原有文字布局。" y:48];
-            [self settingToggle:@"showUsageHistory" title:@"显示本地界面用量" detail:@"只读 Claude 已有控件；不点击、不查询，不读历史文件。" y:144];
-            [self settingsText:@"界面语言：简体中文\n主题：浅色水墨\n\n这两项为当前版本的固定样式。Claude 自身的外观、浏览器和登录方式由官方客户端管理。" y:252 height:152 bold:NO]; break;
+            [self settingsHeader:@"显示"];
+            [self settingToggle:@"showArtwork" title:@"显示水墨插画" detail:@"关闭后保留浅色纸张背景和原有文字布局。" icon:@"paintbrush"];
+            [self settingToggle:@"showUsageHistory" title:@"显示本地界面用量" detail:@"只读 Claude 已有控件；不点击、不查询，不读历史文件。" icon:@"chart.bar"];
+            [self settingsHeader:@"样式"];
+            [self settingsValue:@"简体中文" title:@"界面语言" icon:@"globe"];
+            [self settingsValue:@"浅色水墨" title:@"主题" icon:@"paintpalette"];
+            [self settingsNote:@"这两项为当前版本的固定样式。Claude 自身的外观、浏览器和登录方式由官方客户端管理。"]; break;
         case 3:
-            [self settingsText:@"数据与存储" y:0 height:28 bold:YES];
-            [self settingsText:@"项目清单、启动器日志与运行锁\n~/Library/Application Support/Claude Launcher\n\n偏好与账号别名保存在本机用户偏好中。账号目录固定，不迁移、不合并。" y:42 height:108 bold:NO];
-            [self settingsAction:@"在 Finder 中显示管理器数据" action:@selector(revealSupport:) y:164];
-            [self settingsAction:@"复制管理器数据路径" action:@selector(copySupportPath:) y:208];
-            [self settingsAction:@"导出已保存的设置…" action:@selector(exportSettings:) y:252];
-            [self settingChoice:@"logLimit" title:@"日志保留上限" choices:@[@"100 条",@"500 条",@"1000 条"] values:@[@100,@500,@1000] y:304];
-            [self settingsText:@"日志保存在上方启动器目录，重启和更新后保留，超出上限删除最旧记录；导出由你选择位置。恢复默认只重置启动器偏好，保留项目、日志、别名和登录保护。" y:352 height:76 bold:NO]; break;
+            [self settingsHeader:@"管理器数据"];
+            [self settingsAction:@"在 Finder 中显示" action:@selector(revealSupport:) title:@"项目清单、启动器日志与运行锁" detail:@"~/Library/Application Support/Claude Launcher" icon:@"folder"];
+            [self settingsAction:@"复制路径" action:@selector(copySupportPath:) title:@"复制管理器数据路径" detail:@"偏好与账号别名保存在本机用户偏好中。账号目录固定，不迁移、不合并。" icon:@"doc.on.doc"];
+            [self settingsAction:@"导出…" action:@selector(exportSettings:) title:@"导出已保存的设置" detail:@"导出位置由你选择。" icon:@"square.and.arrow.up"];
+            [self settingsHeader:@"日志"];
+            [self settingChoice:@"logLimit" title:@"日志保留上限" choices:@[@"100 条",@"500 条",@"1000 条"] values:@[@100,@500,@1000] icon:@"list.bullet.rectangle"];
+            [self settingsNote:@"日志保存在上方启动器目录，重启和更新后保留，超出上限删除最旧记录。恢复默认只重置启动器偏好，保留项目、日志、别名和登录保护。"]; break;
         case 4:
-            [self settingsText:@"消息通知" y:0 height:28 bold:YES];
-            [self settingToggle:@"localNotifications" title:@"显示窗口内提示" detail:@"在启动器中显示操作警告；不推送、不上传、不读取 Claude 消息。" y:48];
-            [self settingToggle:@"notificationSound" title:@"警告时播放提示音" detail:@"仅在窗口内提示开启时生效，使用系统提示音。" y:144];
-            [self settingsAction:@"测试已保存的通知设置" action:@selector(testNotification:) y:254];
-            [self settingsText:@"安全确认和错误弹窗始终保留，不受通知开关影响。" y:308 height:66 bold:NO]; break;
+            [self settingsHeader:@"窗口内提示"];
+            [self settingToggle:@"localNotifications" title:@"显示窗口内提示" detail:@"在启动器中显示操作警告；不推送、不上传、不读取 Claude 消息。" icon:@"bell"];
+            [self settingToggle:@"notificationSound" title:@"警告时播放提示音" detail:@"仅在窗口内提示开启时生效，使用系统提示音。" icon:@"speaker.wave.2"];
+            [self settingsAction:@"测试" action:@selector(testNotification:) title:@"测试已保存的通知设置" detail:@"按已保存的设置显示一次提示。" icon:@"bell.badge"];
+            [self settingsNote:@"安全确认和错误弹窗始终保留，不受通知开关影响。"]; break;
         default:
-            [self settingsText:[NSString stringWithFormat:@"Claude 启动器 %@",[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"开发版"] y:0 height:28 bold:YES];
-            [self settingsText:@"非官方本地管理工具，与 Anthropic 无关联。\n不向 Claude / Anthropic 发请求，不读取凭据，不修改官方应用。" y:42 height:70 bold:NO];
-            [self settingToggle:@"allowUpdates" title:@"允许检查 GitHub 更新" detail:@"默认关闭。开启后每次打开启动器检查一次，也可手动检查；仅访问本项目 GitHub 下载地址。" y:124];
-            [self settingsAction:@"检查启动器更新…" action:@selector(checkForUpdates:) y:214];
-            [self settingsAction:@"查看本地使用帮助" action:@selector(localHelp:) y:258];
-            [self settingsAction:@"复制基础诊断信息" action:@selector(copyDiagnostics:) y:302];
-            [self settingsText:@"不会自动联网检查。诊断仅包含版本、系统版本和权限状态，不包含账号、路径、日志或凭据。" y:354 height:70 bold:NO]; break;
+            [self settingsHeader:@"版本与更新"];
+            [self settingsValue:[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"开发版" title:@"Claude 启动器" icon:@"info.circle"];
+            [self settingToggle:@"allowUpdates" title:@"允许检查 GitHub 更新" detail:@"默认关闭。开启后每次打开启动器检查一次，也可手动检查；仅访问本项目 GitHub 下载地址。" icon:@"arrow.down.circle"];
+            [self settingsAction:@"检查更新…" action:@selector(checkForUpdates:) title:@"检查启动器更新" detail:@"非官方本地工具，与 Anthropic 无关联；不向 Claude 或 Anthropic 发请求。" icon:@"arrow.triangle.2.circlepath"];
+            [self settingsHeader:@"帮助与诊断"];
+            [self settingsAction:@"查看" action:@selector(localHelp:) title:@"本地使用帮助" detail:nil icon:@"questionmark.circle"];
+            [self settingsAction:@"复制" action:@selector(copyDiagnostics:) title:@"基础诊断信息" detail:@"仅包含版本、系统版本和权限状态，不包含账号、路径、日志或凭据。" icon:@"stethoscope"];
+            [self settingsNote:@"不会自动联网检查。不读取凭据，不修改官方应用。"]; break;
     }
     self.saveSettingsButton.enabled = ![self.settingsDraft isEqual:self.settings];
 }
