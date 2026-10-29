@@ -10,7 +10,7 @@
 #import <CommonCrypto/CommonDigest.h>
 #import "Projects.h"
 #import "ProjectImport.h"
-#import "UsageHistory.h"
+#import "UsageInterface.h"
 #import "Settings.h"
 #import <ServiceManagement/ServiceManagement.h>
 
@@ -366,6 +366,26 @@ static NSDictionary<NSNumber *, NSArray<NSNumber *> *> *Scan(NSString **failure)
     }
     return result;
 }
+static NSArray *UsageIdentity(NSInteger account, NSArray *pids) {
+    if (account < 1 || account > 10 || pids.count != 1) return nil;
+    pid_t pid = [pids.firstObject intValue]; char executable[PROC_PIDPATHINFO_MAXSIZE] = {0};
+    if (proc_pidpath(pid,executable,sizeof(executable)) <= 0 || !IsMainExecutable(@(executable))) return nil;
+    NSArray *arguments = Arguments(pid);
+    if (!arguments.count || AccountForArguments(arguments) != account) return nil;
+    struct proc_bsdinfo process = {0};
+    if (proc_pidinfo(pid,PROC_PIDTBSDINFO,0,&process,sizeof(process)) != sizeof(process)) return nil;
+    NSString *profile = ProfilePath(account);
+    if (ValidateProfileRoot(profile,profile)) return nil;
+    NSMutableArray *identity = [NSMutableArray arrayWithArray:@[@(account),@(pid),@(process.pbi_start_tvsec),@(process.pbi_start_tvusec)]];
+    // Metadata invalidates observations on profile replacement or identity-store changes; no file is opened.
+    for (NSString *name in @[@"",@"Cookies",@"Cookies-journal",@"Cookies-wal",@"Cookies-shm"]) {
+        struct stat st; NSString *path = name.length ? [profile stringByAppendingPathComponent:name] : profile;
+        if (lstat(path.fileSystemRepresentation,&st)) { if (errno != ENOENT || !name.length) return nil; [identity addObject:@0]; continue; }
+        if (st.st_uid != getuid() || (st.st_mode & 0022) || (name.length ? (!S_ISREG(st.st_mode) || st.st_nlink != 1) : !S_ISDIR(st.st_mode))) return nil;
+        [identity addObject:name.length ? @[@(st.st_dev),@(st.st_ino),@(st.st_size),@(st.st_mtimespec.tv_sec),@(st.st_mtimespec.tv_nsec),@(st.st_ctimespec.tv_sec),@(st.st_ctimespec.tv_nsec)] : @[@(st.st_dev),@(st.st_ino)]];
+    }
+    return identity;
+}
 static BOOL VisibleWindow(pid_t pid) {
     NSArray *windows = CFBridgingRelease(CGWindowListCopyWindowInfo(kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements, kCGNullWindowID));
     for (NSDictionary *window in windows) {
@@ -526,6 +546,7 @@ static const unsigned CardFill = 0xFFFCF7;
 @property NSTextField *status, *nameLabel;
 @property ActionButton *button;
 @property NSArray<NSTextField *> *usageLabels;
+@property NSArray<NSTextField *> *usageTimes;
 @property NSTextField *usageSource;
 @property NSArray *usageValues;
 @end
@@ -554,7 +575,7 @@ static const unsigned CardFill = 0xFFFCF7;
         [Hex(0xFAF6EF) setFill]; [path fill]; [Hex(0xE8DFD3) setStroke]; [path stroke];
         DrawCentered(chip, rect, chipText); x = NSMaxX(rect)+8;
     }
-    // Missing or ambiguous local history leaves empty tracks; never invent a current quota.
+    // Missing or ambiguous interface observations leave empty tracks; never invent a current quota.
     for (NSInteger row = 0; row < 2; row++) {
         NSBezierPath *track = [NSBezierPath bezierPathWithRoundedRect:NSMakeRect(436,44+row*46,150,6) xRadius:3 yRadius:3];
         [Hex(0xEEE8E0) setFill]; [track fill];
@@ -634,11 +655,14 @@ static const unsigned CardFill = 0xFFFCF7;
 @property NSInteger loginAccount;
 @property NSButton *endLoginButton;
 @property NSTextField *summaryLabel;
-@property NSDictionary<NSNumber *,NSDictionary *> *usageHistory;
-@property BOOL readingUsageHistory;
+@property NSDictionary<NSNumber *,NSDictionary *> *usageInterface;
+@property NSDictionary<NSNumber *,NSDictionary *> *savedUsageInterface;
+@property BOOL readingUsageInterface;
 @property NSTimeInterval lastUsageRead;
-@property NSTimeInterval lastUsageFileCheck;
-@property NSDictionary *usageFileState;
+@property NSDictionary *usageIdentities;
+@property NSMutableDictionary *usageObservers;
+@property NSUInteger usageGeneration;
+@property BOOL usageEventPending;
 @end
 @implementation Launcher
 - (instancetype)init {
@@ -680,7 +704,9 @@ static const unsigned CardFill = 0xFFFCF7;
     self.projectStore = [[ProjectStore alloc] initWithDirectory:support home:NSHomeDirectory() applicationPaths:@[NSBundle.mainBundle.bundlePath,@"/Applications/Claude 启动器.app",[NSHomeDirectory() stringByAppendingPathComponent:@"Applications/Claude 启动器.app"]]];
     [self.projectStore load];
     self.page = [self.settings[@"rememberPage"] boolValue] ? [self.preferences integerForKey:@"lastLauncherPage"] : [self.settings[@"startPage"] integerValue];
-    [self makeWindow]; [self applySettings]; [self refresh]; [self show:nil];
+    [self makeWindow]; [self applySettings];
+    if ([self.settings[@"showUsageHistory"] boolValue]) self.savedUsageInterface = LoadedUsageInterface([self.preferences objectForKey:@"usageInterfaceObservations"],NSDate.date);
+    [self refresh]; [self show:nil];
     if (self.projectStore.notice) [self alert:@"项目清单提示" detail:self.projectStore.notice];
     [self finishPendingUpdate];
     // One check per launch (only when the user enabled updates); no timers or repeated background checks.
@@ -699,17 +725,19 @@ static const unsigned CardFill = 0xFFFCF7;
     card.nameLabel = Text([self accountName:n], NSMakeRect(84,18,270,24), [NSFont systemFontOfSize:18 weight:NSFontWeightSemibold], ink); [card addSubview:card.nameLabel];
     card.status = Text(@"读取状态…", NSMakeRect(102,44,160,20), [NSFont systemFontOfSize:13], muted); [card addSubview:card.status];
     NSArray *rows = @[@[@"clock",@"5小时限额"],@[@"calendar",@"周限额"]];
-    NSMutableArray *usageLabels = [NSMutableArray array];
+    NSMutableArray *usageLabels = [NSMutableArray array], *usageTimes = [NSMutableArray array];
     for (NSInteger row = 0; row < 2; row++) {
         CGFloat y = 18+row*46;
         [card addSubview:Symbol(rows[row][0], NSMakeRect(406,y+1,18,18), muted)];
-        [card addSubview:Text(rows[row][1], NSMakeRect(436,y,120,20), [NSFont systemFontOfSize:14 weight:NSFontWeightMedium], ink)];
+        [card addSubview:Text(rows[row][1], NSMakeRect(436,y,90,20), [NSFont systemFontOfSize:14 weight:NSFontWeightMedium], ink)];
         NSTextField *pending = Text(@"—", NSMakeRect(588,y+19,48,16), [NSFont systemFontOfSize:12], Hex(0xA59B90)); pending.alignment = NSTextAlignmentRight;
         [card addSubview:pending];
         [usageLabels addObject:pending];
+        NSTextField *time = Text(@"尚未观察到",NSMakeRect(525,y+2,111,16),[NSFont systemFontOfSize:10],muted); time.alignment = NSTextAlignmentRight;
+        [card addSubview:time]; [usageTimes addObject:time];
     }
-    card.usageLabels = usageLabels;
-    card.usageSource = Text(@"本地记录 · 待读取",NSMakeRect(436,100,200,16),[NSFont systemFontOfSize:11],muted);
+    card.usageLabels = usageLabels; card.usageTimes = usageTimes;
+    card.usageSource = Text(@"界面观察 · 待读取",NSMakeRect(436,100,200,16),[NSFont systemFontOfSize:11],muted);
     [card addSubview:card.usageSource];
     card.button = [ActionButton buttonWithTitle:@"启动" target:self action:@selector(selectAccount:)];
     card.button.tag = n; card.button.frame = NSMakeRect(646,36,86,52); card.button.bordered = NO; card.button.buttonType = NSButtonTypeMomentaryPushIn;
@@ -1204,7 +1232,7 @@ static const unsigned CardFill = 0xFFFCF7;
             [self settingToggle:@"closeToBackground" title:@"关闭窗口后继续运行" detail:@"关闭窗口后仍可从 Dock 重新打开；退出启动器不退出 Claude。" y:48];
             [self settingToggle:@"showMenuBar" title:@"显示菜单栏图标" detail:@"从 macOS 菜单栏查看账号状态、显示启动器窗口。" y:134];
             [self settingsText:@"辅助功能权限" y:232 height:26 bold:YES];
-            self.accessibilityStatus = Text(AXIsProcessTrusted() ? @"已授权：可恢复最小化窗口。" : @"未授权：仍可激活账号，无法恢复最小化窗口。",NSMakeRect(0,266,518,24),[NSFont systemFontOfSize:12],Hex(0x6E655C));
+            self.accessibilityStatus = Text(AXIsProcessTrusted() ? @"已授权：可恢复窗口、只读界面用量。" : @"未授权：仍可激活账号，无法恢复窗口或读取界面用量。",NSMakeRect(0,266,518,24),[NSFont systemFontOfSize:12],Hex(0x6E655C));
             [self.settingsContent addSubview:self.accessibilityStatus];
             [self settingsAction:@"打开辅助功能设置" action:@selector(openAccessibility:) y:304];
             [self settingsText:@"权限由你在系统设置中管理，启动器不会自动授权。" y:352 height:48 bold:NO]; break;
@@ -1219,7 +1247,7 @@ static const unsigned CardFill = 0xFFFCF7;
         case 2:
             [self settingsText:@"外观设置" y:0 height:28 bold:YES];
             [self settingToggle:@"showArtwork" title:@"显示水墨插画" detail:@"关闭后保留浅色纸张背景和原有文字布局。" y:48];
-            [self settingToggle:@"showUsageHistory" title:@"显示本地用量历史" detail:@"仅读取官方已保存的历史；不查询、不刷新远端用量。" y:144];
+            [self settingToggle:@"showUsageHistory" title:@"显示本地界面用量" detail:@"只读 Claude 已有控件；不点击、不查询，不读历史文件。" y:144];
             [self settingsText:@"界面语言：简体中文\n主题：浅色水墨\n\n这两项为当前版本的固定样式。Claude 自身的外观、浏览器和登录方式由官方客户端管理。" y:252 height:152 bold:NO]; break;
         case 3:
             [self settingsText:@"数据与存储" y:0 height:28 bold:YES];
@@ -1288,8 +1316,9 @@ static const unsigned CardFill = 0xFFFCF7;
     for (AccountCard *card in self.cards) { card.art = [self.settings[@"showArtwork"] boolValue] ? Art([NSString stringWithFormat:@"card-%ld",(long)(card.number-1)%4+1]) : nil; card.needsDisplay = YES; }
     self.sidebar.needsDisplay = YES; self.mainCanvas.needsDisplay = YES;
     if (![self.settings[@"localNotifications"] boolValue]) self.toast.hidden = YES;
-    if (![self.settings[@"showUsageHistory"] boolValue]) self.usageHistory = nil;
-    else [self readLocalUsage];
+    self.usageGeneration++; self.usageInterface = nil; self.usageIdentities = nil; self.usageObservers = nil;
+    if (![self.settings[@"showUsageHistory"] boolValue]) { self.savedUsageInterface = nil; if (!self.snapshotMode) [self.preferences removeObjectForKey:@"usageInterfaceObservations"]; }
+    if ([self.settings[@"showUsageHistory"] boolValue]) [self readLocalUsage];
     [self updateUsageCards]; [self trimLogs]; [self reloadLogs];
 }
 - (NSString *)loginItemDescription {
@@ -1709,53 +1738,111 @@ static const unsigned CardFill = 0xFFFCF7;
 - (void)show:(id)sender { [self.window deminiaturize:nil]; [self.window makeKeyAndOrderFront:nil]; [NSApp activateIgnoringOtherApps:YES]; [self readLocalUsage]; }
 - (void)applicationDidBecomeActive:(NSNotification *)note { [self readLocalUsage]; }
 - (void)windowDidBecomeKey:(NSNotification *)note { if (note.object == self.window) [self readLocalUsage]; }
-- (NSDictionary *)localUsageFileState {
-    NSMutableDictionary *state = [NSMutableDictionary dictionary];
-    for (NSInteger n=1;n<=10;n++) state[@(n)] = UsageHistoryFileState(ProfilePath(n));
-    return state;
+- (BOOL)canObserveUsage {
+    if (![self.settings[@"showUsageHistory"] boolValue] || self.snapshotMode || self.loginAccount || self.scanError) return NO;
+    if (NSApp.isActive) return self.window.visible && !self.window.miniaturized && self.page == 0;
+    pid_t front = NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier;
+    for (NSNumber *n in self.processes) if (n.integerValue > 0 && self.processes[n].count == 1 && [self.processes[n].firstObject intValue] == front) return YES;
+    return NO;
+}
+- (void)usageInterfaceChanged {
+    if (![self canObserveUsage] || self.usageEventPending) return;
+    self.usageEventPending = YES;
+    // Wait for the existing control tree to settle, coalescing event bursts without any UI action.
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(0.3*NSEC_PER_SEC)),dispatch_get_main_queue(),^{
+        self.usageEventPending = NO; [self readLocalUsage];
+    });
 }
 - (void)checkLocalUsageChanges {
-    if (![self.settings[@"showUsageHistory"] boolValue] || self.snapshotMode || !NSApp.isActive || !self.window.visible || self.window.miniaturized || self.page != 0 || self.readingUsageHistory ||
-        NSProcessInfo.processInfo.systemUptime-self.lastUsageFileCheck < 5) return;
-    self.lastUsageFileCheck = NSProcessInfo.processInfo.systemUptime;
-    if (![[self localUsageFileState] isEqual:self.usageFileState]) [self readLocalUsage];
+    if (self.snapshotMode) return;
+    NSMutableDictionary *identities = [NSMutableDictionary dictionary];
+    if ([self.settings[@"showUsageHistory"] boolValue] && !self.scanError && !self.loginAccount) {
+        for (NSInteger n=1;n<=10;n++) { NSArray *identity = UsageIdentity(n,self.processes[@(n)]); if (identity) identities[@(n)] = identity; }
+    }
+    NSMutableDictionary *kept = [self.usageInterface mutableCopy] ?: [NSMutableDictionary dictionary];
+    for (NSNumber *n in kept.allKeys) if (![identities[n] isEqual:self.usageIdentities[n]]) [kept removeObjectForKey:n];
+    NSMutableDictionary *saved = [self.savedUsageInterface mutableCopy] ?: [NSMutableDictionary dictionary];
+    for (NSNumber *n in saved.allKeys) {
+        if (![identities[n] isEqual:saved[n][@"identity"]]) [saved removeObjectForKey:n];
+        else if (!kept[n]) kept[n] = MergeUsageInterface(saved[n],@{@"status":@"未观察到 Code 用量"},identities[n],NSDate.date);
+    }
+    if (![saved isEqual:self.savedUsageInterface]) { self.savedUsageInterface = saved; [self.preferences setObject:StoredUsageInterface(saved) forKey:@"usageInterfaceObservations"]; }
+    self.usageInterface = kept; self.usageIdentities = identities;
+    if (!AXIsProcessTrusted()) self.usageInterface = nil;
+    if (!self.usageObservers) self.usageObservers = [NSMutableDictionary dictionary];
+    NSMutableSet *pids = [NSMutableSet set];
+    if (AXIsProcessTrusted()) for (NSNumber *n in identities) [pids addObject:self.processes[n].firstObject];
+    for (NSNumber *pid in self.usageObservers.allKeys) if (![pids containsObject:pid]) [self.usageObservers removeObjectForKey:pid];
+    for (NSNumber *pid in pids) if (!self.usageObservers[pid]) {
+        __weak Launcher *weak = self;
+        id observer = ObserveUsageInterface(pid.intValue,^{ [weak usageInterfaceChanged]; });
+        if (observer) self.usageObservers[pid] = observer;
+    }
+    if (NSProcessInfo.processInfo.systemUptime-self.lastUsageRead >= 5) [self readLocalUsage];
 }
 - (void)readLocalUsage {
-    if (![self.settings[@"showUsageHistory"] boolValue] || self.snapshotMode || !NSApp.isActive || !self.window.visible || self.window.miniaturized || self.page != 0 || self.readingUsageHistory ||
-        NSProcessInfo.processInfo.systemUptime-self.lastUsageRead < 1) return;
-    self.readingUsageHistory = YES; self.lastUsageRead = NSProcessInfo.processInfo.systemUptime;
-    // Capture before reading, so a concurrent write is noticed again on the next foreground check.
-    self.usageFileState = [self localUsageFileState]; self.lastUsageFileCheck = self.lastUsageRead;
-    self.usageHistory = @{}; [self updateUsageCards]; // Do not retain another organization's values during revalidation.
+    if (![self canObserveUsage] || self.readingUsageInterface || NSProcessInfo.processInfo.systemUptime-self.lastUsageRead < 1) return;
+    self.readingUsageInterface = YES; self.lastUsageRead = NSProcessInfo.processInfo.systemUptime;
+    NSUInteger generation = self.usageGeneration;
+    NSDictionary *processes = self.processes;
+    pid_t front = NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier; BOOL launcherActive = NSApp.isActive;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY,0), ^{
-        NSMutableDictionary *results = [NSMutableDictionary dictionary]; NSDate *now = NSDate.date;
-        for (NSInteger n=1;n<=10;n++) results[@(n)] = ReadUsageHistory(ProfilePath(n),now);
-        dispatch_async(dispatch_get_main_queue(), ^{
-            self.usageHistory = [self.settings[@"showUsageHistory"] boolValue] ? results : nil; self.readingUsageHistory = NO; [self updateUsageCards];
-        });
+        @autoreleasepool {
+            NSMutableDictionary *results = [NSMutableDictionary dictionary], *identities = [NSMutableDictionary dictionary], *observedTimes = [NSMutableDictionary dictionary];
+            for (NSInteger n=1;n<=10;n++) {
+                NSArray *pids = processes[@(n)];
+                if (!launcherActive && [pids.firstObject intValue] != front) continue;
+                NSArray *before = UsageIdentity(n,pids);
+                if (!before) continue;
+                NSDictionary *result = ReadUsageInterface([pids.firstObject intValue]); observedTimes[@(n)] = NSDate.date;
+                NSString *scanFailure = nil; NSDictionary *afterProcesses = Scan(&scanFailure);
+                NSArray *after = scanFailure ? nil : UsageIdentity(n,afterProcesses[@(n)]);
+                if ([before isEqual:after]) { results[@(n)] = result; identities[@(n)] = after; }
+                else results[@(n)] = @{@"status":@"账号状态变化，待读取"};
+            }
+            dispatch_async(dispatch_get_main_queue(), ^{
+                self.readingUsageInterface = NO;
+                if (generation != self.usageGeneration || ![self.settings[@"showUsageHistory"] boolValue] || self.loginAccount || self.scanError) return;
+                NSMutableDictionary *combined = [self.usageInterface mutableCopy] ?: [NSMutableDictionary dictionary];
+                NSMutableDictionary *observedIdentities = [self.usageIdentities mutableCopy] ?: [NSMutableDictionary dictionary];
+                NSMutableDictionary *saved = [self.savedUsageInterface mutableCopy] ?: [NSMutableDictionary dictionary];
+                for (NSNumber *n in results) {
+                    NSArray *current = UsageIdentity(n.integerValue,self.processes[n]);
+                    if (![current isEqual:identities[n]]) { [combined removeObjectForKey:n]; [saved removeObjectForKey:n]; continue; }
+                    NSDictionary *previous = [combined[n][@"status"] isEqual:@"界面已读取"] ? combined[n] : saved[n];
+                    combined[n] = MergeUsageInterface(previous,results[n],current,observedTimes[n]); observedIdentities[n] = current;
+                    if ([combined[n][@"status"] isEqual:@"界面已读取"]) saved[n] = combined[n];
+                }
+                if (![saved isEqual:self.savedUsageInterface]) { self.savedUsageInterface = saved; [self.preferences setObject:StoredUsageInterface(saved) forKey:@"usageInterfaceObservations"]; }
+                self.usageInterface = combined; self.usageIdentities = observedIdentities; [self updateUsageCards];
+            });
+        }
     });
 }
 - (void)updateUsageCards {
     NSDate *now = NSDate.date;
     for (AccountCard *card in self.cards) {
-        NSDictionary *record = self.usageHistory[@(card.number)];
-        NSString *status = record[@"status"] ?: @"待读取"; NSDate *date = record[@"date"];
-        if (self.loginAccount == card.number) status = @"登录保护中";
+        NSDictionary *record = self.usageInterface[@(card.number)];
+        NSString *status = record[@"status"] ?: @"未观察到 Code 用量";
+        if (!self.snapshotMode && !self.processes[@(card.number)].count) status = @"Claude 未运行";
+        else if (!self.snapshotMode && !AXIsProcessTrusted()) status = @"需辅助功能权限";
+        if (self.processes[@(card.number)].count > 1) status = @"多个主进程，待核对";
+        if (self.loginAccount) status = @"登录保护中";
         if (self.scanError) status = @"进程待核对";
         if (![self.settings[@"showUsageHistory"] boolValue]) status = @"本地用量显示已关闭";
-        NSString *source = [status isEqual:@"本地记录"] ? UsageHistorySourceLabel(date,now) : nil;
-        BOOL available = source != nil;
-        if ([status isEqual:@"本地记录"] && !available) status = @"记录时间异常";
-        card.usageValues = @[(available ? record[@"fh"] : nil) ?: NSNull.null,(available ? record[@"sd"] : nil) ?: NSNull.null];
-        NSString *detail = @"显示此目录当前本地组织对应的最后一次官方记录。超过 15 分钟标为「历史值／非实时」，保留当时的真实百分比，不代表当前额度，也不推算消耗或重置。官方用量查询成功才可能写入记录，正在使用 Claude 不保证历史文件更新。窗口前台每 5 秒仅检查本地文件变化，有变化才重读；后台不轮询。仅在本机使用 Claude Safe Storage 解密组织标识，不读取登录 Token，不发送查询、不触发官方刷新。无法匹配时隐藏数值；未授权钥匙串时请重启后按系统提示允许。";
-        if (date) detail = [detail stringByAppendingFormat:@"\n官方记录时间：%@。记录不含重置时间。",[NSDateFormatter localizedStringFromDate:date dateStyle:NSDateFormatterMediumStyle timeStyle:NSDateFormatterMediumStyle]];
-        card.usageSource.stringValue = available ? source : status;
+        BOOL available = [status isEqual:@"界面已读取"];
+        card.usageValues = @[(available ? record[@"fh"][@"percent"] : nil) ?: NSNull.null,(available ? record[@"sd"][@"percent"] : nil) ?: NSNull.null];
+        NSString *detail = @"只读此账号官方主进程的 Code 用量控件，不点击、不请求、不读官方历史或登录信息。自动记录你正常查看时已显示的两项数据；关闭弹窗后仍显示最近观察值，重启启动器可恢复。‘上次显示’不是当前服务器额度，两项时间独立。账号、进程或本地身份文件变化会清除缓存；从未观察到显示 —，不从其他账号补位。辅助功能权限由用户自行授权。";
+        card.usageSource.stringValue = available ? @"Claude 界面 · 非服务器查询" : status;
         card.usageSource.toolTip = detail;
         for (NSUInteger row=0;row<2;row++) {
+            NSString *key = row == 0 ? @"fh" : @"sd"; NSDictionary *metric = available ? record[key] : nil;
             id value = card.usageValues[row];
             card.usageLabels[row].stringValue = [value isKindOfClass:NSNumber.class] ? [NSString stringWithFormat:@"%.0f%%",[value doubleValue]] : @"—";
-            card.usageLabels[row].toolTip = detail;
-            card.usageLabels[row].accessibilityLabel = [NSString stringWithFormat:@"%@，%@，%@",row == 0 ? @"5小时已使用" : @"每周已使用",card.usageLabels[row].stringValue,card.usageSource.stringValue];
+            card.usageTimes[row].stringValue = UsageInterfaceTimeLabel(metric,now);
+            NSString *specific = metric ? [NSString stringWithFormat:@"%@\n观察时间：%@\n官方重置说明：%@",detail,[NSDateFormatter localizedStringFromDate:metric[@"observedAt"] dateStyle:NSDateFormatterMediumStyle timeStyle:NSDateFormatterMediumStyle],[metric[@"reset"] length] ? metric[@"reset"] : @"未提供"] : detail;
+            card.usageLabels[row].toolTip = specific; card.usageTimes[row].toolTip = specific;
+            card.usageLabels[row].accessibilityLabel = [NSString stringWithFormat:@"%@，%@，%@，%@",row == 0 ? @"5小时已使用" : @"每周已使用",card.usageLabels[row].stringValue,card.usageTimes[row].stringValue,card.usageSource.stringValue];
         }
         card.needsDisplay = YES;
     }
@@ -1850,15 +1937,15 @@ static const unsigned CardFill = 0xFFFCF7;
     self.createButton.enabled = !failure && !self.loginAccount;
     if (failure) self.message.stringValue = failure;
     else if (self.loginAccount) self.message.stringValue = [NSString stringWithFormat:@"账号 %02ld 登录保护中。%@",(long)self.loginAccount,LoginConflict(snapshot,self.loginAccount) ? @"检测到其他 Claude！请停止登录，并正常退出其他实例。" : @"完成登录并核对身份后，点「结束登录保护」恢复多开。"];
-    self.accessibilityStatus.stringValue = AXIsProcessTrusted() ? @"已授权：可恢复最小化的 Claude 窗口。" : @"未授权：无法恢复最小化窗口。授权不会修改账号数据。";
+    self.accessibilityStatus.stringValue = AXIsProcessTrusted() ? @"已授权：可恢复 Claude 窗口、只读界面用量。" : @"未授权：无法恢复窗口或读取界面用量，不自动更改权限。";
     NSString *text = self.message.stringValue;
     if (text.length && ![text isEqual:self.lastLogged]) {
         self.lastLogged = text; [self addLog:text];
     }
     [self refreshAccountTable];
     if (self.page == 3) [self reloadLogs];
-    [self updateUsageCards];
     [self checkLocalUsageChanges];
+    [self updateUsageCards];
 }
 - (void)refreshAccountTable {
     NSUInteger shown = 0, total = 0, running = 0, attention = 0, selected = 0; CGFloat y = 0;
@@ -2233,7 +2320,7 @@ static int SelfTest(void) {
         TestProjects();
         TestProjectImport();
         TestProjectRegistration();
-        TestUsageHistory();
+        TestUsageInterface();
         NSCAssert(AccountForArguments(@[@"Claude"]) == 1, @"default");
         for (NSInteger n=1;n<=10;n++) {
             NSCAssert(AccountForArguments(@[@"Claude",[@"--user-data-dir=" stringByAppendingString:ProfilePath(n)]]) == n,@"equals");
@@ -2398,6 +2485,12 @@ static int SelfTest(void) {
         puts("PASS: update manifest signature and tampering, two accepted keys (shared/macOS) and unknown-key rejection, XML key import, version order, redirect allowlist, install location, bundled RSA-3072 keys");
     } return 0;
 }
+static NSDictionary *UsageDemo(NSNumber *five, NSNumber *week) {
+    NSDate *now = NSDate.date;
+    NSMutableDictionary *record = [@{@"status":@"界面已读取",@"fh":@{@"percent":five,@"reset":@"周四 01:10 重置",@"observedAt":now,@"visible":@YES}} mutableCopy];
+    if (week) record[@"sd"] = @{@"percent":week,@"reset":@"周三 19:00 重置",@"observedAt":[now dateByAddingTimeInterval:-120],@"visible":@NO};
+    return record;
+}
 // Native target/action checks and offscreen renders use an isolated preference suite and synthetic accounts only.
 static int UISettingsTest(NSString *output) {
     [NSApplication sharedApplication];
@@ -2408,13 +2501,16 @@ static int UISettingsTest(NSString *output) {
     @try {
         NSCAssert([NSFileManager.defaultManager createDirectoryAtPath:output withIntermediateDirectories:YES attributes:nil error:nil],@"snapshot folder");
         [launcher makeWindow]; [launcher applySettings];
-        launcher.usageHistory = @{@1:@{@"status":@"本地记录",@"date":[NSDate.date dateByAddingTimeInterval:-7200],@"fh":@62,@"sd":@70}};
+        launcher.usageInterface = @{@1:UsageDemo(@62,@70),@2:UsageDemo(@73,nil)};
         [launcher updateUsageCards];
         NSCAssert([launcher.cards[0].usageLabels[0].stringValue isEqual:@"62%"] &&
-            [launcher.cards[0].usageSource.stringValue isEqual:@"历史值 · 2小时前 · 非实时"],@"historical values and age reach native controls");
+            [launcher.cards[0].usageSource.stringValue isEqual:@"Claude 界面 · 非服务器查询"] &&
+            [launcher.cards[0].usageTimes[1].stringValue hasPrefix:@"上次显示"] &&
+            [launcher.cards[1].usageLabels[1].stringValue isEqual:@"—"],@"account-specific interface values, individual times and missing weekly reach native controls");
+        NSCAssert([launcher.cards[1].usageLabels[0].stringValue isEqual:@"73%"],@"account two does not inherit account one's quota");
         launcher.loginAccount = 1; [launcher updateUsageCards];
-        NSCAssert([launcher.cards[0].usageLabels[0].stringValue isEqual:@"—"],@"login protection still hides historical values");
-        launcher.loginAccount = 0; launcher.usageHistory = nil; [launcher updateUsageCards];
+        NSCAssert([launcher.cards[0].usageLabels[0].stringValue isEqual:@"—"],@"login protection hides interface observations");
+        launcher.loginAccount = 0; launcher.usageInterface = nil; [launcher updateUsageCards];
         void (^capture)(NSString *) = ^(NSString *name) {
             NSView *view = launcher.window.contentView; [view layoutSubtreeIfNeeded];
             NSBitmapImageRep *bitmap = [view bitmapImageRepForCachingDisplayInRect:view.bounds]; [view cacheDisplayInRect:view.bounds toBitmapImageRep:bitmap];
@@ -2442,7 +2538,7 @@ static int UISettingsTest(NSString *output) {
         launcher.settingsDraft = DefaultSettings().mutableCopy; [launcher saveSettings:nil];
         NSCAssert([preferences integerForKey:@"loginProtectionAccount"] == 3 && [[preferences objectForKey:@"accountDisplayNames"] count] == 1,@"reset settings preserves unrelated local state");
         launcher.settingsDraft[@"showArtwork"] = @NO; launcher.settingsDraft[@"showUsageHistory"] = @NO; launcher.settingsDraft[@"logLimit"] = @100;
-        [launcher saveSettings:nil]; NSCAssert(!launcher.cards[0].art && !launcher.usageHistory,@"appearance and local history settings applied");
+        [launcher saveSettings:nil]; NSCAssert(!launcher.cards[0].art && !launcher.usageInterface,@"appearance and interface settings applied");
         launcher.settingsDraft[@"localNotifications"] = @NO; [launcher saveSettings:nil]; [launcher testNotification:nil]; NSCAssert(launcher.toast.hidden,@"notification off");
         launcher.settingsDraft[@"localNotifications"] = @YES; [launcher saveSettings:nil]; [launcher testNotification:nil]; NSCAssert(!launcher.toast.hidden,@"notification on"); launcher.toast.hidden = YES;
         [launcher.logEntries removeAllObjects];
@@ -2471,7 +2567,7 @@ static int UISettingsTest(NSString *output) {
         Fetch([NSURL URLWithString:@"https://api.anthropic.com/v1/messages"],YES,100,1,nil,^(NSData *data,NSString *failure) { refused = !data && failure.length; });
         NSCAssert(refused,@"Claude requests rejected even with update opt-in"); NetworkEnabled = NO;
         NSCAssert(!launcher.timer && !launcher.statusItem && !launcher.projectStore,@"UI checks do not start normal lifecycle or load projects");
-        puts("PASS: native settings controls, isolated save/reload, draft cancellation, reset scope, artwork/history/notifications, log retention/filter/paging, account search/status/selection, network rejection before session creation; 8 offscreen renders");
+        puts("PASS: native settings controls, isolated save/reload, draft cancellation, reset scope, artwork/interface-usage/notifications, log retention/filter/paging, account search/status/selection, network rejection before session creation; 8 offscreen renders");
     } @finally {
         NetworkEnabled = NO; [preferences removePersistentDomainForName:suite]; [preferences synchronize];
     }
@@ -2482,13 +2578,17 @@ int main(int argc, const char *argv[]) {
         if (argc > 2 && strcmp(argv[1],"--ui-self-test") == 0) return UISettingsTest(@(argv[2]));
         if (argc > 1 && strcmp(argv[1],"--self-test") == 0) return SelfTest();
         if (argc > 1 && strcmp(argv[1],"--usage-history-check") == 0) {
-            // Only statuses/timing, never organization identifiers or credential contents.
+            fputs("Historical usage reading is retired; use --usage-interface-check.\n",stderr); return 2;
+        }
+        if (argc > 1 && strcmp(argv[1],"--usage-interface-check") == 0) {
+            NSString *failure = nil; NSDictionary *processes = Scan(&failure);
+            if (failure) { puts("process validation failed"); return 1; }
             for (NSInteger n=1;n<=10;n++) {
+                NSArray *identity = UsageIdentity(n,processes[@(n)]); if (!identity) continue;
                 NSTimeInterval start = NSProcessInfo.processInfo.systemUptime;
-                NSDictionary *result = ReadUsageHistory(ProfilePath(n),NSDate.date);
-                printf("account=%02ld status=%s read_ms=%.3f",(long)n,[result[@"status"] UTF8String],(NSProcessInfo.processInfo.systemUptime-start)*1000);
-                if (result[@"date"]) printf(" record_age_minutes=%.1f",-[result[@"date"] timeIntervalSinceNow]/60);
-                puts("");
+                NSDictionary *result = ReadUsageInterface([[processes[@(n)] firstObject] intValue]);
+                if (![identity isEqual:UsageIdentity(n,processes[@(n)])]) result = @{@"status":@"账号状态变化"};
+                printf("account=%02ld status=%s five_hour=%s weekly=%s read_ms=%.3f\n",(long)n,[result[@"status"] UTF8String],result[@"fh"] ? "observed" : "absent",result[@"sd"] ? "observed" : "absent",(NSProcessInfo.processInfo.systemUptime-start)*1000);
             }
             return 0;
         }
@@ -2551,7 +2651,7 @@ int main(int argc, const char *argv[]) {
                 @{@"name":@"归档资料",@"group":@"",@"path":@"/Volumes/Archive/Research",@"lastAccount":@0,@"previewStatus":@"无权限"}];
             [launcher makeWindow]; [launcher applySettings]; [launcher refresh];
             if (argc > 4 && strcmp(argv[4],"--usage-demo") == 0) {
-                launcher.usageHistory = @{@1:@{@"status":@"本地记录",@"date":[NSDate.date dateByAddingTimeInterval:-26*60],@"fh":@62,@"sd":@70},@2:@{@"status":@"本地记录",@"date":[NSDate.date dateByAddingTimeInterval:-120],@"fh":@73,@"sd":@81}};
+                launcher.usageInterface = @{@1:UsageDemo(@62,@70),@2:UsageDemo(@73,nil)};
                 [launcher updateUsageCards];
             }
             NSView *view = launcher.window.contentView;
