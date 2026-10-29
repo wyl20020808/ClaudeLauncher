@@ -193,7 +193,7 @@ Windows 对应：重解析点（符号链接、junction）等同链接；硬链�
 
 ## 本地界面用量（macOS）
 
-- macOS 1.7.9 起，只读官方 Claude Code 已显示的用量控件。Windows 未接入。`UsageHistory.m` 留作历史实现，不再编译或调用；不再读取 `plan-usage-history.json` 或访问 Claude Safe Storage，也不回退到旧历史。仅为缓存归属定向读取已获授权的非登录 `lastActiveOrg` 字段并生成 SHA-256 指纹，不读取登录字段、不解密。
+- macOS 1.7.9 起，只读官方 Claude Code 已显示的用量控件。Windows 未接入：书面调查与待授权事项见 [Windows 用量调查](USAGE-RESEARCH-WINDOWS.md)，授权前不读取 Claude 界面、Cookies、`Local State` 或任何加密数据。`UsageHistory.m` 留作历史实现，不再编译或调用；不再读取 `plan-usage-history.json` 或访问 Claude Safe Storage，也不回退到旧历史。仅为缓存归属定向读取已获授权的非登录 `lastActiveOrg` 字段并生成 SHA-256 指纹，不读取登录字段、不解密。
 - 先用官方主进程可执行路径、内核启动参数及固定账号目录定位 PID，排除 Helper、GPU、renderer、CLI 和未管理进程。同账号多个主进程、路径异常或进程扫描失败时不显示数值。读取前后重核 PID、进程启动时间、目录身份和组织选择指纹；读取后再扫描进程，异步返回时复核。Cookies／journal／wal／shm 元数据变化仅触发组织字段重新核对，普通 Cookie 写入不会清空观察记录。固定查询只选官方域名、根路径、未过期的 lastActiveOrg；schema 24 / v10、只读 immutable、不复制、不建锁或日志，拒绝 WAL、活动日志、歧义及读取期间的变化。只保留指纹，既不保存原值也不访问钥匙串。元数据未变时复用指纹最多 60 秒；它不证明服务器身份或尚未落盘的组织切换。
 - 只通过系统辅助功能复制现有 AX 属性，不执行动作、不激活 Claude、不启用调试。当已验证官方主进程的 `AXManualAccessibility` 明确为 false 时，可按 Electron 官方文档将它设为 true，仅启用该进程的本机网页辅助功能树；这是唯一允许设置的用量相关 AX 属性，不是系统权限授权，也不导航或刷新页面。不能将此初始化步骤描述为“只复制属性”。需要用户已经授予启动器的辅助功能权限；没有权限就显示“需辅助功能权限”，不自动弹出授权或改 TCC。固定签名身份不变。
 - 限定官方 `https://claude.ai/epitaxy` Code 首页及 `https://claude.ai/epitaxy/…` 对话页面，拒绝嵌套浏览器页面。仅解析用量弹出按钮和相邻、带官方用量设置链接的面板；读取五小时及“每周 · 所有模型”，不将上下文 token 百分比或模型专属周限额混入。文本正文、输入框内容不读取。多个用量页面、重复或矛盾指标、遍历预算耗尽、未知格式均不采用新的不确定结果。
