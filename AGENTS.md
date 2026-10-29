@@ -6,7 +6,7 @@
 - 两端行为以 docs/SPEC.md 为准；修改行为时同步规格。
 - 日常开发在 dev 分支，验证后合并到 main。
 - 不修改、复制或重签官方 Claude.app。应用图标使用 resources/icon/ 中的自有图标，不再复制官方图标。
-- 固定账号目录不可迁移或覆盖，删除仅按下方删除规则。不得读取、复制、打印凭据，登录由用户自行完成。
+- 固定账号目录不可迁移或覆盖，删除仅按下方删除规则。不得读取、复制、打印登录凭据，登录由用户自行完成。用量匹配的明确授权例外：仅可在本机访问 Claude Safe Storage / Claude Key，解密 lastActiveOrg 组织标识；不得用于解密登录信息，不输出或持久化密钥，不发送 Claude 请求。
 - 必须通过官方主进程和目录识别账号，排除 Helper、GPU、renderer、Claude Code CLI；按 PID 激活。
 - 不强杀 Claude，不以泛泛打开 bundle 代替目标 PID 激活。
 - 不自动修改系统权限、TCC 数据库或安全设置。

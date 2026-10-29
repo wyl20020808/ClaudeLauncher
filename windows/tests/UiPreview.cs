@@ -26,7 +26,8 @@ public static class UiPreview {
         var content = (FrameworkElement)progress.Window.Content;
         progress.Window.Content = null;
         var background = new System.Windows.Controls.Border { Background = progress.Window.Background, Child = content, Resources = progress.Window.Resources };
-        progress.Status.Text = "正在从自建服务下载 ClaudeLauncherSetup-1.7.2.exe…";
+        progress.Source.Text = "来源：GitHub";
+        progress.Status.Text = "正在从GitHub下载 ClaudeLauncherSetup-1.7.2.exe…";
         progress.Bar.Value = 45; progress.Detail.Text = "1.3 MB / 2.8 MB · 45%";
         Save(background, new Size(460, 300), Path.Combine(args[0], "update-download.png"));
         typeof(LauncherUI).GetMethod("SetUpdateStep", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static).Invoke(null, new object[] { progress, 2 });

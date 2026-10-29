@@ -61,6 +61,14 @@ Copy-Item -LiteralPath $setup -Destination (Join-Path $staging $setupName)
 $legacyName = 'ClaudeLauncher-' + $assemblyVersion + '.exe'
 Copy-Item -LiteralPath $exe -Destination (Join-Path $staging $legacyName)
 $manifests = @{}
+# Windows 清单只认共用密钥；Mac 清单可由共用密钥或 Mac 发布机自己的密钥签名（SPEC 签名与校验），任一验签通过即可。
+$macKeyFile = Join-Path (Split-Path $projectRoot -Parent) 'resources/update-public-key-macos.xml'
+function VerifyManifest([string]$json, [string]$platform) {
+    $keys = @([ClaudeLauncher.Updates]::PublicKey())
+    if ($platform -eq 'macos' -and (Test-Path -LiteralPath $macKeyFile)) { $keys += [IO.File]::ReadAllText($macKeyFile) }
+    foreach ($key in $keys) { try { return [ClaudeLauncher.Updates]::Verify($json, $key, $platform) } catch { $failure = $_ } }
+    throw $failure
+}
 
 if ($joint) {
     $dmgName = [ClaudeLauncher.Updates]::FileName('macos', $version)
@@ -84,7 +92,8 @@ if ($joint) {
     $latestTag = (& $ghExe release view --repo $Repository --json tagName | ConvertFrom-Json).tagName
     if ($LASTEXITCODE -ne 0 -or -not $latestTag) { throw 'Cannot find the latest published release to carry macOS files from.' }
     Invoke-Gh release download $latestTag --repo $Repository --pattern 'latest-macos.json' --dir $staging
-    $macRelease = [ClaudeLauncher.Updates]::Verify([IO.File]::ReadAllText((Join-Path $staging 'latest-macos.json')), [ClaudeLauncher.Updates]::PublicKey(), 'macos')
+    # Mac 清单可由共用密钥或 Mac 发布机自己的密钥签名（SPEC 签名与校验），任一验签通过即可原样带入。
+    $macRelease = VerifyManifest ([IO.File]::ReadAllText((Join-Path $staging 'latest-macos.json'))) 'macos'
     $dmgName = $macRelease.file
     Invoke-Gh release download $latestTag --repo $Repository --pattern $dmgName --dir $staging
     if ((Get-Item -LiteralPath (Join-Path $staging $dmgName)).Length -ne $macRelease.size -or [ClaudeLauncher.Updates]::Hash((Join-Path $staging $dmgName)) -ne $macRelease.sha256) { throw ('macOS DMG in ' + $latestTag + ' does not match its manifest.') }
@@ -184,7 +193,7 @@ try {
             $name = 'latest-' + $platform + '.json'
             $download = Join-Path $staging ('check-' + $source[0] + '-' + $name)
             Invoke-WebRequest -UseBasicParsing -Uri ($source[1] + $name) -OutFile $download -MaximumRedirection $source[2] -TimeoutSec 60
-            $remote = [ClaudeLauncher.Updates]::Verify([IO.File]::ReadAllText($download), [ClaudeLauncher.Updates]::PublicKey(), $platform)
+            $remote = VerifyManifest ([IO.File]::ReadAllText($download)) $platform
             $expected = $manifests[$name]
             # 只发布 Windows 时，自建服务的 macOS 清单保持原样，只要求验签通过且不低于随附版本。
             $sameAsExpected = $remote.version -eq $expected.version -and $remote.sha256 -eq $expected.sha256 -and $remote.size -eq $expected.size
