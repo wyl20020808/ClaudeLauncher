@@ -366,6 +366,18 @@ namespace ClaudeLauncher {
             }
             Check(AccountNames.Matches(2, "工作", @"C:\x\Claude-Second", "工作") && AccountNames.Matches(2, null, "", "账号 02") && AccountNames.Matches(2, null, "", "2") &&
                 AccountNames.Matches(3, null, @"C:\x\Claude-Profile-03", "profile-03") && AccountNames.Matches(3, null, "", "  ") && !AccountNames.Matches(3, "家", @"C:\x\Claude-Profile-03", "工作"), "账号搜索匹配错误");
+            // 日志文件：与 macOS 同格式往返、最新在前；整体损坏为空；单条类型／级别／实例不符丢弃；数字页码规则。
+            string logFile = Path.Combine(root, "settings", "launcher-log.json");
+            Check(LogStore.Load(logFile).Count == 0, "缺少日志文件应为空");
+            var stamp = new DateTime(2026, 10, 29, 12, 0, 0, DateTimeKind.Local);
+            LogStore.Save(logFile, new[] { new LogEntry { At = stamp.AddMinutes(1), Level = "错误", Instance = "Claude 2", Text = "账号 02 启动失败" }, new LogEntry { At = stamp, Level = "信息", Instance = "系统", Text = "初始化" } });
+            var loaded = LogStore.Load(logFile);
+            Check(loaded.Count == 2 && loaded[0].Text == "账号 02 启动失败" && loaded[0].Instance == "Claude 2" && loaded[0].At == stamp.AddMinutes(1) && loaded[0].Time == "2026-10-29 12:01:00" && loaded[1].Level == "信息", "日志文件往返错误");
+            Check(File.ReadAllText(logFile).StartsWith("[{\"date\":"), "日志文件格式应与 macOS 一致（JSON 数组）");
+            File.WriteAllText(logFile, "[{\"date\":1,\"level\":\"信息\",\"instance\":\"系统\",\"text\":\"好\"},{\"date\":\"1\",\"level\":\"信息\",\"instance\":\"系统\",\"text\":\"x\"},{\"date\":1,\"level\":\"调试\",\"instance\":\"系统\",\"text\":\"x\"},{\"date\":1,\"level\":\"信息\",\"instance\":\"Claude 11\",\"text\":\"x\"},{\"date\":1,\"level\":\"信息\",\"instance\":\"系统\"},{\"date\":-5,\"level\":\"信息\",\"instance\":\"系统\",\"text\":\"x\"},5,null]");
+            Check(LogStore.Load(logFile).Count == 1, "格式不符的日志记录必须丢弃");
+            foreach (string broken in new[] { "{", "{}", "null", "\"x\"" }) { File.WriteAllText(logFile, broken); Check(LogStore.Load(logFile).Count == 0, "损坏日志文件应读为空：" + broken); }
+            Check(LauncherUI.PageNumbers(1, 0).SequenceEqual(new[] { 0 }) && LauncherUI.PageNumbers(10, 0).SequenceEqual(new[] { 0, 1, 9 }) && LauncherUI.PageNumbers(10, 5).SequenceEqual(new[] { 0, 4, 5, 6, 9 }) && LauncherUI.PageNumbers(3, 1).SequenceEqual(new[] { 0, 1, 2 }), "数字页码规则错误");
             // 开机启动：只接受正式安装路径；值比较不区分大小写、需带引号的完整路径。（不读写真实注册表）
             string installed = @"C:\Users\x\AppData\Local\Programs\Claude 多开启动器\ClaudeLauncher.exe";
             Check(AutoStart.IsInstalledCopy(installed.ToUpperInvariant(), installed) && !AutoStart.IsInstalledCopy(@"D:\ClaudeLauncher\windows\artifacts\bin\ClaudeLauncher.exe", installed), "正式安装路径判断错误");

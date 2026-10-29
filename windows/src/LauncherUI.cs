@@ -40,8 +40,11 @@ namespace ClaudeLauncher {
         TextBox accountSearch; ComboBox accountStatus; CheckBox selectAll; Button copySelected; TextBlock accountsEmpty;
         static readonly string[] StatusFilters = { "全部状态", "运行中", "未运行", "处理中", "异常" };
         // 日志页：组合筛选与分页。
-        TextBox logSearch; ComboBox logTime, logInstance, logLevel; Button logPrev, logNext; TextBlock logPageLabel;
+        TextBox logSearch; ComboBox logTime, logInstance, logLevel; Button logPrev, logNext; StackPanel logPager;
         int logPageIndex;
+        // 日志文件（SPEC 账号与日志交互 [Windows]）与本次运行起点。
+        readonly string logPath;
+        readonly DateTime startedAt = DateTime.Now;
 
         readonly Window window;
         readonly Grid[] pages = new Grid[4];
@@ -146,6 +149,9 @@ namespace ClaudeLauncher {
             lastPagePath = IOPath.Combine(IOPath.GetDirectoryName(path), IOPath.GetFileName(LauncherSettings.LastPagePath));
             namesPath = IOPath.Combine(IOPath.GetDirectoryName(path), IOPath.GetFileName(AccountNames.DefaultPath));
             try { accountNames = AccountNames.Load(namesPath); } catch (Exception error) { namesError = error.Message; }
+            logPath = IOPath.Combine(IOPath.GetDirectoryName(path), IOPath.GetFileName(LogStore.DefaultPath));
+            logs.AddRange(LogStore.Load(logPath));
+            if (logs.Count > settings.LogLimit) { logs.RemoveRange(settings.LogLimit, logs.Count - settings.LogLimit); SaveLogs(); }
             for (int i = 1; i <= 10; i++) if (DeletionJournal.IsPending(i, ProfileDeletion.Local)) incompleteDeletes.Add(i);
             loginAccount = LoginProtection.Read(ProfileDeletion.Local);
             window = new Window {
@@ -279,30 +285,31 @@ namespace ClaudeLauncher {
             export.Click += delegate { ExportLogs(); };
             var clear = At(logsPage, Action("清空日志", "Btn", "", 14), 640, 56, 132, 44);
             clear.Click += delegate {
-                if (logs.Count > 0 && Ask("清空日志？", "只清空启动器内存中的本次运行日志，不影响本地诊断日志、Claude 或账号数据。", new[] { "取消", "清空" }, 0, 0) == 1) { logs.Clear(); logPageIndex = 0; RenderLogs(); }
+                if (logs.Count > 0 && Ask("清空启动器日志？", "只清空启动器自己保存的记录（Claude-MultiLauncher 目录中的 launcher-log.json），不读取或删除 Claude 日志，也不影响本地诊断日志。", new[] { "取消", "清空" }, 0, 0) == 1) { logs.Clear(); SaveLogs(); logPageIndex = 0; RenderLogs(); }
             };
-            logTime = Choice(logsPage, 36, 140, 170, 40, new[] { "本次运行", "最近 5 分钟", "最近 1 小时" }, "日志时间范围");
+            logTime = Choice(logsPage, 36, 140, 170, 40, new[] { "最近 7 天", "最近 24 小时", "最近 1 小时", "最近 5 分钟", "本次运行", "全部时间" }, "日志时间范围");
+            logTime.Padding = new Thickness(38, 0, 30, 0);
+            At(logsPage, Glyph("", 14, Muted), 50, 152).IsHitTestVisible = false;
             logInstance = Choice(logsPage, 216, 140, 150, 40, new[] { "全部实例", "系统" }.Concat(Enumerable.Range(1, 10).Select(n => "Claude " + n)).ToArray(), "日志实例筛选");
             logLevel = Choice(logsPage, 376, 140, 150, 40, new[] { "全部级别", "信息", "警告", "错误" }, "日志级别筛选");
             logSearch = SearchBox(logsPage, 552, 140, 220, 40, "搜索日志内容…", "搜索日志");
             foreach (ComboBox box in new[] { logTime, logInstance, logLevel }) box.SelectionChanged += delegate { logPageIndex = 0; RenderLogs(); };
             logSearch.TextChanged += delegate { logPageIndex = 0; RenderLogs(); };
             At(logsPage, Panel(16, "#DBFFFDFA"), 36, 196, 736, 494);
+            At(logsPage, new Border { CornerRadius = new CornerRadius(15, 15, 0, 0), Background = B("#B3F6EEE4"), IsHitTestVisible = false }, 37, 197, 734, 43);
             string[] logHeads = { "时间", "级别", "实例", "事件内容" };
             double[] logOffsets = { 24, 196, 290, 404 };
             for (int i = 0; i < 4; i++) At(logsPage, T(logHeads[i], 13, "#7A6F64", FontWeights.SemiBold), 36 + logOffsets[i], 209);
             At(logsPage, new Rectangle { Fill = B("#EFE7DC") }, 37, 240, 734, 1);
             At(logsPage, new Rectangle { Fill = B("#EFE7DC") }, 37, 640, 734, 1);
             logRows = At(logsPage, new Canvas(), 36, 241, 736, 399);
-            logPrev = At(logsPage, Action("上一页", "Btn", null, 12), 60, 650, 76, 30);
-            AutomationProperties.SetAutomationId(logPrev, "LogPrevious");
+            // 分页：上一页、数字页码（首页、末页、当前页 ±1，中间省略）、下一页；页码在 RenderLogs 中重建。
+            logPager = At(logsPage, new StackPanel { Orientation = Orientation.Horizontal }, 57, 652);
+            logPrev = PagerButton("", "上一页", "LogPrevious");
             logPrev.Click += delegate { logPageIndex--; RenderLogs(); };
-            logPageLabel = At(logsPage, T("第 1 / 1 页", 12, Muted, FontWeights.Normal), 146, 657, 100);
-            logPageLabel.TextAlignment = TextAlignment.Center;
-            logNext = At(logsPage, Action("下一页", "Btn", null, 12), 256, 650, 76, 30);
-            AutomationProperties.SetAutomationId(logNext, "LogNext");
+            logNext = PagerButton("", "下一页", "LogNext");
             logNext.Click += delegate { logPageIndex++; RenderLogs(); };
-            logSummary = At(logsPage, T("", 12, Muted, FontWeights.Normal), 448, 658, 300);
+            logSummary = At(logsPage, T("", 13, "#8A8178", FontWeights.Normal), 400, 659, 352);
             logSummary.TextAlignment = TextAlignment.Right;
 
             // 系统设置：六个分类，修改先进入草稿，保存后写入启动器自己的 settings.json（SPEC 系统设置 [Windows]）。
@@ -557,8 +564,8 @@ namespace ClaudeLauncher {
             ActionRow(c, 264, y + 44, "打开本地诊断日志", () => {
                 try { Diagnostics.OpenFolder(); } catch (Exception error) { Diagnostics.Error("open_logs_error", error); Alert("无法打开日志目录", error.Message); }
             });
-            y = ChoiceRow(c, y + 100, "本次运行日志保留上限", new[] { "100 条", "500 条", "1000 条" }, LauncherSettings.LogLimits.Cast<object>().ToArray(), () => draft.LogLimit, v => draft.LogLimit = (int)v, null);
-            Note(c, y + 4, "日志记录页只留在内存，退出即清空；导出位置由你选择。导出的设置不含账号、别名、项目或凭据。恢复默认只重置启动器偏好，保留登录保护、开机启动项和任何 Claude 数据。");
+            y = ChoiceRow(c, y + 100, "启动器日志保留上限", new[] { "100 条", "500 条", "1000 条" }, LauncherSettings.LogLimits.Cast<object>().ToArray(), () => draft.LogLimit, v => draft.LogLimit = (int)v, null);
+            Note(c, y + 4, "日志记录保存在数据目录的 launcher-log.json，重启和更新后保留，超出上限删除最旧记录；导出位置由你选择。导出的设置不含账号、别名、项目或凭据。恢复默认只重置启动器偏好，保留日志、登录保护、开机启动项和任何 Claude 数据。");
 
             // 消息通知
             c = settingsSections[4]; y = Heading(c, "消息通知");
@@ -614,7 +621,7 @@ namespace ClaudeLauncher {
         }
         double ChoiceRow(Canvas c, double y, string title, string[] labels, object[] values, Func<object> get, Action<object> set, Func<bool> enabled) {
             At(c, T(title, 14, Ink, FontWeights.SemiBold), 0, y + 6, 260);
-            var combo = At(c, new ComboBox { ItemsSource = labels, FontSize = 13 }, 290, y, 228, 32);
+            var combo = At(c, new ComboBox { Style = (Style)window.FindResource("Pick"), ItemsSource = labels, FontSize = 13, Padding = new Thickness(12, 0, 30, 0) }, 290, y, 228, 32);
             AutomationProperties.SetName(combo, title);
             combo.SelectionChanged += delegate {
                 if (syncingSettings || combo.SelectedIndex < 0) return;
@@ -672,7 +679,7 @@ namespace ClaudeLauncher {
             if (tray != null) tray.Visible = settings.ShowTray;
             foreach (UIElement element in artwork) element.Visibility = settings.ShowArtwork ? Visibility.Visible : Visibility.Collapsed;
             if (!settings.LocalNotifications) { toastTimer.Stop(); toast.Visibility = Visibility.Collapsed; }
-            if (logs.Count > settings.LogLimit) { logs.RemoveRange(settings.LogLimit, logs.Count - settings.LogLimit); RenderLogs(); }
+            if (logs.Count > settings.LogLimit) { logs.RemoveRange(settings.LogLimit, logs.Count - settings.LogLimit); SaveLogs(); RenderLogs(); }
             if (settings.RememberPage) RememberPage();
             else try { if (File.Exists(lastPagePath)) File.Delete(lastPagePath); } catch (Exception error) { Diagnostics.Error("last_page_clear_error", error); }
         }
@@ -758,7 +765,12 @@ namespace ClaudeLauncher {
             DateTime now = DateTime.Now;
             logs.Insert(0, new LogEntry { At = now, Time = now.ToString("yyyy-MM-dd HH:mm:ss"), Level = level, Instance = match.Success ? "Claude " + Int32.Parse(match.Groups[1].Value) : "系统", Text = text });
             if (logs.Count > settings.LogLimit) logs.RemoveRange(settings.LogLimit, logs.Count - settings.LogLimit);
+            SaveLogs();
             RenderLogs();
+        }
+        // 只写启动器自己的日志文件；失败不弹窗、不再写日志（避免递归），内存记录保留。
+        void SaveLogs() {
+            try { LogStore.Save(logPath, logs); } catch (Exception) { }
         }
         // SPEC 账号与日志交互：时间、实例、级别、全文搜索组合筛选；结果保持新到旧。
         internal static List<LogEntry> FilterLogs(IEnumerable<LogEntry> entries, string query, string instance, string level, DateTime? since) {
@@ -768,7 +780,10 @@ namespace ClaudeLauncher {
         }
         List<LogEntry> FilteredLogs() {
             if (logTime == null) return logs.ToList();
-            DateTime? since = logTime.SelectedIndex == 1 ? DateTime.Now.AddMinutes(-5) : logTime.SelectedIndex == 2 ? DateTime.Now.AddHours(-1) : (DateTime?)null;
+            // 最近 7 天／24 小时／1 小时／5 分钟／本次运行／全部时间。
+            TimeSpan[] spans = { TimeSpan.FromDays(7), TimeSpan.FromHours(24), TimeSpan.FromHours(1), TimeSpan.FromMinutes(5) };
+            int period = logTime.SelectedIndex;
+            DateTime? since = period >= 0 && period < spans.Length ? DateTime.Now - spans[period] : period == 4 ? startedAt : (DateTime?)null;
             string instance = logInstance.SelectedIndex <= 0 ? null : (string)logInstance.SelectedItem;
             string level = logLevel.SelectedIndex <= 0 ? null : (string)logLevel.SelectedItem;
             return FilterLogs(logs, logSearch.Text, instance, level, since);
@@ -780,7 +795,7 @@ namespace ClaudeLauncher {
             int pages = Math.Max(1, (shown.Count + 9) / 10);
             logPageIndex = Math.Max(0, Math.Min(logPageIndex, pages - 1));
             if (shown.Count == 0) {
-                var empty = T(logs.Count == 0 ? "暂无日志" : "没有符合条件的日志，可调整筛选或搜索", 13, "#8A7F74", FontWeights.Normal); empty.TextAlignment = TextAlignment.Center;
+                var empty = T(logs.Count == 0 ? "暂无日志" : "没有匹配的日志，可清除搜索或切换筛选条件", 13, "#A59B90", FontWeights.Normal); empty.TextAlignment = TextAlignment.Center;
                 At(logRows, empty, 0, 190, 736);
             }
             var slice = shown.Skip(logPageIndex * 10).Take(10).ToList();
@@ -788,9 +803,9 @@ namespace ClaudeLauncher {
                 LogEntry entry = slice[i]; double y = i * 40;
                 if (i > 0) At(logRows, new Rectangle { Fill = B("#F3ECE3") }, 1, y, 734, 1);
                 At(logRows, T(entry.Time, 13, "#8A7F74", FontWeights.Normal), 24, y + 10, 166);
-                string[] tone = entry.Level == "错误" ? new[] { "#FBE3DF", "#C9604A" } : entry.Level == "警告" ? new[] { "#FBEFD9", "#B7832A" } : new[] { "#E3F3EA", "#3C8A68" };
-                var pill = At(logRows, new Border { CornerRadius = new CornerRadius(6), Background = B(tone[0]) }, 196, y + 9, 44, 22);
-                pill.Child = new TextBlock { Text = entry.Level, FontSize = 11, FontWeight = FontWeights.SemiBold, Foreground = B(tone[1]), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+                string[] tone = entry.Level == "错误" ? new[] { "#FCE3DD", "#C75F47" } : entry.Level == "警告" ? new[] { "#FCEBD2", "#C07A2A" } : new[] { "#DDF0E6", "#3C8A68" };
+                var pill = At(logRows, new Border { CornerRadius = new CornerRadius(6), Background = B(tone[0]), ToolTip = entry.Level }, 196, y + 9, 46, 22);
+                pill.Child = new TextBlock { Text = entry.Level, FontSize = 12, FontWeight = FontWeights.Medium, Foreground = B(tone[1]), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
                 At(logRows, T(entry.Instance, 13, Ink, FontWeights.Normal), 290, y + 10, 100);
                 // 只读可选择的事件内容；截断时悬停显示全文。
                 var text = At(logRows, new TextBox { Text = entry.Text, IsReadOnly = true, BorderThickness = new Thickness(0), Background = Brushes.Transparent, Foreground = B(Ink), FontSize = 13, Padding = new Thickness(0), ToolTip = entry.Text }, 402, y + 9, 314);
@@ -798,8 +813,32 @@ namespace ClaudeLauncher {
             }
             logPrev.IsEnabled = logPageIndex > 0;
             logNext.IsEnabled = logPageIndex < pages - 1;
-            logPageLabel.Text = "第 " + (logPageIndex + 1) + " / " + pages + " 页";
-            logSummary.Text = (shown.Count == logs.Count ? "共 " + logs.Count + " 条" : "筛选出 " + shown.Count + " / " + logs.Count + " 条") + " · 每页 10 条";
+            logPager.Children.Clear();
+            logPager.Children.Add(logPrev);
+            int last = -1;
+            foreach (int i in PageNumbers(pages, logPageIndex)) {
+                if (last >= 0 && i - last > 1) logPager.Children.Add(new TextBlock { Text = "…", Width = 24, FontSize = 13, Foreground = B("#8A8178"), TextAlignment = TextAlignment.Center, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 8, 0) });
+                int target = i;
+                var number = new Button { Content = (i + 1).ToString(), Style = (Style)window.FindResource(i == logPageIndex ? "Primary" : "Btn"), FontSize = 13, Width = 32, Height = 32, Padding = new Thickness(0), Margin = new Thickness(0, 0, 8, 0) };
+                number.Tag = new CornerRadius(8);
+                AutomationProperties.SetName(number, "第 " + (i + 1) + " 页");
+                number.Click += delegate { logPageIndex = target; RenderLogs(); };
+                logPager.Children.Add(number);
+                last = i;
+            }
+            logPager.Children.Add(logNext);
+            logSummary.Text = shown.Count == logs.Count || shown.Count == 0 ? "共 " + logs.Count + " 条日志 · 每页显示 10 条" : "匹配 " + shown.Count + " 条 / 共 " + logs.Count + " 条日志 · 每页显示 10 条";
+        }
+        // 数字页码：首页、末页、当前页前后各一页（从 0 起）。
+        internal static List<int> PageNumbers(int pages, int current) {
+            return Enumerable.Range(0, pages).Where(i => i == 0 || i == pages - 1 || Math.Abs(i - current) <= 1).ToList();
+        }
+        Button PagerButton(string glyph, string name, string id) {
+            var button = new Button { Content = Glyph(glyph, 11, Ink), Style = (Style)window.FindResource("Btn"), Width = 32, Height = 32, Padding = new Thickness(0), Margin = new Thickness(0, 0, 8, 0), ToolTip = name };
+            button.Tag = new CornerRadius(8);
+            ((TextBlock)button.Content).SetBinding(TextBlock.ForegroundProperty, new System.Windows.Data.Binding("Foreground") { Source = button });
+            AutomationProperties.SetName(button, name); AutomationProperties.SetAutomationId(button, id);
+            return button;
         }
         // 导出全部筛选结果（不只是当前页），按时间正序。
         void ExportLogs() {
@@ -908,7 +947,7 @@ namespace ClaudeLauncher {
             return box;
         }
         ComboBox Choice(Canvas canvas, double x, double y, double width, double height, string[] items, string name) {
-            var combo = At(canvas, new ComboBox { ItemsSource = items, SelectedIndex = 0, FontSize = 13, VerticalContentAlignment = VerticalAlignment.Center, Padding = new Thickness(12, 0, 8, 0) }, x, y, width, height);
+            var combo = At(canvas, new ComboBox { Style = (Style)window.FindResource("Pick"), ItemsSource = items, SelectedIndex = 0, FontSize = 13, Padding = new Thickness(14, 0, 30, 0) }, x, y, width, height);
             AutomationProperties.SetName(combo, name);
             return combo;
         }
@@ -1507,6 +1546,42 @@ namespace ClaudeLauncher {
  <Style x:Key='Nav' TargetType='Button' BasedOn='{StaticResource Icon}'>
   <Setter Property='HorizontalContentAlignment' Value='Left'/><Setter Property='Padding' Value='20,0,0,0'/>
   <Setter Property='Tag'><Setter.Value><CornerRadius>14</CornerRadius></Setter.Value></Setter>
+ </Style>
+ <Style x:Key='Pick' TargetType='ComboBox'>
+  <Setter Property='Foreground' Value='#2B2622'/><Setter Property='Cursor' Value='Hand'/><Setter Property='FocusVisualStyle' Value='{x:Null}'/>
+  <Setter Property='ItemContainerStyle'><Setter.Value><Style TargetType='ComboBoxItem'>
+   <Setter Property='Padding' Value='10,6'/><Setter Property='Cursor' Value='Hand'/>
+   <Setter Property='Template'><Setter.Value><ControlTemplate TargetType='ComboBoxItem'>
+    <Border x:Name='Row' Background='Transparent' CornerRadius='6' Padding='{TemplateBinding Padding}'><ContentPresenter/></Border>
+    <ControlTemplate.Triggers>
+     <Trigger Property='IsHighlighted' Value='True'><Setter TargetName='Row' Property='Background' Value='#F3E6DA'/></Trigger>
+     <Trigger Property='IsSelected' Value='True'><Setter Property='Foreground' Value='#9A6447'/><Setter Property='FontWeight' Value='SemiBold'/></Trigger>
+    </ControlTemplate.Triggers>
+   </ControlTemplate></Setter.Value></Setter>
+  </Style></Setter.Value></Setter>
+  <Setter Property='Template'><Setter.Value><ControlTemplate TargetType='ComboBox'>
+   <Grid>
+    <ToggleButton Focusable='False' ClickMode='Press' IsChecked='{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}'>
+     <ToggleButton.Template><ControlTemplate TargetType='ToggleButton'>
+      <Border x:Name='Box' Background='#F7FFFDFA' BorderBrush='#E3D9CD' BorderThickness='1' CornerRadius='10'>
+       <TextBlock Text='&#xE70D;' FontFamily='Segoe Fluent Icons, Segoe MDL2 Assets' FontSize='10' Foreground='#6E655C' HorizontalAlignment='Right' VerticalAlignment='Center' Margin='0,0,12,0'/>
+      </Border>
+      <ControlTemplate.Triggers><Trigger Property='IsMouseOver' Value='True'><Setter TargetName='Box' Property='BorderBrush' Value='#D2C3B2'/></Trigger></ControlTemplate.Triggers>
+     </ControlTemplate></ToggleButton.Template>
+    </ToggleButton>
+    <ContentPresenter IsHitTestVisible='False' Content='{TemplateBinding SelectionBoxItem}' Margin='{TemplateBinding Padding}' VerticalAlignment='Center' HorizontalAlignment='Left'/>
+    <Border x:Name='Focus' BorderBrush='#B9825F' BorderThickness='2' CornerRadius='10' IsHitTestVisible='False' Visibility='Collapsed'/>
+    <Popup IsOpen='{TemplateBinding IsDropDownOpen}' Placement='Bottom' AllowsTransparency='True' Focusable='False' PopupAnimation='Fade'>
+     <Border Background='#FFFCF7' BorderBrush='#E3D9CD' BorderThickness='1' CornerRadius='8' Margin='0,4,0,0' Padding='4' MinWidth='{Binding ActualWidth, RelativeSource={RelativeSource TemplatedParent}}'>
+      <ScrollViewer MaxHeight='300' VerticalScrollBarVisibility='Auto'><ItemsPresenter/></ScrollViewer>
+     </Border>
+    </Popup>
+   </Grid>
+   <ControlTemplate.Triggers>
+    <Trigger Property='IsKeyboardFocused' Value='True'><Setter TargetName='Focus' Property='Visibility' Value='Visible'/></Trigger>
+    <Trigger Property='IsEnabled' Value='False'><Setter Property='Opacity' Value='0.5'/></Trigger>
+   </ControlTemplate.Triggers>
+  </ControlTemplate></Setter.Value></Setter>
  </Style>
  <Style x:Key='Switch' TargetType='CheckBox'>
   <Setter Property='Cursor' Value='Hand'/><Setter Property='FocusVisualStyle' Value='{x:Null}'/>

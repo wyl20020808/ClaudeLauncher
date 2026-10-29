@@ -116,7 +116,7 @@ public static class LauncherTests {
         Check(trayItems.All(t => System.Text.RegularExpressions.Regex.IsMatch(t.Item2, "^账号 [0-9]{2} · (运行中|未运行|检查中|启动中|删除未完成)$")), "Tray items must show only number and state");
         TestSettingsPage(ui, settingsFile, state);
         TestAccountsPage(ui, settingsFile, state);
-        TestLogsPage(ui, state);
+        TestLogsPage(ui, settingsFile, state);
         Directory.Delete(settingsDir, true);
         Console.WriteLine("PASS: " + checks + " assertions; WPF layout loaded without showing windows.");
         return 0;
@@ -150,7 +150,7 @@ public static class LauncherTests {
         for (int i = 0; i < 600; i++) addLog.Invoke(ui, new object[] { "合成日志 " + i });
         var logs = (System.Collections.IList)typeof(LauncherUI).GetField("logs", flags).GetValue(ui);
         Check(logs.Count == 500, "Default log limit must be 500");
-        choice("本次运行日志保留上限").SelectedIndex = 0;
+        choice("启动器日志保留上限").SelectedIndex = 0;
         click(toggle("显示水墨插画")); click(toggle("显示窗口内提示"));
         click(button("SaveSettings"));
         var saved = LauncherSettings.Load(settingsFile);
@@ -221,7 +221,7 @@ public static class LauncherTests {
         Check(ui.SetAlias(2, "   ") == null && all.OfType<TextBlock>().Count(t => t.Text == "账号 02") == 2, "Empty alias restores default name");
         Check(!new LauncherSettings().ExportJson().Contains("工作"), "Aliases must not be exported with settings");
     }
-    static void TestLogsPage(LauncherUI ui, List<Instance> state) {
+    static void TestLogsPage(LauncherUI ui, string settingsFile, List<Instance> state) {
         var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
         var logs = (List<LogEntry>)typeof(LauncherUI).GetField("logs", flags).GetValue(ui);
         var addLog = typeof(LauncherUI).GetMethod("AddLog", flags);
@@ -250,15 +250,37 @@ public static class LauncherTests {
         Check(visibleEntries() == 1, "Level filter");
         choice("日志级别筛选").SelectedIndex = 0; choice("日志实例筛选").SelectedIndex = 3;
         Check(visibleEntries() == 1, "Instance filter (Claude 2)");
-        choice("日志实例筛选").SelectedIndex = 1; choice("日志时间范围").SelectedIndex = 1;
+        choice("日志实例筛选").SelectedIndex = 1;
+        Check(choice("日志时间范围").Items.Cast<string>().SequenceEqual(new[] { "最近 7 天", "最近 24 小时", "最近 1 小时", "最近 5 分钟", "本次运行", "全部时间" }) && choice("日志时间范围").SelectedIndex == 0, "Time filter options and 7-day default");
+        choice("日志时间范围").SelectedIndex = 3;
         Check(LauncherUI.FilterLogs(logs, "", "系统", null, DateTime.Now.AddMinutes(-5)).Count == 14 && visibleEntries() == 10, "Time filter excludes entries older than 5 minutes");
         search.Text = "不存在的内容";
-        Check(visibleEntries() == 0 && rows.Children.OfType<TextBlock>().Any(t => t.Text.StartsWith("没有符合条件")), "Empty filtered result explains itself");
-        search.Text = ""; choice("日志实例筛选").SelectedIndex = 0; choice("日志时间范围").SelectedIndex = 0;
+        Check(visibleEntries() == 0 && rows.Children.OfType<TextBlock>().Any(t => t.Text.StartsWith("没有匹配的日志")), "Empty filtered result explains itself");
+        search.Text = ""; choice("日志实例筛选").SelectedIndex = 0; choice("日志时间范围").SelectedIndex = 5;
+        var pager = (StackPanel)typeof(LauncherUI).GetField("logPager", flags).GetValue(ui);
+        var pageButtons = pager.Children.OfType<Button>().Where(b => AutomationProperties.GetName(b).StartsWith("第 ")).ToList();
+        Check(pageButtons.Count == 2 && pager.Children[0] == prev && pager.Children[pager.Children.Count - 1] == next, "Numbered pager: previous, 1, 2, next");
+        click(pageButtons[1]);
+        Check(visibleEntries() == 6 && prev.IsEnabled, "Page number navigates");
+        var summary = (TextBlock)typeof(LauncherUI).GetField("logSummary", flags).GetValue(ui);
+        Check(summary.Text == "共 16 条日志 · 每页显示 10 条", "Summary text: " + summary.Text);
+        choice("日志时间范围").SelectedIndex = 0;
         string exported = LauncherUI.LogText(LauncherUI.FilterLogs(logs, "信息", null, null, null));
         string[] lines = exported.Split(new[] { "\r\n" }, StringSplitOptions.RemoveEmptyEntries);
         Check(lines.Length == 15 && lines[0].EndsWith("普通信息 0") && lines[14].EndsWith("普通信息 14"), "Export writes all filtered entries oldest first");
         Check(rows.Children.OfType<TextBox>().All(t => t.IsReadOnly && t.ToolTip is string), "Log text is read-only, selectable and has a full-text tooltip");
+
+        // 持久化：写入启动器自己的日志文件（临时目录），重启后恢复；“本次运行”只含新进程的记录。
+        string logFile = Path.Combine(Path.GetDirectoryName(settingsFile), "launcher-log.json");
+        var saved = LogStore.Load(logFile);
+        Check(saved.Count == logs.Count && saved[0].Text == logs[0].Text, "Logs must be written to launcher-log.json");
+        System.Threading.Thread.Sleep(20);
+        var restarted = new LauncherUI(new LauncherSettings(), settingsFile);
+        var restored = (List<LogEntry>)typeof(LauncherUI).GetField("logs", flags).GetValue(restarted);
+        Check(restored.Count == saved.Count + 1 && restored.Any(e => e.Text == "账号 02 启动失败"), "Logs must survive a restart");
+        ((ComboBox)typeof(LauncherUI).GetField("logTime", flags).GetValue(restarted)).SelectedIndex = 4;
+        var thisRun = (List<LogEntry>)typeof(LauncherUI).GetMethod("FilteredLogs", flags).Invoke(restarted, null);
+        Check(thisRun.Count == 1 && thisRun[0].Text == "启动器已完成初始化", "“本次运行” must only show entries since this launch");
     }
     static void TestLaunches() {
         string fixture = Path.Combine(Path.GetTempPath(), "claude-launch-test-" + Guid.NewGuid().ToString("N"), "客户 测试 & O'Neil");

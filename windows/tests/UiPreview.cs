@@ -16,8 +16,9 @@ public static class UiPreview {
     [STAThread]
     public static void Main(string[] args) {
         new Application();
-        // 合成默认设置；临时路径不会被写入（预览不保存设置）。
-        var ui = new LauncherUI(new LauncherSettings(), Path.Combine(Path.GetTempPath(), "claude-preview-" + Guid.NewGuid().ToString("N"), "settings.json"));
+        // 合成默认设置与临时目录（预览不保存设置；日志文件写入临时目录，结束时删除）。
+        string temp = Path.Combine(Path.GetTempPath(), "claude-preview-" + Guid.NewGuid().ToString("N"));
+        var ui = new LauncherUI(new LauncherSettings(), Path.Combine(temp, "settings.json"));
         var state = new List<Instance> { new Instance { Number = 1, ProcessId = 111 } };
         string[] names = { "instances", "accounts", "logs" };
         Directory.CreateDirectory(args[0]);
@@ -39,6 +40,7 @@ public static class UiPreview {
         progress.Status.Text = "校验通过。启动器即将关闭，由安装程序卸载旧版并安装新版，完成后会自动重新打开。";
         progress.Detail.Text = "请稍候，不要手动打开启动器。";
         Save(background, new Size(460, 300), Path.Combine(args[0], "update-install.png"));
+        if (Directory.Exists(temp)) Directory.Delete(temp, true);
         Console.WriteLine("PASS: three pages, six settings sections and two update states rendered offscreen; no desktop window opened.");
     }
 }

@@ -130,6 +130,40 @@ namespace ClaudeLauncher {
         }
     }
 
+    // SPEC 账号与日志交互 [Windows]：启动器日志文件 launcher-log.json，与 macOS 同格式，最新在前；只处理启动器自己的文件。
+    static class LogStore {
+        public static readonly string DefaultPath = Path.Combine(LauncherSettings.DataDirectory, "launcher-log.json");
+        static readonly string[] Levels = { "信息", "警告", "错误" };
+        static readonly DateTime Epoch = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        public static bool ValidInstance(string instance) {
+            return instance == "系统" || System.Text.RegularExpressions.Regex.IsMatch(instance ?? "", "^Claude ([1-9]|10)$");
+        }
+        // 文件缺失或整体损坏返回空表；单条类型、级别或实例不符时丢弃该条。
+        public static List<LogEntry> Load(string path) {
+            var entries = new List<LogEntry>();
+            object[] rows;
+            try { rows = File.Exists(path) ? new JavaScriptSerializer { MaxJsonLength = 16 * 1024 * 1024 }.DeserializeObject(File.ReadAllText(path)) as object[] : null; }
+            catch (Exception) { return entries; }
+            if (rows == null) return entries;
+            foreach (object raw in rows) {
+                var row = raw as Dictionary<string, object>;
+                object date, level, instance, text;
+                if (row == null || !row.TryGetValue("date", out date) || !row.TryGetValue("level", out level) || !row.TryGetValue("instance", out instance) || !row.TryGetValue("text", out text)) continue;
+                if (!(date is int || date is long || date is decimal || date is double) || !(level is string) || !Levels.Contains((string)level) || !(instance is string) || !ValidInstance((string)instance) || !(text is string)) continue;
+                double seconds = Convert.ToDouble(date, System.Globalization.CultureInfo.InvariantCulture);
+                if (Double.IsNaN(seconds) || seconds < 0 || seconds > 253402300799) continue;
+                DateTime at = Epoch.AddSeconds(seconds).ToLocalTime();
+                entries.Add(new LogEntry { At = at, Time = at.ToString("yyyy-MM-dd HH:mm:ss"), Level = (string)level, Instance = (string)instance, Text = (string)text });
+            }
+            return entries;
+        }
+        public static void Save(string path, IEnumerable<LogEntry> newestFirst) {
+            var rows = newestFirst.Select(e => new Dictionary<string, object> {
+                { "date", Math.Round((e.At.ToUniversalTime() - Epoch).TotalSeconds, 3) }, { "level", e.Level }, { "instance", e.Instance }, { "text", e.Text } }).ToList();
+            LauncherSettings.WriteAtomic(path, new JavaScriptSerializer { MaxJsonLength = 16 * 1024 * 1024 }.Serialize(rows));
+        }
+    }
+
     // SPEC 启动行为 [Windows]：HKCU Run 中本启动器的开机启动项；只接受正式安装路径，只删除指向本启动器的值。
     public static class AutoStart {
         const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run", ValueName = "ClaudeMultiLauncher";

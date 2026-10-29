@@ -140,6 +140,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup.ps1
 
 ## 验证记录
 
+### 日志持久化与日志页改版（2026-10-29，feature/windows-log-persist，对应 macOS 1.7.11）
+
+- 自检（已执行）：`build.ps1 -Preview` 通过，LauncherTests 302 项、`--self-test` 198 项。新增：日志文件与 macOS 同格式往返、坏记录与整体损坏处理、数字页码规则；界面中 6 个时间选项与 7 天默认、页码导航、汇总文字、写入文件、重启后恢复、“本次运行”只含新进程记录。日志页与设置页离屏图已人工查看；预览与测试的日志文件写在临时目录并清理。
+- GUI（**未验证**）：桌面中的下拉弹出与键盘操作、真实重启／软件更新后日志保留、清空确认、导出对话框。
+
 ### 账号页与日志页交互（2026-10-29，feature/windows-accounts-logs）
 
 - 自检（已执行）：`build.ps1 -Preview` 通过，LauncherTests 295 项（新增 26 项账号／日志检查）、`--self-test` 189 项（新增 10 项别名检查）。账号页与日志页离屏图已人工查看，搜索框、筛选、复选框、铅笔按钮、分页无遮挡。
