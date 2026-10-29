@@ -20,7 +20,7 @@ using System.Windows.Threading;
 using IOPath = System.IO.Path;
 
 namespace ClaudeLauncher {
-    sealed class LogEntry { public string Time, Level, Instance, Text; }
+    sealed class LogEntry { public string Time, Level, Instance, Text; public DateTime At; }
 
     // 水墨浅色界面，布局坐标与 macOS 1.6 四个页面一致（主区域 808×720，侧栏 272）。
     public sealed class LauncherUI {
@@ -29,8 +29,19 @@ namespace ClaudeLauncher {
         static readonly string[][] Palette = { new[] { "#FCE7D4", "#C0743A" }, new[] { "#E9E3FA", "#6A55C8" }, new[] { "#DDF0E6", "#3C8A68" }, new[] { "#FCE3DD", "#C75F47" } };
         static readonly FontFamily Icons = new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets");
 
-        sealed class Card { public Border Root; public Ellipse Dot; public TextBlock Status, Code, Folder; public Button Action; }
-        sealed class Row { public Border Root; public Ellipse Dot; public TextBlock Status, Recent; }
+        sealed class Card { public Border Root; public Ellipse Dot; public TextBlock Title, Status, Code, Folder; public Button Action; }
+        sealed class Row { public Border Root; public Ellipse Dot; public TextBlock Name, Status, Recent; public CheckBox Select; }
+
+        // 账号页：本地别名、搜索与状态筛选、可见选择（SPEC 账号与日志交互）。
+        Dictionary<int, string> accountNames = new Dictionary<int, string>();
+        string namesError;
+        readonly string namesPath;
+        readonly HashSet<int> selectedAccounts = new HashSet<int>();
+        TextBox accountSearch; ComboBox accountStatus; CheckBox selectAll; Button copySelected; TextBlock accountsEmpty;
+        static readonly string[] StatusFilters = { "全部状态", "运行中", "未运行", "处理中", "异常" };
+        // 日志页：组合筛选与分页。
+        TextBox logSearch; ComboBox logTime, logInstance, logLevel; Button logPrev, logNext; TextBlock logPageLabel;
+        int logPageIndex;
 
         readonly Window window;
         readonly Grid[] pages = new Grid[4];
@@ -133,6 +144,8 @@ namespace ClaudeLauncher {
         internal LauncherUI(LauncherSettings initial, string path) {
             settings = initial; draft = initial.Clone(); settingsPath = path;
             lastPagePath = IOPath.Combine(IOPath.GetDirectoryName(path), IOPath.GetFileName(LauncherSettings.LastPagePath));
+            namesPath = IOPath.Combine(IOPath.GetDirectoryName(path), IOPath.GetFileName(AccountNames.DefaultPath));
+            try { accountNames = AccountNames.Load(namesPath); } catch (Exception error) { namesError = error.Message; }
             for (int i = 1; i <= 10; i++) if (DeletionJournal.IsPending(i, ProfileDeletion.Local)) incompleteDeletes.Add(i);
             loginAccount = LoginProtection.Read(ProfileDeletion.Local);
             window = new Window {
@@ -233,12 +246,19 @@ namespace ClaudeLauncher {
                 stats[i] = At(accounts, T("00", 30, statInfo[i][2], FontWeights.Medium), x + 18, 170);
                 At(accounts, T(statInfo[i][1], 11, Muted, FontWeights.Normal), x + 80, 190, 150);
             }
-            Field(accounts, 36, 240, 268, 38, "", "搜索账号名称或目录…", Faint, false);
-            Field(accounts, 316, 240, 130, 38, null, "全部状态", Ink, true);
+            accountSearch = SearchBox(accounts, 36, 240, 268, 38, "搜索别名、编号或目录…", "搜索账号");
+            accountSearch.TextChanged += delegate { Render(); };
+            accountStatus = Choice(accounts, 316, 240, 130, 38, StatusFilters, "账号状态筛选");
+            accountStatus.SelectionChanged += delegate { Render(); };
+            copySelected = At(accounts, Action("复制选中路径", "Btn", "", 13), 516, 240, 134, 38);
+            AutomationProperties.SetAutomationId(copySelected, "CopySelectedPaths");
+            copySelected.Click += delegate { CopySelectedPaths(); };
             var refresh = At(accounts, Action("刷新状态", "Btn", "", 14), 660, 240, 112, 38);
             refresh.Click += async delegate { executable = null; await ScanNow(); };
             At(accounts, Panel(16, "#DBFFFDFA"), 36, 292, 736, 404);
-            At(accounts, new Border { Width = 16, Height = 16, CornerRadius = new CornerRadius(4), Background = Brushes.White, BorderBrush = B("#D9CFC3"), BorderThickness = new Thickness(1) }, 60, 306);
+            selectAll = At(accounts, new CheckBox { IsThreeState = false, Cursor = Cursors.Hand, VerticalAlignment = VerticalAlignment.Center }, 60, 307);
+            AutomationProperties.SetName(selectAll, "全选当前结果");
+            selectAll.Click += delegate { ToggleSelectAll(); };
             string[] heads = { "账号名称", "登录邮箱", "对应实例", "状态", "最近使用", "操作" };
             double[] offsets = { 100, 250, 416, 478, 566, 660 };
             for (int i = 0; i < heads.Length; i++) At(accounts, T(heads[i], 13, "#7A6F64", FontWeights.SemiBold), 36 + offsets[i], 304);
@@ -247,7 +267,9 @@ namespace ClaudeLauncher {
             rowList = new StackPanel();
             At(accounts, new ScrollViewer { Content = rowList, VerticalScrollBarVisibility = ScrollBarVisibility.Auto }, 37, 337, 734, 318);
             for (int n = 1; n <= 10; n++) { rows[n] = BuildRow(n); rowList.Children.Add(rows[n].Root); }
-            tableFooter = At(accounts, T("", 12, Muted, FontWeights.Normal), 60, 667, 300);
+            accountsEmpty = At(accounts, T("没有符合条件的账号", 13, "#8A7F74", FontWeights.Normal), 37, 470, 734);
+            accountsEmpty.TextAlignment = TextAlignment.Center;
+            tableFooter = At(accounts, T("", 12, Muted, FontWeights.Normal), 60, 667, 400);
             var note = At(accounts, T("登录信息由各实例独立管理", 12, Muted, FontWeights.Normal), 500, 667, 248);
             note.TextAlignment = TextAlignment.Right;
 
@@ -256,11 +278,15 @@ namespace ClaudeLauncher {
             var export = At(logsPage, Action("导出日志", "Btn", "", 14), 502, 56, 128, 44);
             export.Click += delegate { ExportLogs(); };
             var clear = At(logsPage, Action("清空日志", "Btn", "", 14), 640, 56, 132, 44);
-            clear.Click += delegate { logs.Clear(); RenderLogs(); };
-            Field(logsPage, 36, 140, 170, 40, "", "本次运行", Ink, true);
-            Field(logsPage, 216, 140, 150, 40, null, "全部实例", Ink, true);
-            Field(logsPage, 376, 140, 150, 40, null, "全部级别", Ink, true);
-            Field(logsPage, 552, 140, 220, 40, "", "搜索日志内容…", Faint, false);
+            clear.Click += delegate {
+                if (logs.Count > 0 && Ask("清空日志？", "只清空启动器内存中的本次运行日志，不影响本地诊断日志、Claude 或账号数据。", new[] { "取消", "清空" }, 0, 0) == 1) { logs.Clear(); logPageIndex = 0; RenderLogs(); }
+            };
+            logTime = Choice(logsPage, 36, 140, 170, 40, new[] { "本次运行", "最近 5 分钟", "最近 1 小时" }, "日志时间范围");
+            logInstance = Choice(logsPage, 216, 140, 150, 40, new[] { "全部实例", "系统" }.Concat(Enumerable.Range(1, 10).Select(n => "Claude " + n)).ToArray(), "日志实例筛选");
+            logLevel = Choice(logsPage, 376, 140, 150, 40, new[] { "全部级别", "信息", "警告", "错误" }, "日志级别筛选");
+            logSearch = SearchBox(logsPage, 552, 140, 220, 40, "搜索日志内容…", "搜索日志");
+            foreach (ComboBox box in new[] { logTime, logInstance, logLevel }) box.SelectionChanged += delegate { logPageIndex = 0; RenderLogs(); };
+            logSearch.TextChanged += delegate { logPageIndex = 0; RenderLogs(); };
             At(logsPage, Panel(16, "#DBFFFDFA"), 36, 196, 736, 494);
             string[] logHeads = { "时间", "级别", "实例", "事件内容" };
             double[] logOffsets = { 24, 196, 290, 404 };
@@ -268,10 +294,14 @@ namespace ClaudeLauncher {
             At(logsPage, new Rectangle { Fill = B("#EFE7DC") }, 37, 240, 734, 1);
             At(logsPage, new Rectangle { Fill = B("#EFE7DC") }, 37, 640, 734, 1);
             logRows = At(logsPage, new Canvas(), 36, 241, 736, 399);
-            for (int i = 0; i < 4; i++) {
-                var box = At(logsPage, new Border { CornerRadius = new CornerRadius(7), Background = i == 0 ? B(Brown) : Brushes.White, BorderBrush = B("#E3D9CD"), BorderThickness = new Thickness(i == 0 ? 0 : 1), IsHitTestVisible = false }, 60 + i * 40, 652, 30, 28);
-                box.Child = new TextBlock { Text = (i + 1).ToString(), FontSize = 12, Foreground = i == 0 ? Brushes.White : B(Muted), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
-            }
+            logPrev = At(logsPage, Action("上一页", "Btn", null, 12), 60, 650, 76, 30);
+            AutomationProperties.SetAutomationId(logPrev, "LogPrevious");
+            logPrev.Click += delegate { logPageIndex--; RenderLogs(); };
+            logPageLabel = At(logsPage, T("第 1 / 1 页", 12, Muted, FontWeights.Normal), 146, 657, 100);
+            logPageLabel.TextAlignment = TextAlignment.Center;
+            logNext = At(logsPage, Action("下一页", "Btn", null, 12), 256, 650, 76, 30);
+            AutomationProperties.SetAutomationId(logNext, "LogNext");
+            logNext.Click += delegate { logPageIndex++; RenderLogs(); };
             logSummary = At(logsPage, T("", 12, Muted, FontWeights.Normal), 448, 658, 300);
             logSummary.TextAlignment = TextAlignment.Right;
 
@@ -282,6 +312,7 @@ namespace ClaudeLauncher {
             string first = settings.RememberPage ? LauncherSettings.ReadLastPage(lastPagePath) ?? settings.StartPage : settings.StartPage;
             ShowPage(Array.IndexOf(LauncherSettings.Pages, first));
             AddLog("启动器已完成初始化");
+            if (namesError != null) AddLog("账号别名文件无法读取，已停止写入别名：" + namesError);
             if (settings.LoadError != null) { Diagnostics.Write("settings_load_error", settings.LoadError); AddLog("设置文件无法读取，已按默认设置运行：" + settings.LoadError); }
             ApplySettings();
             timer.Tick += async delegate { await Refresh(); };
@@ -415,7 +446,7 @@ namespace ClaudeLauncher {
             var badge = At(canvas, new Grid(), 22, 39, 44, 44);
             badge.Children.Add(new Ellipse { Fill = B(palette[0]), Stroke = B("#40" + palette[1].Substring(1)), StrokeThickness = 1 });
             badge.Children.Add(new TextBlock { Text = n.ToString(), FontSize = 20, FontWeight = FontWeights.Medium, Foreground = B(palette[1]), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center });
-            At(canvas, T("账号 " + Two(n), 18, Ink, FontWeights.SemiBold), 84, 16);
+            card.Title = At(canvas, T(DisplayName(n), 18, Ink, FontWeights.SemiBold), 84, 16, 300);
             card.Dot = At(canvas, new Ellipse { Fill = B("#B9B1A7") }, 86, 51, 9, 9);
             card.Status = At(canvas, T("读取状态…", 13, Muted, FontWeights.Normal), 102, 44, 150);
             var chips = At(canvas, new StackPanel { Orientation = Orientation.Horizontal }, 84, 80);
@@ -447,18 +478,23 @@ namespace ClaudeLauncher {
             var row = new Row();
             var canvas = new Canvas { Width = 734, Height = 52 };
             row.Root = new Border { Child = canvas, BorderBrush = B("#EFE7DC"), BorderThickness = new Thickness(0, 0, 0, 1) };
-            At(canvas, new Border { CornerRadius = new CornerRadius(4), Background = Brushes.White, BorderBrush = B("#D9CFC3"), BorderThickness = new Thickness(1), IsHitTestVisible = false }, 24, 18, 16, 16);
+            int number = n;
+            row.Select = At(canvas, new CheckBox { Cursor = Cursors.Hand }, 24, 18);
+            AutomationProperties.SetName(row.Select, "选择账号 " + Two(n));
+            row.Select.Click += delegate { if (row.Select.IsChecked == true) selectedAccounts.Add(number); else selectedAccounts.Remove(number); UpdateSelection(); };
             string[] palette = Palette[(n - 1) % 4];
             var badge = At(canvas, new Border { CornerRadius = new CornerRadius(8), Background = B(palette[0]) }, 64, 12, 28, 28);
             badge.Child = new TextBlock { Text = Two(n), FontSize = 12, FontWeight = FontWeights.SemiBold, Foreground = B(palette[1]), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
-            At(canvas, T("账号 " + Two(n), 14, Ink, FontWeights.Medium), 100, 15, 110);
+            row.Name = At(canvas, T(DisplayName(n), 14, Ink, FontWeights.Medium), 100, 15, 140);
             var email = At(canvas, T("不读取", 13, Faint, FontWeights.Normal), 250, 16, 150);
             email.ToolTip = "启动器不读取登录凭据或账号邮箱。";
             At(canvas, T("Claude " + n, 13, Muted, FontWeights.Normal), 416, 16, 60);
             row.Dot = At(canvas, new Ellipse { Fill = B("#B9B1A7") }, 478, 22, 8, 8);
             row.Status = At(canvas, T("未运行", 13, Muted, FontWeights.SemiBold), 492, 15, 72);
             row.Recent = At(canvas, T("—", 13, Muted, FontWeights.Normal), 566, 16, 84);
-            At(canvas, new Border { CornerRadius = new CornerRadius(8), Background = Brushes.White, BorderBrush = B("#E6DCCF"), BorderThickness = new Thickness(1), Child = new TextBlock { Text = "", FontFamily = Icons, FontSize = 12, Foreground = B("#8A7F74"), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center }, IsHitTestVisible = false }, 652, 11, 30, 30);
+            var pencil = At(canvas, new Button { Style = (Style)window.FindResource("Icon"), Content = Glyph("", 12, "#8A7F74"), ToolTip = "设置本地别名", BorderBrush = B("#E6DCCF"), BorderThickness = new Thickness(1), Background = Brushes.White }, 652, 11, 30, 30);
+            AutomationProperties.SetName(pencil, "设置账号 " + Two(n) + " 的本地别名");
+            pencil.Click += delegate { EditAlias(number); };
             var more = At(canvas, MoreButton(n), 690, 11, 30, 30);
             more.BorderBrush = B("#E6DCCF"); more.BorderThickness = new Thickness(1); more.Background = Brushes.White;
             return row;
@@ -719,37 +755,162 @@ namespace ClaudeLauncher {
         void AddLog(string text) {
             string level = new[] { "失败", "错误", "未通过", "无法" }.Any(text.Contains) ? "错误" : new[] { "超时", "保护", "未确认", "已变化", "多个" }.Any(text.Contains) ? "警告" : "信息";
             Match match = Regex.Match(text, "账号 ([0-9]{2})");
-            logs.Insert(0, new LogEntry { Time = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"), Level = level, Instance = match.Success ? "Claude " + Int32.Parse(match.Groups[1].Value) : "系统", Text = text });
+            DateTime now = DateTime.Now;
+            logs.Insert(0, new LogEntry { At = now, Time = now.ToString("yyyy-MM-dd HH:mm:ss"), Level = level, Instance = match.Success ? "Claude " + Int32.Parse(match.Groups[1].Value) : "系统", Text = text });
             if (logs.Count > settings.LogLimit) logs.RemoveRange(settings.LogLimit, logs.Count - settings.LogLimit);
             RenderLogs();
         }
+        // SPEC 账号与日志交互：时间、实例、级别、全文搜索组合筛选；结果保持新到旧。
+        internal static List<LogEntry> FilterLogs(IEnumerable<LogEntry> entries, string query, string instance, string level, DateTime? since) {
+            string q = (query ?? "").Trim();
+            return entries.Where(e => (instance == null || e.Instance == instance) && (level == null || e.Level == level) && (since == null || e.At >= since.Value) &&
+                (q.Length == 0 || (e.Time + " " + e.Level + " " + e.Instance + " " + e.Text).IndexOf(q, StringComparison.CurrentCultureIgnoreCase) >= 0)).ToList();
+        }
+        List<LogEntry> FilteredLogs() {
+            if (logTime == null) return logs.ToList();
+            DateTime? since = logTime.SelectedIndex == 1 ? DateTime.Now.AddMinutes(-5) : logTime.SelectedIndex == 2 ? DateTime.Now.AddHours(-1) : (DateTime?)null;
+            string instance = logInstance.SelectedIndex <= 0 ? null : (string)logInstance.SelectedItem;
+            string level = logLevel.SelectedIndex <= 0 ? null : (string)logLevel.SelectedItem;
+            return FilterLogs(logs, logSearch.Text, instance, level, since);
+        }
         void RenderLogs() {
-            if (logRows == null) return;
+            if (logRows == null || logPrev == null) return;
             logRows.Children.Clear();
-            if (logs.Count == 0) {
-                var empty = T("暂无日志", 13, "#8A7F74", FontWeights.Normal); empty.TextAlignment = TextAlignment.Center;
+            List<LogEntry> shown = FilteredLogs();
+            int pages = Math.Max(1, (shown.Count + 9) / 10);
+            logPageIndex = Math.Max(0, Math.Min(logPageIndex, pages - 1));
+            if (shown.Count == 0) {
+                var empty = T(logs.Count == 0 ? "暂无日志" : "没有符合条件的日志，可调整筛选或搜索", 13, "#8A7F74", FontWeights.Normal); empty.TextAlignment = TextAlignment.Center;
                 At(logRows, empty, 0, 190, 736);
             }
-            for (int i = 0; i < Math.Min(10, logs.Count); i++) {
-                LogEntry entry = logs[i]; double y = i * 40;
+            var slice = shown.Skip(logPageIndex * 10).Take(10).ToList();
+            for (int i = 0; i < slice.Count; i++) {
+                LogEntry entry = slice[i]; double y = i * 40;
                 if (i > 0) At(logRows, new Rectangle { Fill = B("#F3ECE3") }, 1, y, 734, 1);
                 At(logRows, T(entry.Time, 13, "#8A7F74", FontWeights.Normal), 24, y + 10, 166);
                 string[] tone = entry.Level == "错误" ? new[] { "#FBE3DF", "#C9604A" } : entry.Level == "警告" ? new[] { "#FBEFD9", "#B7832A" } : new[] { "#E3F3EA", "#3C8A68" };
                 var pill = At(logRows, new Border { CornerRadius = new CornerRadius(6), Background = B(tone[0]) }, 196, y + 9, 44, 22);
                 pill.Child = new TextBlock { Text = entry.Level, FontSize = 11, FontWeight = FontWeights.SemiBold, Foreground = B(tone[1]), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
                 At(logRows, T(entry.Instance, 13, Ink, FontWeights.Normal), 290, y + 10, 100);
-                var text = At(logRows, T(entry.Text, 13, Ink, FontWeights.Normal), 404, y + 10, 310);
-                text.ToolTip = entry.Text;
+                // 只读可选择的事件内容；截断时悬停显示全文。
+                var text = At(logRows, new TextBox { Text = entry.Text, IsReadOnly = true, BorderThickness = new Thickness(0), Background = Brushes.Transparent, Foreground = B(Ink), FontSize = 13, Padding = new Thickness(0), ToolTip = entry.Text }, 402, y + 9, 314);
+                AutomationProperties.SetName(text, "日志内容");
             }
-            logSummary.Text = "共 " + logs.Count + " 条日志 · 每页显示 10 条";
+            logPrev.IsEnabled = logPageIndex > 0;
+            logNext.IsEnabled = logPageIndex < pages - 1;
+            logPageLabel.Text = "第 " + (logPageIndex + 1) + " / " + pages + " 页";
+            logSummary.Text = (shown.Count == logs.Count ? "共 " + logs.Count + " 条" : "筛选出 " + shown.Count + " / " + logs.Count + " 条") + " · 每页 10 条";
         }
+        // 导出全部筛选结果（不只是当前页），按时间正序。
         void ExportLogs() {
+            List<LogEntry> shown = FilteredLogs();
+            if (shown.Count == 0) { Alert("没有可导出的日志", "当前筛选条件下没有日志。"); return; }
             var dialog = new Microsoft.Win32.SaveFileDialog { FileName = "Claude 启动器日志.txt", Filter = "文本文件|*.txt" };
             if (dialog.ShowDialog(window) != true) return;
-            var output = new StringBuilder();
-            foreach (LogEntry entry in Enumerable.Reverse(logs)) output.Append(entry.Time + "\t" + entry.Level + "\t" + entry.Instance + "\t" + entry.Text + "\r\n");
-            try { File.WriteAllText(dialog.FileName, output.ToString(), new UTF8Encoding(true)); }
+            try { File.WriteAllText(dialog.FileName, LogText(shown), new UTF8Encoding(true)); Message("已导出 " + shown.Count + " 条日志。", false); }
             catch (Exception error) { Alert("导出失败", error.Message); }
+        }
+        internal static string LogText(IEnumerable<LogEntry> newestFirst) {
+            var output = new StringBuilder();
+            foreach (LogEntry entry in newestFirst.Reverse()) output.Append(entry.Time + "\t" + entry.Level + "\t" + entry.Instance + "\t" + entry.Text + "\r\n");
+            return output.ToString();
+        }
+
+        // ---- 账号页：别名、筛选、选择 ----
+        int accountsShown;
+        string DisplayName(int n) {
+            string alias;
+            return accountNames.TryGetValue(n, out alias) ? alias + " · " + Two(n) : "账号 " + Two(n);
+        }
+        // 当前可见且选中的账号；隐藏的选择在此清除，避免误操作。
+        void UpdateSelection() {
+            if (selectAll == null) return;
+            var visible = Enumerable.Range(1, 10).Where(n => rows[n].Root.Visibility == Visibility.Visible).ToList();
+            selectedAccounts.RemoveWhere(n => !visible.Contains(n));
+            foreach (int n in Enumerable.Range(1, 10)) rows[n].Select.IsChecked = selectedAccounts.Contains(n);
+            selectAll.IsChecked = selectedAccounts.Count == 0 ? false : selectedAccounts.Count == visible.Count ? true : (bool?)null;
+            selectAll.IsEnabled = visible.Count > 0;
+            copySelected.IsEnabled = selectedAccounts.Count > 0;
+            tableFooter.Text = "共 " + accountsShown + " 个账号" + (visible.Count != accountsShown ? " · 显示 " + visible.Count + " 个" : "") + " · 选中 " + selectedAccounts.Count + " 项";
+        }
+        void ToggleSelectAll() {
+            var visible = Enumerable.Range(1, 10).Where(n => rows[n].Root.Visibility == Visibility.Visible).ToList();
+            bool all = visible.Count > 0 && visible.All(selectedAccounts.Contains);
+            selectedAccounts.Clear();
+            if (!all) foreach (int n in visible) selectedAccounts.Add(n);
+            UpdateSelection();
+        }
+        internal string SelectedPathsText() {
+            return String.Join("\r\n", selectedAccounts.OrderBy(n => n).Where(n => rows[n].Root.Visibility == Visibility.Visible).Select(n => Core.DisplayFolder(n)));
+        }
+        void CopySelectedPaths() {
+            UpdateSelection();
+            if (selectedAccounts.Count == 0) return;
+            try { Clipboard.SetText(SelectedPathsText()); Message("已复制 " + selectedAccounts.Count + " 个账号的目录路径。", false); }
+            catch (Exception error) { Message("无法复制路径：" + error.Message, true); }
+        }
+        void EditAlias(int n) {
+            if (namesError != null) { Alert("无法编辑别名", "别名文件无法读取，为避免覆盖已停止写入：\n" + namesError); return; }
+            string current; accountNames.TryGetValue(n, out current);
+            string input = AskText("设置账号 " + Two(n) + " 的本地别名", "最多 24 个字，只保存在本机启动器中，不改变邮箱、身份或目录。留空恢复为“账号 " + Two(n) + "”。", current ?? "");
+            if (input == null) return;
+            string error = SetAlias(n, input);
+            if (error != null) Alert("别名未保存", error);
+        }
+        // 返回 null 表示成功；失败时返回原因并保持原别名。
+        internal string SetAlias(int n, string input) {
+            if (namesError != null) return "别名文件无法读取，已停止写入。";
+            string name = AccountNames.Validate(input);
+            if (name == null) return "别名最多 24 个字，不能包含换行或控制字符。";
+            var next = new Dictionary<int, string>(accountNames);
+            if (name.Length == 0) next.Remove(n); else next[n] = name;
+            try { AccountNames.Save(namesPath, next); }
+            catch (Exception error) { Diagnostics.Error("account_name_save_error", error); return error.Message; }
+            accountNames = next;
+            cards[n].Title.Text = rows[n].Name.Text = DisplayName(n);
+            rows[n].Name.ToolTip = DisplayName(n);
+            Render();
+            Message(name.Length == 0 ? "账号 " + Two(n) + " 已恢复默认名称。" : "账号 " + Two(n) + " 的本地别名已设为“" + name + "”。", false);
+            return null;
+        }
+        string AskText(string title, string detail, string value) {
+            var dialog = Dialog(title);
+            if (window.IsLoaded && window.IsVisible) dialog.Owner = window; else { dialog.WindowStartupLocation = WindowStartupLocation.CenterScreen; dialog.Topmost = true; }
+            var panel = (StackPanel)((ScrollViewer)dialog.Content).Content;
+            panel.Children.Add(new TextBlock { Text = title, FontSize = 18, FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap });
+            panel.Children.Add(new TextBlock { Text = detail, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 12, 0, 12), Foreground = B("#4A433C"), LineHeight = 21 });
+            var box = new TextBox { Text = value, MaxLength = AccountNames.MaxLength, FontSize = 14, Padding = new Thickness(8, 6, 8, 6), BorderBrush = B("#E3D9CD"), Margin = new Thickness(0, 0, 0, 20) };
+            AutomationProperties.SetName(box, title);
+            panel.Children.Add(box);
+            var actions = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
+            var cancel = new Button { Content = "取消", Style = (Style)window.FindResource("Btn"), Padding = new Thickness(16, 7, 16, 7), IsCancel = true };
+            var ok = new Button { Content = "保存", Style = (Style)window.FindResource("Primary"), Padding = new Thickness(16, 7, 16, 7), Margin = new Thickness(10, 0, 0, 0), IsDefault = true };
+            string result = null;
+            ok.Click += delegate { result = box.Text; dialog.DialogResult = true; };
+            actions.Children.Add(cancel); actions.Children.Add(ok); panel.Children.Add(actions);
+            dialog.Loaded += delegate { box.Focus(); box.SelectAll(); };
+            dialog.ShowDialog();
+            return result;
+        }
+        TextBox SearchBox(Canvas canvas, double x, double y, double width, double height, string placeholder, string name) {
+            var grid = new Grid { Margin = new Thickness(14, 0, 12, 0) };
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            grid.ColumnDefinitions.Add(new ColumnDefinition());
+            var glyph = Glyph("", 13, Muted); glyph.Margin = new Thickness(0, 0, 10, 0); grid.Children.Add(glyph);
+            var hint = T(placeholder, 13, Faint, FontWeights.Normal); hint.VerticalAlignment = VerticalAlignment.Center; hint.IsHitTestVisible = false;
+            Grid.SetColumn(hint, 1); grid.Children.Add(hint);
+            var box = new TextBox { BorderThickness = new Thickness(0), Background = Brushes.Transparent, Foreground = B(Ink), FontSize = 13, VerticalContentAlignment = VerticalAlignment.Center, Padding = new Thickness(0) };
+            Grid.SetColumn(box, 1); grid.Children.Add(box);
+            box.TextChanged += delegate { hint.Visibility = box.Text.Length == 0 ? Visibility.Visible : Visibility.Collapsed; };
+            AutomationProperties.SetName(box, name);
+            var border = Panel(10, "#EBFFFDFA"); border.Child = grid;
+            At(canvas, border, x, y, width, height);
+            return box;
+        }
+        ComboBox Choice(Canvas canvas, double x, double y, double width, double height, string[] items, string name) {
+            var combo = At(canvas, new ComboBox { ItemsSource = items, SelectedIndex = 0, FontSize = 13, VerticalContentAlignment = VerticalAlignment.Center, Padding = new Thickness(12, 0, 8, 0) }, x, y, width, height);
+            AutomationProperties.SetName(combo, name);
+            return combo;
         }
 
         void Render() {
@@ -780,14 +941,19 @@ namespace ClaudeLauncher {
                 AutomationProperties.SetName(card.Action, "账号 " + Two(n) + "，" + state);
 
                 Row row = rows[n];
-                row.Root.Visibility = card.Root.Visibility;
-                if (!visible) continue;
+                if (!visible) { row.Root.Visibility = Visibility.Collapsed; continue; }
                 shown++;
                 if (found.Count > 0) running++;
                 if (broken && healthy) attention++;
                 bool rowBusy = starting || isChecking;
-                row.Status.Text = broken ? "异常" : rowBusy ? "处理中" : found.Count > 0 ? "运行中" : "未运行";
-                row.Status.Foreground = B(broken ? "#C9604A" : rowBusy ? "#B7832A" : found.Count > 0 ? "#3C8A68" : "#8A7F74");
+                // 进程扫描失败时不伪装成确定状态（SPEC 账号与日志交互）。
+                string category = !healthy ? "未知" : broken ? "异常" : rowBusy ? "处理中" : found.Count > 0 ? "运行中" : "未运行";
+                string alias; accountNames.TryGetValue(n, out alias);
+                bool matches = AccountNames.Matches(n, alias, Core.DisplayFolder(n), accountSearch.Text) &&
+                    (accountStatus.SelectedIndex <= 0 || StatusFilters[accountStatus.SelectedIndex] == category);
+                row.Root.Visibility = matches ? Visibility.Visible : Visibility.Collapsed;
+                row.Status.Text = category;
+                row.Status.Foreground = B(category == "异常" ? "#C9604A" : category == "处理中" ? "#B7832A" : category == "运行中" ? "#3C8A68" : "#8A7F74");
                 row.Status.ToolTip = card.Status.ToolTip;
                 row.Dot.Fill = B(dot);
                 row.Recent.Text = Recent(n);
@@ -799,7 +965,9 @@ namespace ClaudeLauncher {
             endLogin.IsEnabled = checking.Count == 0 && pending.Count == 0;
             int[] values = { shown, running, attention };
             for (int i = 0; i < 3; i++) stats[i].Text = values[i].ToString("00");
-            tableFooter.Text = "共 " + shown + " 个账号 · 选中 0 项";
+            accountsEmpty.Visibility = shown > 0 && !rows.Values.Any(r => r.Root.Visibility == Visibility.Visible) ? Visibility.Visible : Visibility.Collapsed;
+            accountsShown = shown;
+            UpdateSelection();
             if (healthy && loginAccount != 0)
                 Message("账号 " + Two(loginAccount) + " 登录保护中。" + (instances.Any(x => x.Number != loginAccount) ? "检测到其他 Claude！请停止登录，并正常退出其他实例。" : "完成登录并核对身份后，点「结束登录保护」恢复多开。"), false);
         }

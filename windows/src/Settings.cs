@@ -76,13 +76,57 @@ namespace ClaudeLauncher {
             if (!Pages.Contains(page)) throw new InvalidOperationException("未知页面：" + page);
             WriteAtomic(path, page);
         }
-        static void WriteAtomic(string path, string text) {
+        internal static void WriteAtomic(string path, string text) {
             Directory.CreateDirectory(Path.GetDirectoryName(path));
             string temp = path + ".tmp-" + Guid.NewGuid().ToString("N");
             try {
                 File.WriteAllText(temp, text);
                 if (File.Exists(path)) File.Replace(temp, path, null); else File.Move(temp, path);
             } finally { if (File.Exists(temp)) File.Delete(temp); }
+        }
+    }
+
+    // SPEC 账号与日志交互 [Windows]：账号本地别名，只存启动器自己的 account-names.json，不改邮箱、身份或目录。
+    public static class AccountNames {
+        public const int MaxLength = 24;
+        public static readonly string DefaultPath = Path.Combine(LauncherSettings.DataDirectory, "account-names.json");
+        // 去除首尾空白；超过 24 字或含控制字符返回 null；空串表示恢复默认。
+        public static string Validate(string input) {
+            if (input == null) return null;
+            string name = input.Trim();
+            return name.Length > MaxLength || name.Any(Char.IsControl) ? null : name;
+        }
+        // 文件不存在返回空表；损坏或版本不符抛出 InvalidDataException，调用方据此停止写入，保留原文件。无效条目跳过。
+        public static Dictionary<int, string> Load(string path) {
+            var names = new Dictionary<int, string>();
+            if (!File.Exists(path)) return names;
+            Dictionary<string, object> values;
+            try { values = new JavaScriptSerializer().DeserializeObject(File.ReadAllText(path)) as Dictionary<string, object>; }
+            catch (Exception error) { throw new InvalidDataException("别名文件无法读取：" + error.Message); }
+            object version, raw;
+            if (values == null || !values.TryGetValue("version", out version) || !(version is int) || (int)version != 1 || !values.TryGetValue("names", out raw) || !(raw is Dictionary<string, object>))
+                throw new InvalidDataException("别名文件格式或版本不受支持。");
+            foreach (var pair in (Dictionary<string, object>)raw) {
+                int number; string name = pair.Value is string ? Validate((string)pair.Value) : null;
+                if (Int32.TryParse(pair.Key, out number) && number >= 1 && number <= 10 && pair.Key == number.ToString() && !String.IsNullOrEmpty(name)) names[number] = name;
+            }
+            return names;
+        }
+        public static void Save(string path, Dictionary<int, string> names) {
+            var values = new Dictionary<string, object>();
+            foreach (var pair in names.OrderBy(p => p.Key)) {
+                string name = Validate(pair.Value);
+                if (pair.Key < 1 || pair.Key > 10 || String.IsNullOrEmpty(name)) throw new InvalidOperationException("别名无效：" + pair.Key);
+                values[pair.Key.ToString()] = name;
+            }
+            LauncherSettings.WriteAtomic(path, new JavaScriptSerializer().Serialize(new Dictionary<string, object> { { "version", 1 }, { "names", values } }));
+        }
+        // 搜索：别名、“账号 NN”、编号（补零与不补零）、目录，不区分大小写。
+        public static bool Matches(int number, string alias, string folder, string query) {
+            if (String.IsNullOrWhiteSpace(query)) return true;
+            string q = query.Trim();
+            return new[] { alias ?? "", "账号 " + number.ToString("00"), number.ToString("00"), number.ToString(), folder ?? "" }
+                .Any(field => field.IndexOf(q, StringComparison.CurrentCultureIgnoreCase) >= 0);
         }
     }
 

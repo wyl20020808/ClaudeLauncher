@@ -10,7 +10,7 @@
 - `scripts/publish-release.ps1`：两端一次发布（签名清单、上传自建服务与 GitHub Release、两来源复核）。
 - `src/Diagnostics.cs`：本地日志与账号进程退出观察。
 - `src/Updates.cs`：版本号、唯一更新来源（本项目 GitHub Releases）、集中 URL 白名单 `UrlAllowed`、开关未开启时的提前拒绝、清单验签、下载校验、Authenticode 签名者比对、运行 Setup；以及 1.2.0 兼容的 `--apply-update` 原地替换。新的联网入口必须经过 `UrlAllowed` 并在 `--self-test` 中加离线拒绝用例。
-- `src/Settings.cs`：启动器自己的设置 `%LOCALAPPDATA%\Claude-MultiLauncher\settings.json`（SPEC 系统设置 [Windows] 的 11 项，逐项白名单校验、异常回落默认、原子替换写入、导出 version 1），上次页面 `last-page`，以及 HKCU Run 开机启动项 `AutoStart`（只接受正式安装路径）。
+- `src/Settings.cs`：启动器自己的设置 `%LOCALAPPDATA%\Claude-MultiLauncher\settings.json`（SPEC 系统设置 [Windows] 的 11 项，逐项白名单校验、异常回落默认、原子替换写入、导出 version 1），上次页面 `last-page`，以及 HKCU Run 开机启动项 `AutoStart`（只接受正式安装路径）、账号本地别名 `AccountNames`（`account-names.json`，损坏时停止写入）与账号搜索匹配。
 - 界面测试与离屏预览用 `new LauncherUI(new LauncherSettings(), <临时路径>)`，不读写用户真实设置。
 - `assets/update-public-key.xml`：客户端公开验签密钥，允许随源码分发。
 

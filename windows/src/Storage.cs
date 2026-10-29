@@ -347,6 +347,25 @@ namespace ClaudeLauncher {
             File.WriteAllText(lastPage, @"..\..\evil");
             Check(LauncherSettings.ReadLastPage(lastPage) == null, "未知上次页面必须忽略");
             Rejects(() => LauncherSettings.WriteLastPage(lastPage, "evil"), "不得写入未知页面");
+            // 账号别名：≤24 字、去首尾空白、拒绝控制字符；往返；损坏或未知版本抛出且保留原文件；无效条目跳过；搜索字段。
+            Check(AccountNames.Validate("  工作账号  ") == "工作账号" && AccountNames.Validate("   ") == "" && AccountNames.Validate("a\nb") == null &&
+                AccountNames.Validate(new string('长', 25)) == null && AccountNames.Validate(new string('长', 24)) != null && AccountNames.Validate(null) == null, "别名校验错误");
+            string namesFile = Path.Combine(root, "settings", "account-names.json");
+            Check(AccountNames.Load(namesFile).Count == 0, "缺少别名文件应为空");
+            AccountNames.Save(namesFile, new Dictionary<int, string> { { 2, "工作" }, { 10, "测试" } });
+            var names = AccountNames.Load(namesFile);
+            Check(names.Count == 2 && names[2] == "工作" && names[10] == "测试", "别名往返错误");
+            Rejects(() => AccountNames.Save(namesFile, new Dictionary<int, string> { { 11, "越界" } }), "越界编号别名必须拒绝");
+            File.WriteAllText(namesFile, "{\"version\":1,\"names\":{\"2\":\"好\",\"0\":\"x\",\"11\":\"x\",\"02\":\"x\",\"3\":\"a\\nb\",\"4\":5}}");
+            names = AccountNames.Load(namesFile);
+            Check(names.Count == 1 && names[2] == "好", "无效别名条目应跳过");
+            foreach (string broken in new[] { "{", "{\"version\":2,\"names\":{}}", "{\"version\":1}", "[]" }) {
+                File.WriteAllText(namesFile, broken);
+                bool threw = false; try { AccountNames.Load(namesFile); } catch (InvalidDataException) { threw = true; }
+                Check(threw && File.ReadAllText(namesFile) == broken, "损坏别名文件必须报错且保留原文：" + broken);
+            }
+            Check(AccountNames.Matches(2, "工作", @"C:\x\Claude-Second", "工作") && AccountNames.Matches(2, null, "", "账号 02") && AccountNames.Matches(2, null, "", "2") &&
+                AccountNames.Matches(3, null, @"C:\x\Claude-Profile-03", "profile-03") && AccountNames.Matches(3, null, "", "  ") && !AccountNames.Matches(3, "家", @"C:\x\Claude-Profile-03", "工作"), "账号搜索匹配错误");
             // 开机启动：只接受正式安装路径；值比较不区分大小写、需带引号的完整路径。（不读写真实注册表）
             string installed = @"C:\Users\x\AppData\Local\Programs\Claude 多开启动器\ClaudeLauncher.exe";
             Check(AutoStart.IsInstalledCopy(installed.ToUpperInvariant(), installed) && !AutoStart.IsInstalledCopy(@"D:\ClaudeLauncher\windows\artifacts\bin\ClaudeLauncher.exe", installed), "正式安装路径判断错误");
