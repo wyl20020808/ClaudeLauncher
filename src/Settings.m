@@ -34,6 +34,26 @@ NSArray *FilteredLogs(NSArray *entries, NSString *query, NSString *instance, NSS
     }
     return result;
 }
+// Launcher log file rows: {date: epoch seconds, level, instance, text}, newest first. Malformed rows are dropped.
+NSMutableArray *LoadedLogs(NSData *data) {
+    NSMutableArray *result = [NSMutableArray array];
+    id rows = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+    if (![rows isKindOfClass:NSArray.class]) return result;
+    NSDateFormatter *clock = [NSDateFormatter new]; clock.dateFormat = @"yyyy-MM-dd HH:mm:ss";
+    for (id row in rows) {
+        if (![row isKindOfClass:NSDictionary.class]) continue;
+        id date = row[@"date"], level = row[@"level"], instance = row[@"instance"], text = row[@"text"];
+        if (![date isKindOfClass:NSNumber.class] || ![@[@"信息",@"警告",@"错误"] containsObject:level] || ![instance isKindOfClass:NSString.class] || ![text isKindOfClass:NSString.class]) continue;
+        NSDate *when = [NSDate dateWithTimeIntervalSince1970:[date doubleValue]];
+        [result addObject:@{@"date":when,@"time":[clock stringFromDate:when],@"level":level,@"instance":instance,@"text":text}];
+    }
+    return result;
+}
+NSData *SerializedLogs(NSArray *entries) {
+    NSMutableArray *rows = [NSMutableArray array];
+    for (NSDictionary *entry in entries) [rows addObject:@{@"date":@([entry[@"date"] timeIntervalSince1970]),@"level":entry[@"level"],@"instance":entry[@"instance"],@"text":entry[@"text"]}];
+    return [NSJSONSerialization dataWithJSONObject:rows options:0 error:nil];
+}
 BOOL AllowedUpdateURL(NSURL *url, BOOL redirect) {
     if (![url.scheme.lowercaseString isEqual:@"https"] || url.user || url.password || (url.port && url.port.integerValue != 443) || url.fragment) return NO;
     NSString *host = url.host.lowercaseString;
@@ -57,9 +77,13 @@ void TestSettings(void) {
     NSDate *now = NSDate.date;
     NSArray *logs = @[@{@"time":@"now",@"date":now,@"instance":@"系统",@"level":@"信息",@"text":@"Hello"},@{@"time":@"old",@"date":[now dateByAddingTimeInterval:-600],@"instance":@"Claude 2",@"level":@"错误",@"text":@"失败"}];
     NSCAssert(FilteredLogs(logs,@"hello",nil,nil,nil).count == 1 && FilteredLogs(logs,nil,@"Claude 2",@"错误",nil).count == 1 && FilteredLogs(logs,nil,nil,nil,[now dateByAddingTimeInterval:-300]).count == 1 && !FilteredLogs(logs,@"missing",nil,nil,nil).count, @"combined log filters and empty state");
+    NSArray *reloaded = LoadedLogs(SerializedLogs(logs));
+    NSCAssert(reloaded.count == 2 && [reloaded[1][@"text"] isEqual:@"失败"] && fabs([reloaded[0][@"date"] timeIntervalSinceDate:now]) < 0.001, @"log file round trip keeps order and time");
+    NSData *mixed = [@"[{\"date\":1,\"level\":\"信息\",\"instance\":\"系统\",\"text\":\"ok\"},{\"date\":\"x\",\"level\":\"信息\",\"instance\":\"系统\",\"text\":\"bad\"},{\"date\":2,\"level\":\"伪造\",\"instance\":\"系统\",\"text\":\"bad\"},3]" dataUsingEncoding:NSUTF8StringEncoding];
+    NSCAssert(LoadedLogs(mixed).count == 1 && !LoadedLogs([@"{" dataUsingEncoding:NSUTF8StringEncoding]).count && !LoadedLogs(nil).count, @"malformed log rows and files are ignored");
     NSCAssert(AllowedUpdateURL([NSURL URLWithString:@"https://github.com/wyl20020808/ClaudeLauncher/releases/latest/download/latest-macos.json"],NO), @"allow project update manifest");
     for (NSString *address in @[@"https://claude.ai/api",@"https://api.anthropic.com/v1/messages",@"https://github.com.evil.test/wyl20020808/ClaudeLauncher/releases/latest/download/latest-macos.json",@"https://github.com/other/repo/releases/latest/download/latest-macos.json",@"http://github.com/wyl20020808/ClaudeLauncher/releases/latest/download/latest-macos.json",@"https://user@github.com/wyl20020808/ClaudeLauncher/releases/latest/download/latest-macos.json",@"https://github.com:444/wyl20020808/ClaudeLauncher/releases/latest/download/latest-macos.json",@"file:///tmp/x"]) {
         NSCAssert(!AllowedUpdateURL([NSURL URLWithString:address],NO) && !AllowedUpdateURL([NSURL URLWithString:address],YES), @"block non-update network target: %@",address);
     }
-    puts("PASS: local settings validation, aliases, log filters, strict update URL allowlist; no network or user data");
+    puts("PASS: local settings validation, aliases, log filters and log file parsing, strict update URL allowlist; no network or user data");
 }

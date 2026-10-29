@@ -518,9 +518,9 @@ static void DrawPanel(NSRect rect, CGFloat radius, CGFloat alpha) {
     if (self.symbol) {
         NSImage *icon = Tinted(self.symbol, (self.fontSize ?: 14)-1, text);
         NSSize size = [self.title sizeWithAttributes:attributes];
-        CGFloat x = NSMidX(self.bounds)-(icon.size.width+8+size.width)/2;
+        CGFloat gap = self.title.length ? 8 : 0, x = NSMidX(self.bounds)-(icon.size.width+gap+size.width)/2;
         [icon drawInRect:NSMakeRect(x,NSMidY(self.bounds)-icon.size.height/2,icon.size.width,icon.size.height) fromRect:NSZeroRect operation:NSCompositingOperationSourceOver fraction:1 respectFlipped:YES hints:nil];
-        [self.title drawAtPoint:NSMakePoint(x+icon.size.width+8,NSMidY(self.bounds)-size.height/2) withAttributes:attributes];
+        [self.title drawAtPoint:NSMakePoint(x+icon.size.width+gap,NSMidY(self.bounds)-size.height/2) withAttributes:attributes];
     } else DrawCentered(self.title, self.bounds, attributes);
     if (self.window.firstResponder == self && NSApp.active) {
         [NSColor.keyboardFocusIndicatorColor setStroke]; shape.lineWidth = 3; [shape stroke];
@@ -619,6 +619,10 @@ static const unsigned CardFill = 0xFFFCF7;
 @property NSTextField *logSummary, *settingsFeedback, *toast;
 @property NSButton *previousLogs, *nextLogs, *selectAllAccounts, *selectedPathsButton;
 @property NSArray *visibleLogs;
+@property NSMutableArray<NSView *> *logPageButtons;
+@property NSTextField *logEmpty;
+@property NSString *logPath; // Launcher-owned log file; nil in tests so nothing is written.
+@property NSDate *launchDate;
 @property NSInteger logPage, settingsSection;
 @property NSUInteger toastGeneration;
 @property NSMutableSet<NSNumber *> *selectedAccounts;
@@ -687,7 +691,7 @@ static const unsigned CardFill = 0xFFFCF7;
             NSString *key = @(n).stringValue, *name = ValidatedAccountName(savedNames[key]);
             if (name.length) self.accountNames[key] = name;
         }
-        self.selectedAccounts = [NSMutableSet set];
+        self.selectedAccounts = [NSMutableSet set]; self.launchDate = NSDate.date;
         self.starting = [NSMutableDictionary dictionary]; self.errors = [NSMutableDictionary dictionary];
         self.pendingLaunches = [NSMutableSet set];
         self.checking = [NSMutableSet set]; self.configuredApps = [NSMutableDictionary dictionary];
@@ -712,6 +716,9 @@ static const unsigned CardFill = 0xFFFCF7;
     [NSDistributedNotificationCenter.defaultCenter addObserver:self selector:@selector(show:) name:WakeNotification object:nil];
     NSInteger savedLogin = [NSUserDefaults.standardUserDefaults integerForKey:@"loginProtectionAccount"];
     self.loginAccount = savedLogin >= 1 && savedLogin <= 10 ? savedLogin : 0;
+    // Logs live in the launcher's own data folder so they survive restarts and updates.
+    self.logPath = [support stringByAppendingPathComponent:@"launcher-log.json"];
+    self.logEntries = LoadedLogs([NSData dataWithContentsOfFile:self.logPath]);
     self.projectStore = [[ProjectStore alloc] initWithDirectory:support home:NSHomeDirectory() applicationPaths:@[NSBundle.mainBundle.bundlePath,@"/Applications/Claude 启动器.app",[NSHomeDirectory() stringByAppendingPathComponent:@"Applications/Claude 启动器.app"]]];
     [self.projectStore load];
     self.page = [self.settings[@"rememberPage"] boolValue] ? [self.preferences integerForKey:@"lastLauncherPage"] : [self.settings[@"startPage"] integerValue];
@@ -1147,47 +1154,113 @@ static const unsigned CardFill = 0xFFFCF7;
     NSPopUpButton *button = [[NSPopUpButton alloc] initWithFrame:frame pullsDown:NO]; [button addItemsWithTitles:titles];
     button.target = self; button.action = action; button.accessibilityLabel = label; return button;
 }
+// White rounded filter box: borderless native popup plus optional leading icon and a chevron.
+- (NSPopUpButton *)logFilter:(NSArray *)titles box:(NSRect)box icon:(NSString *)icon label:(NSString *)label page:(NSView *)page {
+    CGFloat left = icon ? 40 : 14;
+    if (icon) [page addSubview:Symbol(icon, NSMakeRect(NSMinX(box)+14,NSMinY(box)+11,17,17), Hex(0x6E655C))];
+    NSPopUpButton *button = [self filter:titles frame:NSMakeRect(NSMinX(box)+left,NSMinY(box)+5,NSWidth(box)-left-30,28) label:label action:@selector(logFilterChanged:)];
+    button.bordered = NO; button.font = [NSFont systemFontOfSize:14]; ((NSPopUpButtonCell *)button.cell).arrowPosition = NSPopUpNoArrow;
+    [page addSubview:button];
+    [page addSubview:Symbol(@"chevron.down", NSMakeRect(NSMaxX(box)-28,NSMinY(box)+13,13,13), Hex(0x6E655C))];
+    return button;
+}
 - (NSView *)logsPage:(NSRect)frame {
-    NSView *page = [self pageTitled:@"日志记录" subtitle:@"仅记录启动器本次运行；搜索、筛选后可导出当前结果。" frame:frame];
-    [page addSubview:[self toolButton:@"导出结果…" symbol:@"square.and.arrow.down" frame:NSMakeRect(502,56,128,44) action:@selector(exportLogs:)]];
-    [page addSubview:[self toolButton:@"清空日志…" symbol:@"trash" frame:NSMakeRect(640,56,132,44) action:@selector(clearLogs:)]];
-    self.logPeriod = [self filter:@[@"本次运行",@"最近 5 分钟",@"最近 1 小时"] frame:NSMakeRect(36,142,150,32) label:@"日志时间范围" action:@selector(logFilterChanged:)]; [page addSubview:self.logPeriod];
+    Canvas *page = [self pageTitled:@"日志记录" subtitle:@"查看实例启动、关闭与异常信息，便于追踪运行情况和排查问题。" frame:frame];
+    NSRect period = NSMakeRect(36,142,160,40), instance = NSMakeRect(206,142,144,40), level = NSMakeRect(360,142,130,40), search = NSMakeRect(520,142,252,40);
+    page.paint = ^(NSRect bounds) {
+        for (NSValue *box in @[[NSValue valueWithRect:period],[NSValue valueWithRect:instance],[NSValue valueWithRect:level],[NSValue valueWithRect:search]]) DrawPanel(box.rectValue, 12, 0.94);
+        DrawPanel(NSMakeRect(36,196,736,500), 16, 0.9);
+        [NSGraphicsContext saveGraphicsState];
+        [[NSBezierPath bezierPathWithRoundedRect:NSMakeRect(36.5,196.5,735,499) xRadius:16 yRadius:16] addClip];
+        [[Hex(0xF6EEE4) colorWithAlphaComponent:0.7] setFill]; NSRectFill(NSMakeRect(37,197,734,43));
+        [NSGraphicsContext restoreGraphicsState];
+        [Hex(0xEFE7DC) setFill]; NSRectFill(NSMakeRect(37,240,734,1)); NSRectFill(NSMakeRect(37,640,734,1));
+        NSDictionary *head = @{NSFontAttributeName:[NSFont systemFontOfSize:13 weight:NSFontWeightSemibold],NSForegroundColorAttributeName:Hex(0x8A7A6A)};
+        NSArray *columns = @[@[@"时间",@20],@[@"级别",@194],@[@"实例",@294],@[@"事件内容",@414]];
+        for (NSArray *column in columns) [column[0] drawAtPoint:NSMakePoint(37+[column[1] doubleValue],210) withAttributes:head];
+    };
+    [page addSubview:[self toolButton:@"导出日志" symbol:@"square.and.arrow.down" frame:NSMakeRect(502,56,128,44) action:@selector(exportLogs:)]];
+    [page addSubview:[self toolButton:@"清空日志" symbol:@"trash" frame:NSMakeRect(640,56,132,44) action:@selector(clearLogs:)]];
+    self.logPeriod = [self logFilter:@[@"最近 7 天",@"最近 24 小时",@"最近 1 小时",@"最近 5 分钟",@"本次运行",@"全部时间"] box:period icon:@"calendar" label:@"日志时间范围" page:page];
     NSMutableArray *instances = [@[@"全部实例",@"系统"] mutableCopy]; for (NSInteger n=1;n<=10;n++) [instances addObject:[NSString stringWithFormat:@"Claude %ld",(long)n]];
-    self.logInstance = [self filter:instances frame:NSMakeRect(196,142,136,32) label:@"日志实例" action:@selector(logFilterChanged:)]; [page addSubview:self.logInstance];
-    self.logLevel = [self filter:@[@"全部级别",@"信息",@"警告",@"错误"] frame:NSMakeRect(342,142,126,32) label:@"日志级别" action:@selector(logFilterChanged:)]; [page addSubview:self.logLevel];
-    self.logSearch = [[NSSearchField alloc] initWithFrame:NSMakeRect(482,142,290,32)]; self.logSearch.placeholderString = @"搜索日志内容…"; self.logSearch.accessibilityLabel = @"搜索日志"; self.logSearch.delegate = self; [page addSubview:self.logSearch];
-    NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(36,196,736,434)]; scroll.hasVerticalScroller = YES; scroll.hasHorizontalScroller = NO; scroll.borderType = NSBezelBorder;
-    self.logTable = [[NSTableView alloc] initWithFrame:scroll.bounds]; self.logTable.rowHeight = 36; self.logTable.usesAlternatingRowBackgroundColors = YES;
+    self.logInstance = [self logFilter:instances box:instance icon:nil label:@"日志实例" page:page];
+    self.logLevel = [self logFilter:@[@"全部级别",@"信息",@"警告",@"错误"] box:level icon:nil label:@"日志级别" page:page];
+    self.logSearch = [[NSSearchField alloc] initWithFrame:NSMakeRect(NSMinX(search)+8,NSMinY(search)+9,NSWidth(search)-16,24)]; self.logSearch.bezeled = NO; self.logSearch.drawsBackground = NO; self.logSearch.font = [NSFont systemFontOfSize:14];
+    self.logSearch.placeholderString = @"搜索日志内容…"; self.logSearch.accessibilityLabel = @"搜索日志"; self.logSearch.delegate = self; [page addSubview:self.logSearch];
+    NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(37,241,734,399)];
+    scroll.drawsBackground = NO; scroll.contentView.drawsBackground = NO; scroll.hasVerticalScroller = NO; scroll.hasHorizontalScroller = NO; scroll.borderType = NSNoBorder;
+    self.logTable = [[NSTableView alloc] initWithFrame:scroll.bounds]; self.logTable.style = NSTableViewStylePlain; self.logTable.headerView = nil;
+    self.logTable.rowHeight = 40; self.logTable.intercellSpacing = NSZeroSize; self.logTable.backgroundColor = NSColor.clearColor;
+    self.logTable.gridStyleMask = NSTableViewSolidHorizontalGridLineMask; self.logTable.gridColor = Hex(0xEFE7DC); self.logTable.selectionHighlightStyle = NSTableViewSelectionHighlightStyleNone;
     self.logTable.dataSource = self; self.logTable.delegate = self;
-    NSArray *columns = @[@[@"time",@"时间",@158],@[@"level",@"级别",@64],@[@"instance",@"实例",@88],@[@"text",@"事件内容",@398]];
+    NSArray *columns = @[@[@"time",@"时间",@174],@[@"level",@"级别",@100],@[@"instance",@"实例",@120],@[@"text",@"事件内容",@340]];
     for (NSArray *column in columns) { NSTableColumn *c = [[NSTableColumn alloc] initWithIdentifier:column[0]]; c.title = column[1]; c.width = [column[2] doubleValue]; [self.logTable addTableColumn:c]; }
     scroll.documentView = self.logTable; [page addSubview:scroll];
-    self.previousLogs = [self toolButton:@"上一页" symbol:nil frame:NSMakeRect(36,650,90,34) action:@selector(previousLogPage:)]; [page addSubview:self.previousLogs];
-    self.nextLogs = [self toolButton:@"下一页" symbol:nil frame:NSMakeRect(136,650,90,34) action:@selector(nextLogPage:)]; [page addSubview:self.nextLogs];
-    self.logSummary = Text(@"暂无日志",NSMakeRect(246,656,526,24),[NSFont systemFontOfSize:13],Hex(0x6E655C)); [page addSubview:self.logSummary];
+    self.logEmpty = Text(@"",NSMakeRect(37,420,734,20),[NSFont systemFontOfSize:13],Hex(0xA59B90)); self.logEmpty.alignment = NSTextAlignmentCenter; [page addSubview:self.logEmpty];
+    self.previousLogs = [self toolButton:@"" symbol:@"chevron.left" frame:NSMakeRect(57,652,32,32) action:@selector(previousLogPage:)]; self.previousLogs.accessibilityLabel = @"上一页"; self.previousLogs.toolTip = @"上一页"; [page addSubview:self.previousLogs];
+    self.nextLogs = [self toolButton:@"" symbol:@"chevron.right" frame:NSMakeRect(97,652,32,32) action:@selector(nextLogPage:)]; self.nextLogs.accessibilityLabel = @"下一页"; self.nextLogs.toolTip = @"下一页"; [page addSubview:self.nextLogs];
+    self.logPageButtons = [NSMutableArray array];
+    self.logSummary = Text(@"暂无日志",NSMakeRect(400,659,352,20),[NSFont systemFontOfSize:13],Hex(0x8A8178)); self.logSummary.alignment = NSTextAlignmentRight; [page addSubview:self.logSummary];
     [self reloadLogs]; return page;
 }
 - (NSArray *)filteredLogEntries {
     NSInteger period = self.logPeriod.indexOfSelectedItem;
-    NSDate *since = period > 0 ? [NSDate dateWithTimeIntervalSinceNow:period == 1 ? -300 : -3600] : nil;
+    NSArray *spans = @[@(7*86400),@86400,@3600,@300];
+    NSDate *since = period >= 0 && period < (NSInteger)spans.count ? [NSDate dateWithTimeIntervalSinceNow:-[spans[period] doubleValue]] : period == 4 ? self.launchDate : nil;
     return FilteredLogs(self.logEntries,self.logSearch.stringValue,self.logInstance.indexOfSelectedItem > 0 ? self.logInstance.titleOfSelectedItem : nil,self.logLevel.indexOfSelectedItem > 0 ? self.logLevel.titleOfSelectedItem : nil,since);
 }
 - (void)trimLogs {
     NSUInteger limit = [self.settings[@"logLimit"] unsignedIntegerValue];
-    if (self.logEntries.count > limit) [self.logEntries removeObjectsInRange:NSMakeRange(limit,self.logEntries.count-limit)];
+    if (self.logEntries.count > limit) { [self.logEntries removeObjectsInRange:NSMakeRange(limit,self.logEntries.count-limit)]; [self saveLogs]; }
+}
+// Writes only the launcher's own log file (owner read/write); failures are not logged to avoid recursion.
+- (void)saveLogs {
+    if (!self.logPath) return;
+    NSData *data = SerializedLogs(self.logEntries ?: @[]);
+    if ([data writeToFile:self.logPath options:NSDataWritingAtomic error:nil]) [NSFileManager.defaultManager setAttributes:@{NSFilePosixPermissions:@0600} ofItemAtPath:self.logPath error:nil];
 }
 - (void)reloadLogs {
     NSArray *filtered = [self filteredLogEntries]; NSInteger pages = MAX(1,(filtered.count+9)/10);
     self.logPage = MAX(0,MIN(self.logPage,pages-1)); NSUInteger start = self.logPage*10;
     self.visibleLogs = [filtered subarrayWithRange:NSMakeRange(start,MIN(10,filtered.count-start))]; [self.logTable reloadData];
     self.previousLogs.enabled = self.logPage > 0; self.nextLogs.enabled = self.logPage+1 < pages;
-    self.logSummary.stringValue = filtered.count ? [NSString stringWithFormat:@"第 %ld / %ld 页 · 匹配 %lu 条 / 共 %lu 条",(long)self.logPage+1,(long)pages,(unsigned long)filtered.count,(unsigned long)self.logEntries.count] : @"没有匹配的日志，可清除搜索或切换筛选条件";
+    // Numbered pager: first, last, current ±1, with ellipses for gaps.
+    for (NSView *view in self.logPageButtons) [view removeFromSuperview];
+    [self.logPageButtons removeAllObjects];
+    CGFloat x = NSMaxX(self.previousLogs.frame)+8; NSInteger last = -1;
+    for (NSInteger i = 0; i < pages; i++) {
+        if (i != 0 && i != pages-1 && labs(i-self.logPage) > 1) continue;
+        if (last >= 0 && i-last > 1) {
+            NSTextField *gap = Text(@"…",NSMakeRect(x,658,24,20),[NSFont systemFontOfSize:13],Hex(0x8A8178)); gap.alignment = NSTextAlignmentCenter;
+            [self.previousLogs.superview addSubview:gap]; [self.logPageButtons addObject:gap]; x += 32;
+        }
+        ActionButton *button = [self toolButton:@(i+1).stringValue symbol:nil frame:NSMakeRect(x,652,32,32) action:@selector(goLogPage:)];
+        button.tag = i; button.fontSize = 13; button.primary = i == self.logPage; button.accessibilityLabel = [NSString stringWithFormat:@"第 %ld 页",(long)i+1];
+        [self.previousLogs.superview addSubview:button]; [self.logPageButtons addObject:button]; x += 40; last = i;
+    }
+    [self.nextLogs setFrameOrigin:NSMakePoint(x,652)];
+    self.logEmpty.stringValue = filtered.count ? @"" : self.logEntries.count ? @"没有匹配的日志，可清除搜索或切换筛选条件" : @"暂无日志";
+    self.logSummary.stringValue = !filtered.count ? [NSString stringWithFormat:@"共 %lu 条日志 · 每页显示 10 条",(unsigned long)self.logEntries.count] : filtered.count == self.logEntries.count ? [NSString stringWithFormat:@"共 %lu 条日志 · 每页显示 10 条",(unsigned long)filtered.count] : [NSString stringWithFormat:@"匹配 %lu 条 / 共 %lu 条日志 · 每页显示 10 条",(unsigned long)filtered.count,(unsigned long)self.logEntries.count];
 }
 - (NSInteger)numberOfRowsInTableView:(NSTableView *)tableView { return self.visibleLogs.count; }
 - (NSView *)tableView:(NSTableView *)tableView viewForTableColumn:(NSTableColumn *)column row:(NSInteger)row {
     NSString *text = self.visibleLogs[row][column.identifier];
-    NSTextField *field = Text(text,NSMakeRect(0,0,column.width,24),[NSFont systemFontOfSize:12],Hex(0x3A332D)); field.selectable = YES; field.toolTip = text; return field;
+    NSView *cell = [[NSView alloc] initWithFrame:NSMakeRect(0,0,column.width,40)];
+    if ([column.identifier isEqual:@"level"]) {
+        NSDictionary *colors = @{@"信息":@[@0xDDF0E6,@0x3C8A68],@"警告":@[@0xFCEBD2,@0xC07A2A],@"错误":@[@0xFCE3DD,@0xC75F47]};
+        NSArray *pair = colors[text] ?: colors[@"信息"];
+        Canvas *pill = [[Canvas alloc] initWithFrame:NSMakeRect(20,9,46,22)];
+        pill.paint = ^(NSRect bounds) {
+            [Hex([pair[0] unsignedIntValue]) setFill]; [[NSBezierPath bezierPathWithRoundedRect:bounds xRadius:6 yRadius:6] fill];
+            DrawCentered(text, bounds, @{NSFontAttributeName:[NSFont systemFontOfSize:12 weight:NSFontWeightMedium],NSForegroundColorAttributeName:Hex([pair[1] unsignedIntValue])});
+        };
+        pill.accessibilityElement = YES; pill.accessibilityRole = NSAccessibilityStaticTextRole; pill.accessibilityLabel = text; pill.toolTip = text;
+        [cell addSubview:pill]; return cell;
+    }
+    NSTextField *field = Text(text,NSMakeRect(20,11,column.width-36,18),[NSFont systemFontOfSize:13],[column.identifier isEqual:@"time"] ? Hex(0x8A8178) : Hex(0x3A332D));
+    field.selectable = YES; field.toolTip = text; [cell addSubview:field]; return cell;
 }
+- (void)goLogPage:(NSButton *)sender { self.logPage = sender.tag; [self reloadLogs]; }
 - (void)logFilterChanged:(id)sender { self.logPage = 0; [self reloadLogs]; }
 - (void)previousLogPage:(id)sender { self.logPage--; [self reloadLogs]; }
 - (void)nextLogPage:(id)sender { self.logPage++; [self reloadLogs]; }
@@ -1267,12 +1340,12 @@ static const unsigned CardFill = 0xFFFCF7;
             [self settingsText:@"界面语言：简体中文\n主题：浅色水墨\n\n这两项为当前版本的固定样式。Claude 自身的外观、浏览器和登录方式由官方客户端管理。" y:252 height:152 bold:NO]; break;
         case 3:
             [self settingsText:@"数据与存储" y:0 height:28 bold:YES];
-            [self settingsText:@"项目清单与运行锁\n~/Library/Application Support/Claude Launcher\n\n偏好与账号别名保存在本机用户偏好中。账号目录固定，不迁移、不合并。" y:42 height:108 bold:NO];
+            [self settingsText:@"项目清单、启动器日志与运行锁\n~/Library/Application Support/Claude Launcher\n\n偏好与账号别名保存在本机用户偏好中。账号目录固定，不迁移、不合并。" y:42 height:108 bold:NO];
             [self settingsAction:@"在 Finder 中显示管理器数据" action:@selector(revealSupport:) y:164];
             [self settingsAction:@"复制管理器数据路径" action:@selector(copySupportPath:) y:208];
             [self settingsAction:@"导出已保存的设置…" action:@selector(exportSettings:) y:252];
-            [self settingChoice:@"logLimit" title:@"本次运行日志保留上限" choices:@[@"100 条",@"500 条",@"1000 条"] values:@[@100,@500,@1000] y:304];
-            [self settingsText:@"日志只留在内存；退出即清空，导出由你选择位置。恢复默认只重置启动器偏好，保留项目、别名和登录保护。" y:352 height:76 bold:NO]; break;
+            [self settingChoice:@"logLimit" title:@"日志保留上限" choices:@[@"100 条",@"500 条",@"1000 条"] values:@[@100,@500,@1000] y:304];
+            [self settingsText:@"日志保存在上方启动器目录，重启和更新后保留，超出上限删除最旧记录；导出由你选择位置。恢复默认只重置启动器偏好，保留项目、日志、别名和登录保护。" y:352 height:76 bold:NO]; break;
         case 4:
             [self settingsText:@"消息通知" y:0 height:28 bold:YES];
             [self settingToggle:@"localNotifications" title:@"显示窗口内提示" detail:@"在启动器中显示操作警告；不推送、不上传、不读取 Claude 消息。" y:48];
@@ -1404,14 +1477,14 @@ static const unsigned CardFill = 0xFFFCF7;
     NSRange match = [text rangeOfString:@"账号 [0-9]{2}" options:NSRegularExpressionSearch];
     if (match.location != NSNotFound) instance = [NSString stringWithFormat:@"Claude %ld",(long)[text substringWithRange:NSMakeRange(match.location+3,2)].integerValue];
     [self.logEntries insertObject:@{@"date":NSDate.date,@"time":[clock stringFromDate:[NSDate date]],@"level":level,@"instance":instance,@"text":text} atIndex:0];
-    [self trimLogs]; [self reloadLogs];
+    [self trimLogs]; [self saveLogs]; [self reloadLogs];
     if (![level isEqual:@"信息"]) [self showLocalNotice:text];
 }
 - (void)clearLogs:(id)sender {
-    NSAlert *alert = [NSAlert new]; alert.messageText = @"清空本次运行日志？"; alert.informativeText = @"仅清空启动器内存中的记录，不读取或删除 Claude 日志。";
+    NSAlert *alert = [NSAlert new]; alert.messageText = @"清空启动器日志？"; alert.informativeText = @"仅清空启动器自己保存的记录（Claude Launcher 目录中的 launcher-log.json），不读取或删除 Claude 日志。";
     [alert addButtonWithTitle:@"取消"]; [alert addButtonWithTitle:@"清空"];
     if ([alert runModal] != NSAlertSecondButtonReturn) return;
-    [self.logEntries removeAllObjects]; self.logPage = 0; [self reloadLogs];
+    [self.logEntries removeAllObjects]; [self saveLogs]; self.logPage = 0; [self reloadLogs];
 }
 - (void)exportLogs:(id)sender {
     NSSavePanel *panel = [NSSavePanel savePanel]; panel.nameFieldStringValue = @"Claude 启动器日志.txt";
@@ -2525,6 +2598,11 @@ static int UISettingsTest(NSString *output) {
         [launcher.logEntries removeAllObjects];
         for (NSInteger i=0;i<125;i++) [launcher addLog:[NSString stringWithFormat:@"账号 02 本地测试 %ld",(long)i]];
         NSCAssert(launcher.logEntries.count == 100 && launcher.visibleLogs.count == 10,@"bounded logs and first page");
+        NSCAssert(launcher.logPageButtons.count == 4,@"numbered pager shows 1, 2, gap, 10");
+        launcher.logPath = [output stringByAppendingPathComponent:@"launcher-log-test.json"]; [launcher addLog:@"账号 02 持久化测试"];
+        NSArray *persisted = LoadedLogs([NSData dataWithContentsOfFile:launcher.logPath]);
+        NSCAssert(persisted.count == 100 && [persisted[0][@"text"] isEqual:@"账号 02 持久化测试"] && [persisted[0][@"instance"] isEqual:@"Claude 2"],@"logs written to launcher file and reloadable after restart");
+        [NSFileManager.defaultManager removeItemAtPath:launcher.logPath error:nil]; launcher.logPath = nil;
         [launcher.nextLogs performClick:nil]; NSCAssert(launcher.logPage == 1,@"next page action");
         [launcher.previousLogs performClick:nil]; NSCAssert(launcher.logPage == 0,@"previous page action");
         launcher.logSearch.stringValue = @"测试 124"; [launcher controlTextDidChange:[NSNotification notificationWithName:NSControlTextDidChangeNotification object:launcher.logSearch]];
@@ -2548,7 +2626,7 @@ static int UISettingsTest(NSString *output) {
         Fetch([NSURL URLWithString:@"https://api.anthropic.com/v1/messages"],YES,100,1,nil,^(NSData *data,NSString *failure) { refused = !data && failure.length; });
         NSCAssert(refused,@"Claude requests rejected even with update opt-in"); NetworkEnabled = NO;
         NSCAssert(!launcher.timer && !launcher.statusItem && !launcher.projectStore,@"UI checks do not start normal lifecycle or load projects");
-        puts("PASS: native settings controls, isolated save/reload, draft cancellation, reset scope, artwork/interface-usage/notifications, log retention/filter/paging, account search/status/selection, network rejection before session creation; 8 offscreen renders");
+        puts("PASS: native settings controls, isolated save/reload, draft cancellation, reset scope, artwork/interface-usage/notifications, log retention/persistence/filter/paging, account search/status/selection, network rejection before session creation; 8 offscreen renders");
     } @finally {
         NetworkEnabled = NO; [preferences removePersistentDomainForName:suite]; [preferences synchronize];
     }
