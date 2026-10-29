@@ -9,6 +9,8 @@
 > - 独立诊断程序（放在临时目录，未进仓库）只读，没有点击、展开或设置任何属性。**问题**：它的打码过滤只排除了 Text 节点，命中关键字的 ListItem 名称（本次对话中我自己回复的几句正文）被原样输出到了诊断结果里。该输出只在本机会话中，没有保存或发送。正式实现不读取 ListItem／Text 等分支的名称，只读可展开 Button 的名称。
 > - 正式实现 `--usage-interface-check`：`账号 01：界面已读取；5小时=无；每周=已观察`，约 400～500 ms。
 >
+> **D3（2026-10-29，feature/windows-usage-popup）**：用户授权。弹窗为 Code 页内的 Window「用量」，含 `https://claude.ai/settings/usage` 链接与 Text／ProgressBar（RangeValue）指标；按钮展开／关闭发出 ExpandCollapseState 属性变化通知。实测端到端：展开 → 通知 → 读到五小时与每周。调查面板时临时程序又输出了几句本会话正文（数字打码，仅本机会话），见 STATUS。
+>
 > 以下为授权前的原始调查，保留原结论。对应交接 [HANDOFF-windows-1.7.14.md](HANDOFF-windows-1.7.14.md) C4 与 [HANDOFF-windows-sync.md](HANDOFF-windows-sync.md) 第 6 项。
 
 ## 本报告的边界
