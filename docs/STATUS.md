@@ -1,6 +1,13 @@
 # 项目状态
 
-## Windows 用量：手动展开弹窗时读取（D3）（2026-10-29，feature/windows-usage-popup，未发布）
+## Windows 1.8.2 已发布（2026-10-29，windows-v1.8.2）
+
+- 内容：手动展开官方用量弹窗时读取五小时与每周（D3，见下节），发布说明 [RELEASE-windows-1.8.2.md](RELEASE-windows-1.8.2.md)。用户确认“提交发布 1.8.2”后：feature/windows-usage-popup 提交（`3884ec0`）并合并到 dev，版本改为 1.8.2（`08ba175`），build 通过（LauncherTests 315、自检 244），`-DryRun` 通过，推送 dev 并把 main 快进到 `08ba175`。
+- 标签 windows-v1.8.2，目标 `08ba175`，已转正式并为 Latest（上一版 Latest 为 windows-v1.8.1）。附件：`ClaudeLauncherSetup-1.8.2.exe` 2823667 字节，SHA-256 `504189973c721ad78f2ad8679f74080bc98c9e5ab7150231ffe3aafe71770824`；`latest-windows.json`；从 windows-v1.8.1 带入的 `ClaudeLauncher-1.7.15.dmg` 与 `latest-macos.json`。
+- 复核：草稿附件经 GitHub API 核对一致；GitHub latest/download 四个文件均为新版本。本机自建更新服务仍未运行，两份自建清单不可达，脚本按设计保留发布并以状态 2 退出（本地 `updates/public` 已切换到 1.8.2）。
+- 未验证：1.8.1 → 1.8.2 软件内更新的实际过程；安装后启动器界面中的弹窗读取；多账号同时运行。
+
+## Windows 用量：手动展开弹窗时读取（D3）（2026-10-29，已随 Windows 1.8.2 发布）
 
 - 起因：用户反馈 1.8.1 只显示周额度。只读核对：当时官方按钮本身显示「用量：每周 · 所有模型：…」（五小时窗口尚未开始，之后实测改为「用量：5 小时限额的 …」），而 Windows 版不读弹窗面板。用户授权 D3。
 - 面板结构实测（用户手动展开）：Code 页内 Window「用量」→ 链接 `https://claude.ai/settings/usage` → Text「5 小时限额」「HH:MM 重置」+ ProgressBar「5 小时限额」（0～100），每周同理。展开通知实测：用户每次展开／关闭，按钮都发出 ExpandCollapseState 属性变化（1／0），与轮询对照一致。
