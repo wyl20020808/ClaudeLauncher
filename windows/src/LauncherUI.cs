@@ -521,121 +521,149 @@ namespace ClaudeLauncher {
             return row;
         }
 
-        // ---- 系统设置（SPEC 系统设置 [Windows]） ----
+        // ---- 系统设置（SPEC 系统设置 [Windows]，布局对应 macOS 1.7.14：顶部分段标签 + 分组卡片行） ----
         readonly Canvas[] settingsSections = new Canvas[6];
         readonly Button[] settingsTabs = new Button[6];
         readonly List<Action> settingsSync = new List<Action>();
         TextBlock settingsFeedback, autoStartStatus;
         int settingsSection;
         bool syncingSettings;
+        // 布局游标：当前分类画布、纵向位置、当前分组卡片。
+        Canvas settingsCanvas; double settingsY; Border settingsGroup;
+        const double SettingsWidth = 696, SettingsRow = 60;
 
         void BuildSettings(Canvas page) {
-            At(page, Panel(16, "#DBFFFDFA"), 36, 140, 736, 556);
-            At(page, new Rectangle { Fill = B("#EDE4D8") }, 206, 141, 1, 554);
-            string[][] tabs = { new[] { "常规设置", "" }, new[] { "启动行为", "" }, new[] { "外观设置", "" }, new[] { "数据与存储", "" }, new[] { "消息通知", "" }, new[] { "关于软件", "" } };
+            At(page, Panel(12, "#BFFFFDFA"), 36, 140, 736, 40);
+            At(page, Panel(16, "#DBFFFDFA"), 36, 192, 736, 504);
+            string[] tabs = { "常规", "启动行为", "外观", "数据与存储", "通知", "关于" };
+            double width = 724.0 / tabs.Length;
             for (int i = 0; i < tabs.Length; i++) {
                 int index = i;
-                var line = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(14, 0, 0, 0) };
-                var glyph = Glyph(tabs[i][1], 13, "#3A332D"); glyph.Width = 28; line.Children.Add(glyph);
-                line.Children.Add(new TextBlock { Text = tabs[i][0], FontSize = 14, VerticalAlignment = VerticalAlignment.Center });
-                settingsTabs[i] = At(page, new Button { Style = (Style)window.FindResource("Nav"), Content = line, Padding = new Thickness(0), Foreground = B("#3A332D") }, 48, 154 + i * 46, 146, 38);
-                AutomationProperties.SetName(settingsTabs[i], tabs[i][0]);
+                settingsTabs[i] = At(page, new Button { Content = tabs[i], FontSize = 13, Padding = new Thickness(0), Tag = new CornerRadius(9) }, 42 + i * width, 144, width, 32);
+                AutomationProperties.SetName(settingsTabs[i], tabs[i]);
                 settingsTabs[i].Click += delegate { ShowSettingsSection(index); };
-                settingsSections[i] = At(page, new Canvas { Visibility = Visibility.Collapsed }, 230, 156, 518, 470);
+                settingsSections[i] = new Canvas { Width = SettingsWidth, HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top };
+                At(page, new ScrollViewer { Content = settingsSections[i], VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Focusable = false, Visibility = Visibility.Collapsed }, 56, 208, SettingsWidth + 18, 428);
             }
             string data = LauncherSettings.DataDirectory;
+            TextBlock unused;
 
-            // 常规设置
-            var c = settingsSections[0]; double y = Heading(c, "常规设置");
-            y = SwitchRow(c, y, "关闭窗口后继续运行", "关闭窗口只隐藏，可从通知区域或再次打开启动器恢复；关闭此项后，关闭窗口即退出启动器。都不会退出 Claude。", () => draft.CloseToBackground, v => draft.CloseToBackground = v);
-            y = SwitchRow(c, y, "显示通知区域图标", "右键图标可查看账号状态、检查更新或退出。关闭后再次打开启动器即可显示窗口。", () => draft.ShowTray, v => draft.ShowTray = v);
-            Note(c, y + 8, "这些设置只影响本启动器，不改变 Claude 的运行、登录或窗口。");
+            SettingsSection(0);
+            SettingsHeader("窗口与启动");
+            ToggleRow("", "关闭窗口后继续运行", "关闭窗口只隐藏，可从通知区域或再次打开启动器恢复；关闭后，关闭窗口即退出启动器。都不会退出 Claude。", () => draft.CloseToBackground, v => draft.CloseToBackground = v);
+            ToggleRow("", "显示通知区域图标", "右键图标可查看账号状态、检查更新或退出。关闭后再次打开启动器即可显示窗口。", () => draft.ShowTray, v => draft.ShowTray = v);
+            SettingsNote("这些设置只影响本启动器，不改变 Claude 的运行、登录或窗口。");
 
-            // 启动行为
-            c = settingsSections[1]; y = Heading(c, "启动行为");
-            ActionRow(c, 0, y, "管理开机启动…", ManageAutoStart);
-            autoStartStatus = At(c, new TextBlock { FontSize = 12, Foreground = B(Muted), TextWrapping = TextWrapping.Wrap }, 0, y + 42, 518);
-            y += 82;
-            y = SwitchRow(c, y, "恢复启动器上次页面", "只恢复本启动器的页面，不自动启动或激活任何 Claude。", () => draft.RememberPage, v => draft.RememberPage = v);
-            y = ChoiceRow(c, y, "未恢复时的启动页面", new[] { "实例管理", "账号管理", "日志记录", "系统设置" }, LauncherSettings.Pages.Cast<object>().ToArray(), () => draft.StartPage, v => draft.StartPage = (string)v, () => !draft.RememberPage);
-            y = ChoiceRow(c, y, "本地进程状态刷新间隔", new[] { "1 秒", "3 秒", "5 秒" }, LauncherSettings.Intervals.Cast<object>().ToArray(), () => draft.RefreshInterval, v => draft.RefreshInterval = (int)v, null);
-            SwitchRow(c, y, "点击账号时恢复最小化窗口", "只处理经过核对的目标 PID 窗口；关闭后最小化的窗口需从任务栏打开。", () => draft.RestoreMinimized, v => draft.RestoreMinimized = v);
+            SettingsSection(1);
+            SettingsHeader("启动与刷新");
+            ButtonRow("", "开机时启动", AutoStartStatus(), "管理开机启动…", ManageAutoStart, out autoStartStatus);
+            ToggleRow("", "恢复启动器上次页面", "只恢复本启动器的页面，不自动启动或激活任何 Claude。", () => draft.RememberPage, v => draft.RememberPage = v);
+            ChoiceRow("", "未恢复时的启动页面", new[] { "实例管理", "账号管理", "日志记录", "系统设置" }, LauncherSettings.Pages.Cast<object>().ToArray(), () => draft.StartPage, v => draft.StartPage = (string)v, () => !draft.RememberPage);
+            ChoiceRow("", "本地进程状态刷新间隔", new[] { "1 秒", "3 秒", "5 秒" }, LauncherSettings.Intervals.Cast<object>().ToArray(), () => draft.RefreshInterval, v => draft.RefreshInterval = (int)v, null);
+            ToggleRow("", "点击账号时恢复最小化窗口", "只处理经过核对的目标 PID 窗口；关闭后最小化的窗口需从任务栏打开。", () => draft.RestoreMinimized, v => draft.RestoreMinimized = v);
 
-            // 外观设置
-            c = settingsSections[2]; y = Heading(c, "外观设置");
-            y = SwitchRow(c, y, "显示水墨插画", "关闭后保留浅色纸张背景和原有文字布局。", () => draft.ShowArtwork, v => draft.ShowArtwork = v);
-            Note(c, y + 8, "本地界面用量：Windows 版尚未接入，需先完成调查并取得授权，因此暂不提供开关。\n\n界面语言：简体中文\n主题：浅色水墨\n\n这两项为当前版本的固定样式。Claude 自身的外观、浏览器和登录方式由官方客户端管理。");
+            SettingsSection(2);
+            SettingsHeader("显示");
+            ToggleRow("", "显示水墨插画", "关闭后保留浅色纸张背景和原有文字布局。", () => draft.ShowArtwork, v => draft.ShowArtwork = v);
+            ValueRow("", "显示本地界面用量", "Windows 尚未接入");
+            SettingsHeader("样式");
+            ValueRow("", "界面语言", "简体中文");
+            ValueRow("", "主题", "浅色水墨");
+            SettingsNote("语言与主题为当前版本的固定样式；Claude 自身的外观、浏览器和登录方式由官方客户端管理。本地界面用量需先完成调查并取得授权，因此暂不提供开关。");
 
-            // 数据与存储
-            c = settingsSections[3]; y = Heading(c, "数据与存储");
-            Note(c, y, "启动器数据目录（设置、日志、登录保护与删除状态）\n" + Diagnostics.Redact(data) + "\n账号目录固定，不迁移、不合并。");
-            y += 76;
-            ActionRow(c, 0, y, "在资源管理器中显示", () => OpenFolder(data));
-            ActionRow(c, 264, y, "复制数据目录路径", () => {
+            SettingsSection(3);
+            SettingsHeader("启动器数据");
+            ButtonRow("", "设置、日志、别名与登录保护", Diagnostics.Redact(data), "在资源管理器中显示", () => OpenFolder(data), out unused);
+            ButtonRow("", "复制数据目录路径", "账号目录固定，不迁移、不合并。", "复制路径", () => {
                 try { Clipboard.SetText(data); settingsFeedback.Text = "启动器数据目录路径已复制"; } catch (Exception error) { Alert("无法复制路径", error.Message); }
-            });
-            ActionRow(c, 0, y + 44, "导出已保存的设置…", ExportSettings);
-            ActionRow(c, 264, y + 44, "打开本地诊断日志", () => {
+            }, out unused);
+            ButtonRow("", "导出已保存的设置", "不含账号、别名、项目或凭据；导出位置由你选择。", "导出…", ExportSettings, out unused);
+            SettingsHeader("日志");
+            ChoiceRow("", "启动器日志保留上限", new[] { "100 条", "500 条", "1000 条" }, LauncherSettings.LogLimits.Cast<object>().ToArray(), () => draft.LogLimit, v => draft.LogLimit = (int)v, null);
+            ButtonRow("", "本地诊断日志", "启动、进程与异常记录，不含账号信息。", "打开", () => {
                 try { Diagnostics.OpenFolder(); } catch (Exception error) { Diagnostics.Error("open_logs_error", error); Alert("无法打开日志目录", error.Message); }
-            });
-            y = ChoiceRow(c, y + 100, "启动器日志保留上限", new[] { "100 条", "500 条", "1000 条" }, LauncherSettings.LogLimits.Cast<object>().ToArray(), () => draft.LogLimit, v => draft.LogLimit = (int)v, null);
-            Note(c, y + 4, "日志记录保存在数据目录的 launcher-log.json，重启和更新后保留，超出上限删除最旧记录；导出位置由你选择。导出的设置不含账号、别名、项目或凭据。恢复默认只重置启动器偏好，保留日志、登录保护、开机启动项和任何 Claude 数据。");
+            }, out unused);
+            SettingsNote("日志记录保存在数据目录的 launcher-log.json，重启和更新后保留，超出上限删除最旧记录。恢复默认只重置启动器偏好，保留日志、别名、登录保护、开机启动项和任何 Claude 数据。");
 
-            // 消息通知
-            c = settingsSections[4]; y = Heading(c, "消息通知");
-            y = SwitchRow(c, y, "显示窗口内提示", "在启动器底部临时显示警告和错误；不推送、不上传、不读取 Claude 消息。", () => draft.LocalNotifications, v => draft.LocalNotifications = v);
-            y = SwitchRow(c, y, "警告时播放提示音", "仅在窗口内提示开启时生效，使用系统提示音。", () => draft.NotificationSound, v => draft.NotificationSound = v);
-            ActionRow(c, 0, y + 6, "测试已保存的通知设置", () => {
+            SettingsSection(4);
+            SettingsHeader("窗口内提示");
+            ToggleRow("", "显示窗口内提示", "在启动器底部临时显示警告和错误；不推送、不上传、不读取 Claude 消息。", () => draft.LocalNotifications, v => draft.LocalNotifications = v);
+            ToggleRow("", "警告时播放提示音", "仅在窗口内提示开启时生效，使用系统提示音。", () => draft.NotificationSound, v => draft.NotificationSound = v);
+            ButtonRow("", "测试已保存的通知设置", "按已保存的设置显示一次提示。", "测试", () => {
                 settingsFeedback.Text = Notify("本地通知测试：设置已生效，没有发送网络请求。") ? "已按保存的设置显示提示" : "窗口内提示已关闭；开启并保存后可测试";
-            });
-            Note(c, y + 56, "安全确认和错误弹窗始终保留，不受通知开关影响。");
+            }, out unused);
+            SettingsNote("安全确认和错误弹窗始终保留，不受通知开关影响。");
 
-            // 关于软件
-            c = settingsSections[5]; y = Heading(c, "Claude 多开启动器 " + Updates.DisplayVersion);
-            Note(c, y, "非官方本地管理工具，与 Anthropic 无关联。\n不向 Claude / Anthropic 发请求，不读取凭据，不修改官方应用。");
-            y = SwitchRow(c, y + 54, "允许检查 GitHub 更新", "默认关闭。保存开启后每次打开启动器检查一次，也可手动检查；只访问本项目 GitHub 下载地址。", () => draft.AllowUpdates, v => draft.AllowUpdates = v);
-            update = ActionRow(c, 0, y + 6, "检查启动器更新…", async () => await CheckUpdate(true));
-            ActionRow(c, 0, y + 50, "查看本地使用帮助", ShowHelp);
-            ActionRow(c, 0, y + 94, "复制基础诊断信息", CopyDiagnostics);
-            Note(c, y + 144, "诊断仅包含版本、Windows 版本和联网开关，不包含账号、路径、日志或凭据。");
+            SettingsSection(5);
+            SettingsHeader("版本与更新");
+            ValueRow("", "Claude 多开启动器", Updates.DisplayVersion);
+            ToggleRow("", "允许检查 GitHub 更新", "默认关闭。保存开启后每次打开启动器检查一次，也可手动检查；只访问本项目 GitHub 下载地址。", () => draft.AllowUpdates, v => draft.AllowUpdates = v);
+            update = ButtonRow("", "检查启动器更新", "非官方本地工具，与 Anthropic 无关联；不向 Claude 或 Anthropic 发请求。", "检查更新…", async () => await CheckUpdate(true), out unused);
+            SettingsHeader("帮助与诊断");
+            ButtonRow("", "本地使用帮助", null, "查看", ShowHelp, out unused);
+            ButtonRow("", "基础诊断信息", "仅包含版本、Windows 版本和联网开关，不包含账号、路径、日志或凭据。", "复制", CopyDiagnostics, out unused);
+            SettingsNote("不会自动联网检查。不读取凭据，不修改官方应用。");
+            SettingsSection(-1);
 
             // 底部：反馈、恢复默认、撤销、保存
-            settingsFeedback = At(page, new TextBlock { Text = "更改后点击保存设置", FontSize = 12, Foreground = B(Muted), TextTrimming = TextTrimming.CharacterEllipsis }, 230, 618, 518);
+            settingsFeedback = At(page, new TextBlock { Text = "更改后点击保存设置", FontSize = 12, Foreground = B(Muted), TextTrimming = TextTrimming.CharacterEllipsis }, 58, 656, 350);
             AutomationProperties.SetAutomationId(settingsFeedback, "SettingsFeedback");
-            var reset = At(page, Action("恢复默认…", "Btn", null, 14), 400, 646, 110, 38);
+            var reset = At(page, Action("恢复默认…", "Btn", null, 13), 424, 648, 104, 34);
             reset.Click += delegate {
-                if (Ask("恢复启动器默认设置？", "将默认值填入草稿，点击保存后生效。不会移除账号、登录保护、开机启动项或任何 Claude 数据。", new[] { "取消", "恢复到草稿" }, 0, 1) == 1) ResetSettingsDraft();
+                if (Ask("恢复启动器默认设置？", "将默认值填入草稿，点击保存后生效。不会移除账号、日志、别名、登录保护、开机启动项或任何 Claude 数据。", new[] { "取消", "恢复到草稿" }, 0, 1) == 1) ResetSettingsDraft();
             };
-            var undo = At(page, Action("撤销更改", "Btn", null, 14), 520, 646, 110, 38);
+            var undo = At(page, Action("撤销更改", "Btn", null, 13), 536, 648, 104, 34);
             AutomationProperties.SetAutomationId(undo, "UndoSettings");
             undo.Click += delegate { DiscardSettings(); };
-            saveSettings = At(page, Action("保存设置", "Primary", "", 14), 640, 646, 116, 38);
+            saveSettings = At(page, Action("保存设置", "Primary", null, 13), 648, 648, 108, 34);
             AutomationProperties.SetAutomationId(saveSettings, "SaveSettings");
             saveSettings.Click += delegate { SaveSettings(); };
             ShowSettingsSection(0);
             SyncSettings();
         }
-        double Heading(Canvas c, string text) {
-            At(c, T(text, 17, Ink, FontWeights.SemiBold), 0, 0, 518);
-            return 44;
+        // 结束上一分类（定高以便滚动）并开始下一分类；-1 只结束。
+        void SettingsSection(int index) {
+            if (settingsCanvas != null) settingsCanvas.Height = settingsY;
+            settingsCanvas = index < 0 ? null : settingsSections[index];
+            settingsY = 0; settingsGroup = null;
         }
-        void Note(Canvas c, double y, string text) {
-            At(c, new TextBlock { Text = text, FontSize = 12, Foreground = B(Muted), TextWrapping = TextWrapping.Wrap, LineHeight = 19 }, 0, y, 518);
+        // 小标题 + 白色圆角分组卡片；随后每行使卡片增高 60。
+        void SettingsHeader(string title) {
+            if (settingsY > 0) settingsY += 16;
+            At(settingsCanvas, T(title, 13, Ink, FontWeights.SemiBold), 2, settingsY, 400);
+            settingsY += 26;
+            settingsGroup = At(settingsCanvas, new Border { Background = Brushes.White, BorderBrush = B("#EDE4D8"), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(12) }, 0, settingsY, SettingsWidth, 0);
         }
-        // 开关行：整行可点（标题 + 说明 + 开关）；只改草稿。
-        double SwitchRow(Canvas c, double y, string title, string detail, Func<bool> get, Action<bool> set) {
-            var text = new StackPanel { Width = 450, HorizontalAlignment = HorizontalAlignment.Left };
-            text.Children.Add(new TextBlock { Text = title, FontSize = 14, FontWeight = FontWeights.SemiBold, Foreground = B(Ink) });
-            text.Children.Add(new TextBlock { Text = detail, FontSize = 12, Foreground = B(Muted), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 3, 0, 0) });
-            var box = At(c, new CheckBox { Style = (Style)window.FindResource("Switch"), Content = text }, 0, y, 518);
+        // 一行的图标、标题与说明（说明最多两行，悬停显示全文）；返回行顶部，控件由调用方放在右侧。
+        double SettingsRowBase(string icon, string title, string detail, out TextBlock detailLabel) {
+            double y = settingsY;
+            if (settingsGroup.Height > 0) At(settingsCanvas, new Rectangle { Fill = B("#F1EAE1") }, 48, y, SettingsWidth - 64, 1);
+            At(settingsCanvas, Glyph(icon, 16, Brown), 18, y + 21).IsHitTestVisible = false;
+            detailLabel = null;
+            double top = 20;
+            if (detail != null) {
+                detailLabel = new TextBlock { Text = detail, FontSize = 12, Foreground = B("#8A8178"), TextWrapping = TextWrapping.Wrap, TextTrimming = TextTrimming.CharacterEllipsis, MaxHeight = 32, ToolTip = detail.Length > 0 ? detail : null };
+                detailLabel.Measure(new Size(420, Double.PositiveInfinity));
+                top = detailLabel.DesiredSize.Height > 18 ? 6 : 11;
+                At(settingsCanvas, detailLabel, 48, y + top + 20, 420);
+            }
+            At(settingsCanvas, T(title, 14, Ink, FontWeights.Medium), 48, y + top, 420);
+            settingsGroup.Height += SettingsRow; settingsY += SettingsRow;
+            return y;
+        }
+        // 开关行：只改草稿。
+        void ToggleRow(string icon, string title, string detail, Func<bool> get, Action<bool> set) {
+            TextBlock unused;
+            double y = SettingsRowBase(icon, title, detail, out unused);
+            var box = At(settingsCanvas, new CheckBox { Style = (Style)window.FindResource("Switch") }, SettingsWidth - 16 - 42, y + 18, 42, 24);
             AutomationProperties.SetName(box, title);
             box.Click += delegate { set(box.IsChecked == true); DraftChanged(); };
             settingsSync.Add(() => box.IsChecked = get());
-            return y + 72;
         }
-        double ChoiceRow(Canvas c, double y, string title, string[] labels, object[] values, Func<object> get, Action<object> set, Func<bool> enabled) {
-            At(c, T(title, 14, Ink, FontWeights.SemiBold), 0, y + 6, 260);
-            var combo = At(c, new ComboBox { Style = (Style)window.FindResource("Pick"), ItemsSource = labels, FontSize = 13, Padding = new Thickness(12, 0, 30, 0) }, 290, y, 228, 32);
+        void ChoiceRow(string icon, string title, string[] labels, object[] values, Func<object> get, Action<object> set, Func<bool> enabled) {
+            TextBlock unused;
+            double y = SettingsRowBase(icon, title, null, out unused);
+            var combo = At(settingsCanvas, new ComboBox { Style = (Style)window.FindResource("Pick"), ItemsSource = labels, FontSize = 13, Padding = new Thickness(12, 0, 30, 0) }, SettingsWidth - 16 - 190, y + 14, 190, 32);
             AutomationProperties.SetName(combo, title);
             combo.SelectionChanged += delegate {
                 if (syncingSettings || combo.SelectedIndex < 0) return;
@@ -645,21 +673,44 @@ namespace ClaudeLauncher {
                 combo.SelectedIndex = Math.Max(0, Array.IndexOf(values, get()));
                 combo.IsEnabled = enabled == null || enabled();
             });
-            return y + 48;
         }
-        Button ActionRow(Canvas c, double x, double y, string text, Action handler) {
-            var button = At(c, Action(text, "Btn", null, 13), x, y, 250, 34);
+        Button ButtonRow(string icon, string title, string detail, string text, Action handler, out TextBlock detailLabel) {
+            double y = SettingsRowBase(icon, title, detail, out detailLabel);
+            var probe = new TextBlock { Text = text, FontSize = 13, FontWeight = FontWeights.Medium };
+            probe.Measure(new Size(Double.PositiveInfinity, Double.PositiveInfinity));
+            double width = Math.Max(96, Math.Ceiling(probe.DesiredSize.Width) + 36);
+            var button = At(settingsCanvas, Action(text, "Btn", null, 13), SettingsWidth - 16 - width, y + 14, width, 32);
+            AutomationProperties.SetName(button, title + "：" + text);
             button.Click += delegate { handler(); };
             return button;
+        }
+        void ValueRow(string icon, string title, string value) {
+            TextBlock unused;
+            double y = SettingsRowBase(icon, title, null, out unused);
+            var label = At(settingsCanvas, T(value, 13, Muted, FontWeights.Normal), SettingsWidth - 16 - 240, y + 20, 240);
+            label.TextAlignment = TextAlignment.Right;
+        }
+        // 带信息图标的提示框。
+        void SettingsNote(string text) {
+            settingsY += 14;
+            var grid = new Grid { Margin = new Thickness(16, 10, 16, 10) };
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(26) });
+            grid.ColumnDefinitions.Add(new ColumnDefinition());
+            var glyph = Glyph("", 14, "#8A8178"); glyph.VerticalAlignment = VerticalAlignment.Top; glyph.Margin = new Thickness(0, 2, 0, 0); grid.Children.Add(glyph);
+            var label = new TextBlock { Text = text, FontSize = 12, Foreground = B(Muted), TextWrapping = TextWrapping.Wrap, LineHeight = 18 };
+            Grid.SetColumn(label, 1); grid.Children.Add(label);
+            var note = new Border { Background = B("#CCF5EEE6"), CornerRadius = new CornerRadius(10), Child = grid, Width = SettingsWidth };
+            note.Measure(new Size(SettingsWidth, Double.PositiveInfinity));
+            At(settingsCanvas, note, 0, settingsY);
+            settingsY += note.DesiredSize.Height;
         }
         void ShowSettingsSection(int index) {
             settingsSection = index;
             for (int i = 0; i < settingsSections.Length; i++) {
                 bool on = i == index;
-                settingsSections[i].Visibility = on ? Visibility.Visible : Visibility.Collapsed;
-                settingsTabs[i].Background = on ? B("#EDDDC9") : Brushes.Transparent;
-                settingsTabs[i].Foreground = B(on ? "#9A6447" : "#3A332D");
-                foreach (TextBlock label in ((StackPanel)settingsTabs[i].Content).Children) { label.Foreground = settingsTabs[i].Foreground; label.FontWeight = on ? FontWeights.SemiBold : FontWeights.Normal; }
+                ((ScrollViewer)settingsSections[i].Parent).Visibility = on ? Visibility.Visible : Visibility.Collapsed;
+                settingsTabs[i].Style = (Style)window.FindResource(on ? "Primary" : "Icon");
+                settingsTabs[i].FontWeight = on ? FontWeights.SemiBold : FontWeights.Medium;
             }
             if (index == 1) autoStartStatus.Text = AutoStartStatus();
         }

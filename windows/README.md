@@ -75,7 +75,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup.ps1
 
 ## 应用内更新（SPEC 更新与安装）
 
-- 开关（feature/windows-update-boundary 起）：`allowUpdates` 默认关闭，保存在 `%LOCALAPPDATA%\Claude-MultiLauncher\settings.json`；系统设置“关于软件 → 允许检查 GitHub 更新”切换后需点“保存设置”。未开启时设置页“检查更新”与托盘“检查更新…”都不联网，只提示开启；有未保存设置时不开始；下载期间设置被改则安装前取消并删除临时文件。
+- 开关（feature/windows-update-boundary 起）：`allowUpdates` 默认关闭，保存在 `%LOCALAPPDATA%\Claude-MultiLauncher\settings.json`；系统设置“关于 → 允许检查 GitHub 更新”切换后需点“保存设置”。未开启时设置页“检查更新”与托盘“检查更新…”都不联网，只提示开启；有未保存设置时不开始；下载期间设置被改则安装前取消并删除临时文件。
 - 时机：开启后每次打开启动器检查一次（只在有新版时提示，失败只记日志）+ 手动检查；没有定时或后台重复检查，已删除 8 秒／24 小时自动检查及 `last-update-check`。
 - 来源：只用 `https://github.com/wyl20020808/ClaudeLauncher/releases/latest/download/latest-windows.json` 与同 Release 的 Setup；失败时显示原因并提供“前往 GitHub 下载”（打开 Releases 页面）。自建服务与“取较高版本”已从客户端移除（发布脚本过渡期仍为旧客户端同步自建服务）。
 - 清单：`platform=windows`、`version` x.y.z、`file=ClaudeLauncherSetup-<版本>.exe`、`size`（1 KB～50 MB）、小写 `sha256`、`minimumOS`、`signature`；签名原文为 platform、version、file、size、sha256 各一行（`\n` 结尾），RSA-3072 + SHA-256（PKCS#1 v1.5），公钥 `assets/update-public-key.xml`（与 macOS 同一把）。清单上限 16 KB。
@@ -91,7 +91,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup.ps1
 
 ## 常驻图标（通知区域）
 
-- 启动器运行期间托盘常驻（可在“常规设置”关闭图标）；关闭主窗口只隐藏（首次弹一次提示），程序和图标继续运行；“关闭窗口后继续运行”关闭时，关闭窗口即退出启动器。左键单击或双击显示主窗口，右键弹出菜单。
+- 启动器运行期间托盘常驻（可在设置“常规”中关闭图标）；关闭主窗口只隐藏（首次弹一次提示），程序和图标继续运行；“关闭窗口后继续运行”关闭时，关闭窗口即退出启动器。左键单击或双击显示主窗口，右键弹出菜单。
 - 菜单：显示启动器窗口 / 本机账号（“账号 NN · 运行中/未运行”，进行中时显示检查中、启动中、删除未完成；点击与卡片主按钮走同一流程：PID 核对、登录保护、存储检查）/ 检查更新… / 退出启动器（只退出启动器，不退出任何 Claude；删除进行中时不允许）。
 - 每次打开菜单同步重新扫描进程；扫描失败时账号项禁用并显示原因。菜单不显示任何账号内容。
 - 安装程序请求退出时发送专用消息 `ClaudeMultiLauncher.Exit`（WM_CLOSE 只会隐藏）；再次打开启动器时用命名事件让已运行实例显示窗口。
@@ -139,6 +139,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup.ps1
 9. **1.2.0 遗留的 01 删除标记**：01 不可删，因此 1.2.0 中对 01 发起且未完成的删除无法在启动器内重试，01 会一直提示“删除未完成”。需用户手动处理该标记（`%LOCALAPPDATA%\Claude-MultiLauncher\pending-01`），启动器不自动清除。
 
 ## 验证记录
+
+### 设置页分段布局（2026-10-29，feature/windows-settings-layout，对应 macOS 1.7.14）
+
+- 自检（已执行）：`build.ps1 -Preview` 通过，LauncherTests 310 项、`--self-test` 210 项（草稿／保存／撤销／恢复默认等原有设置检查全部沿用并通过，标签名改为短名）。六个分类离屏图已人工查看：首轮发现内容垂直居中、无滚动条时横向偏移、开机启动说明换行压到分隔线、最后一个标签贴边，均已修正。
+- GUI（**未验证**）：桌面中的标签切换、滚动、开关与下拉的键盘操作、高 DPI 显示。
 
 ### 账号默认用户名与实例卡片精简（2026-10-29，feature/windows-account-names，对应 macOS 1.7.13）
 

@@ -132,12 +132,12 @@ public static class LauncherTests {
         Func<bool> dirty = () => button("SaveSettings").IsEnabled;
         Func<System.Threading.Tasks.Task> check = () => (System.Threading.Tasks.Task)typeof(LauncherUI).GetMethod("CheckUpdate", flags).Invoke(ui, new object[] { false });
 
-        foreach (string tab in new[] { "常规设置", "启动行为", "外观设置", "数据与存储", "消息通知", "关于软件" }) Check(all.OfType<Button>().Count(b => AutomationProperties.GetName(b) == tab) == 1, "Settings tab missing: " + tab);
+        foreach (string tab in new[] { "常规", "启动行为", "外观", "数据与存储", "通知", "关于" }) Check(all.OfType<Button>().Count(b => AutomationProperties.GetName(b) == tab) == 1, "Settings tab missing: " + tab);
         Check(!all.OfType<FrameworkElement>().Any(e => e is TextBlock && new[] { "默认浏览器", "启动间隔", "默认打开方式" }.Contains(((TextBlock)e).Text)), "Fake settings must be removed");
         Check(!dirty() && toggle("显示水墨插画").IsChecked == true && toggle("允许检查 GitHub 更新").IsChecked == false, "Settings must start from saved defaults");
         click(toggle("显示水墨插画"));
         Check(dirty() && toggle("显示水墨插画").IsChecked == false, "Toggle must change the draft");
-        click(button("关于软件"));
+        click(button("关于"));
         Check(dirty() && toggle("显示水墨插画").IsChecked == false, "Draft must survive switching categories");
         click(button("UndoSettings"));
         Check(!dirty() && toggle("显示水墨插画").IsChecked == true && !File.Exists(settingsFile), "Undo must restore saved values without writing");

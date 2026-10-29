@@ -1,5 +1,11 @@
 # 项目状态
 
+## Windows 设置页分段布局（2026-10-29，feature/windows-settings-layout，基于 feature/windows-account-names，对应 macOS 1.7.14，未发布）
+
+- 系统设置改为顶部分段标签（常规／启动行为／外观／数据与存储／通知／关于）+ 小标题分组的白色圆角卡片行（60 px：图标、标题、说明，右侧开关／下拉／按钮／只读值）+ 信息提示框；内容超出时在面板内滚动。草稿、保存、撤销、恢复默认与退出前提示行为不变；“显示本地界面用量”以只读值“Windows 尚未接入”展示。
+- 自检：`build.ps1 -Preview` 通过，LauncherTests 310 项、`--self-test` 210 项；六个分类离屏图已人工查看，首轮发现的居中、偏移、换行压线、标签贴边已修正。
+- 未验证：GUI 中的标签切换、滚动、键盘操作、高 DPI 显示。
+
 ## Windows 账号默认用户名与实例卡片精简（2026-10-29，feature/windows-account-names，基于 feature/windows-log-persist，对应 macOS 1.7.13，未发布）
 
 - 按 AGENTS「账号显示名例外」与 SPEC：无别名时显示本地 Claude Code 用户名“用户名 · NN”，01 读 `%USERPROFILE%\.claude.json`，02～10 读数据目录（`%APPDATA%` 与 MSIX 虚拟化两处候选）下的 `ClaudeCodeConfig\.claude.json`；只取 `oauthAccount.displayName`，按别名规则校验，文件须为当前用户所有的普通文件、≤32 MB；只在内存缓存并按修改时间与大小重读，不保存、不记录、不导出、不进诊断。搜索也匹配该用户名。
