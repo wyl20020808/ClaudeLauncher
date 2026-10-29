@@ -121,6 +121,7 @@ static BOOL UsageURL(NSString *value) {
 @property BOOL limited;
 @property NSMutableArray *matches;
 @property NSHashTable *visited;
+@property NSUInteger codeAreas;
 @end
 @implementation UsageAXReader
 - (id)read:(id)node key:(NSString *)key {
@@ -180,7 +181,7 @@ static BOOL UsageURL(NSString *value) {
     if (codeArea) {
         if (page) return; // Never enter Code's embedded browser or other nested web content.
         NSString *url = [self url:node];
-        if (CodeURL(url)) page = url;
+        if (CodeURL(url)) { page = url; self.codeAreas++; }
         else return; // The native wrapper is a sibling of Code, not its parent in Claude 4.29.0.
     }
     if (page && [role isEqual:@"AXPopUpButton"]) {
@@ -210,16 +211,24 @@ static BOOL UsageURL(NSString *value) {
     for (id window in windows) [self walk:window parent:nil page:nil depth:0];
     if (self.limited) return @{@"status":@"界面读取未完成"};
     if (self.matches.count > 1) return @{@"status":@"多个用量界面，待核对"};
-    return self.matches.firstObject ?: @{@"status":@"未观察到 Code 用量"};
+    return self.matches.firstObject ?: @{@"status":self.codeAreas ? @"未观察到 Code 用量控件" : @"未观察到 Code 用量页面"};
 }
 @end
 
-NSDictionary *ReadUsageInterface(pid_t pid) {
+static NSDictionary *ReadUsageInterfaceAttempt(pid_t pid, BOOL allowInitialization, NSTimeInterval deadline) {
     if (pid <= 0) return @{@"status":@"进程待核对"};
     if (!AXIsProcessTrusted()) return @{@"status":@"需辅助功能权限"};
     AXUIElementRef app = AXUIElementCreateApplication(pid);
     AXUIElementSetMessagingTimeout(app,0.1f); // Local IPC timeout only; does not set any attribute in Claude.
-    UsageAXReader *reader = [UsageAXReader new]; reader.deadline = NSProcessInfo.processInfo.systemUptime+1.5;
+    CFTypeRef manual = NULL;
+    AXError manualStatus = AXUIElementCopyAttributeValue(app,CFSTR("AXManualAccessibility"),&manual);
+    BOOL initialized = NO;
+    if (allowInitialization && manualStatus == kAXErrorSuccess && manual == kCFBooleanFalse) {
+        // Electron's documented local AX-tree switch, not a permission grant, click, navigation or usage refresh.
+        initialized = AXUIElementSetAttributeValue(app,CFSTR("AXManualAccessibility"),kCFBooleanTrue) == kAXErrorSuccess;
+    }
+    if (manual) CFRelease(manual);
+    UsageAXReader *reader = [UsageAXReader new]; reader.deadline = MIN(deadline,NSProcessInfo.processInfo.systemUptime+1.5);
     __weak UsageAXReader *weakReader = reader;
     NSMapTable *structure = [NSMapTable strongToStrongObjectsMapTable];
     reader.attribute = ^id(id node, NSString *key) {
@@ -245,7 +254,70 @@ NSDictionary *ReadUsageInterface(pid_t pid) {
     };
     id windows = [reader read:(__bridge id)app key:@"AXWindows"];
     NSDictionary *result = [reader result:[windows isKindOfClass:NSArray.class] ? windows : @[]];
-    reader.attribute = nil; CFRelease(app); return result;
+    reader.attribute = nil; CFRelease(app);
+    while (initialized && !result[@"fh"] && [result[@"status"] hasPrefix:@"未观察到 Code 用量"] && NSProcessInfo.processInfo.systemUptime+0.15 < deadline) {
+        // Initial tree construction is asynchronous; preparation stays inside this one bounded viewing action.
+        usleep(150000); result = ReadUsageInterfaceAttempt(pid,NO,deadline);
+    }
+    return result;
+}
+NSDictionary *ReadUsageInterface(pid_t pid) { return ReadUsageInterfaceAttempt(pid,YES,NSProcessInfo.processInfo.systemUptime+2.5); }
+
+static BOOL UsagePopoverOpens(NSString *role, NSString *label, id expanded) {
+    return [role isEqual:@"AXPopUpButton"] && ButtonMetric(label) && expanded == (__bridge id)kCFBooleanTrue;
+}
+@interface UsagePopoverObserver : NSObject
+@property AXObserverRef observer;
+@property (copy) void (^opened)(void);
+@property id openButton;
+- (BOOL)acceptButton:(id)button role:(NSString *)role title:(NSString *)title expanded:(id)expanded;
+@end
+@implementation UsagePopoverObserver
+- (BOOL)acceptButton:(id)button role:(NSString *)role title:(NSString *)title expanded:(id)expanded {
+    if ([role isEqual:@"AXPopUpButton"] && ButtonMetric(title) && expanded == (__bridge id)kCFBooleanFalse) {
+        if ([self.openButton isEqual:button]) self.openButton = nil; return NO;
+    }
+    if (!UsagePopoverOpens(role,title,expanded) || [self.openButton isEqual:button]) return NO;
+    self.openButton = button; return YES; // Repeated notifications for the same opening do not recapture.
+}
+- (void)dealloc {
+    if (_observer) { CFRunLoopRemoveSource(CFRunLoopGetMain(),AXObserverGetRunLoopSource(_observer),kCFRunLoopCommonModes); CFRelease(_observer); }
+}
+@end
+static id PopoverAttribute(AXUIElementRef element, CFStringRef key) {
+    CFTypeRef value = NULL; AXUIElementCopyAttributeValue(element,key,&value); return CFBridgingRelease(value);
+}
+static void UsagePopoverChanged(AXObserverRef observer, AXUIElementRef element, CFStringRef notification, void *context) {
+    if (!CFEqual(notification,CFSTR("AXExpandedChanged"))) return;
+    NSString *role = String(PopoverAttribute(element,kAXRoleAttribute));
+    if (![role isEqual:@"AXPopUpButton"]) return;
+    NSString *title = String(PopoverAttribute(element,kAXTitleAttribute));
+    if (!title.length) title = String(PopoverAttribute(element,kAXDescriptionAttribute));
+    UsagePopoverObserver *target = (__bridge UsagePopoverObserver *)context;
+    if (![target acceptButton:(__bridge id)element role:role title:title expanded:PopoverAttribute(element,kAXExpandedAttribute)]) return;
+    // Only the nearest, non-embedded official Code web area can authorize a quota snapshot.
+    AXUIElementRef ancestor = element; CFRetain(ancestor); BOOL code = NO;
+    for (NSUInteger depth=0;depth<40;depth++) {
+        id parent = PopoverAttribute(ancestor,kAXParentAttribute); CFRelease(ancestor); ancestor = NULL;
+        if (!parent || CFGetTypeID((__bridge CFTypeRef)parent) != AXUIElementGetTypeID()) break;
+        ancestor = (AXUIElementRef)CFRetain((__bridge CFTypeRef)parent);
+        if ([String(PopoverAttribute(ancestor,kAXRoleAttribute)) isEqual:@"AXWebArea"]) {
+            id url = PopoverAttribute(ancestor,kAXURLAttribute);
+            code = CodeURL([url isKindOfClass:NSURL.class] ? [url absoluteString] : String(url)); break;
+        }
+    }
+    if (ancestor) CFRelease(ancestor);
+    if (code && target.opened) target.opened();
+}
+id ObserveUsagePopover(pid_t pid, void (^opened)(void)) {
+    if (pid <= 0 || !AXIsProcessTrusted()) return nil;
+    AXObserverRef observer = NULL;
+    if (AXObserverCreate(pid,UsagePopoverChanged,&observer) != kAXErrorSuccess) return nil;
+    UsagePopoverObserver *target = [UsagePopoverObserver new]; target.observer = observer; target.opened = opened;
+    AXUIElementRef app = AXUIElementCreateApplication(pid); AXUIElementSetMessagingTimeout(app,0.1f);
+    AXError result = AXObserverAddNotification(observer,app,CFSTR("AXExpandedChanged"),(__bridge void *)target); CFRelease(app);
+    if (result != kAXErrorSuccess) return nil;
+    CFRunLoopAddSource(CFRunLoopGetMain(),AXObserverGetRunLoopSource(observer),kCFRunLoopCommonModes); return target;
 }
 
 NSDictionary *MergeUsageInterface(NSDictionary *previous, NSDictionary *snapshot, NSArray *identity, NSDate *now) {
@@ -324,6 +396,16 @@ NSDictionary *LoadedUsageInterface(id stored, NSDate *now) {
 }
 
 void TestUsageInterface(void) {
+    NSCAssert(UsagePopoverOpens(@"AXPopUpButton",@"用量：5 小时限额的 52%",@YES),@"manual quota expansion can trigger one observation");
+    NSCAssert(!UsagePopoverOpens(@"AXPopUpButton",@"用量：5 小时限额的 52%",@NO) &&
+        !UsagePopoverOpens(@"AXPopUpButton",@"用量：5 小时限额的 52%",@1) &&
+        !UsagePopoverOpens(@"AXStaticText",@"用量：5 小时限额的 52%",@YES) &&
+        !UsagePopoverOpens(@"AXPopUpButton",@"其他菜单",@YES),@"closing, malformed state, text and unrelated menus cannot trigger quota reads");
+    UsagePopoverObserver *events = [UsagePopoverObserver new]; NSObject *eventButton = [NSObject new];
+    NSCAssert([events acceptButton:eventButton role:@"AXPopUpButton" title:@"用量：5 小时限额的 52%" expanded:@YES] &&
+        ![events acceptButton:eventButton role:@"AXPopUpButton" title:@"用量：5 小时限额的 52%" expanded:@YES],@"one opening produces one observation despite duplicate notifications");
+    NSCAssert(![events acceptButton:eventButton role:@"AXPopUpButton" title:@"用量：5 小时限额的 52%" expanded:@NO] &&
+        [events acceptButton:eventButton role:@"AXPopUpButton" title:@"用量：5 小时限额的 53%" expanded:@YES],@"closing rearms the next manual opening without observing on close");
     NSDictionary *(^node)(NSString *,NSDictionary *,NSArray *) = ^NSDictionary *(NSString *role,NSDictionary *attrs,NSArray *children) {
         NSMutableDictionary *n = [attrs mutableCopy]; n[@"AXRole"] = role; n[@"AXChildren"] = children; n[@"testNodeID"] = NSUUID.UUID.UUIDString; return n;
     };

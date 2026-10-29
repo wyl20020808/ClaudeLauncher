@@ -677,6 +677,8 @@ static const unsigned CardFill = 0xFFFCF7;
 @property NSTimeInterval lastUsageRead;
 @property NSUInteger usageGeneration;
 @property id usageClickMonitor;
+@property NSMutableDictionary *usagePopoverObservers;
+@property NSMutableSet *pendingUsagePopovers;
 @end
 @implementation Launcher
 - (void)dealloc { if (_usageClickMonitor) [NSEvent removeMonitor:_usageClickMonitor]; }
@@ -1405,7 +1407,7 @@ static const unsigned CardFill = 0xFFFCF7;
     for (AccountCard *card in self.cards) { card.art = [self.settings[@"showArtwork"] boolValue] ? Art([NSString stringWithFormat:@"card-%ld",(long)(card.number-1)%4+1]) : nil; card.needsDisplay = YES; }
     self.sidebar.needsDisplay = YES; self.mainCanvas.needsDisplay = YES;
     if (![self.settings[@"localNotifications"] boolValue]) self.toast.hidden = YES;
-    self.usageGeneration++; self.usageInterface = nil;
+    self.usageGeneration++; self.usageInterface = nil; self.usagePopoverObservers = nil; self.pendingUsagePopovers = nil;
     if (![self.settings[@"showUsageHistory"] boolValue]) { self.savedUsageInterface = nil; if (!self.snapshotMode) [self.preferences removeObjectForKey:@"usageInterfaceObservations"]; }
     [self updateUsageCards]; [self trimLogs]; [self reloadLogs];
 }
@@ -1832,9 +1834,43 @@ static const unsigned CardFill = 0xFFFCF7;
     return self.window.visible && !self.window.miniaturized && self.page == 0;
 }
 - (void)readLocalUsage {
-    if (![self canObserveUsage] || self.readingUsageInterface || NSProcessInfo.processInfo.systemUptime-self.lastUsageRead < 1) return;
+    if ([self canObserveUsage]) [self readUsageForPID:0];
+}
+- (void)readNextUsagePopover {
+    if (self.readingUsageInterface || !self.pendingUsagePopovers.count) return;
+    NSNumber *pid = self.pendingUsagePopovers.anyObject; [self.pendingUsagePopovers removeObject:pid];
+    [self readUsageForPID:pid.intValue];
+}
+- (void)syncUsagePopoverObservers {
+    if (self.snapshotMode) return;
+    NSMutableSet *wanted = [NSMutableSet set];
+    if ([self.settings[@"showUsageHistory"] boolValue] && !self.loginAccount && !self.scanError && AXIsProcessTrusted()) {
+        for (NSNumber *account in self.processes) if (account.integerValue > 0 && self.processes[account].count == 1) [wanted addObject:self.processes[account].firstObject];
+    }
+    if (!self.usagePopoverObservers) self.usagePopoverObservers = [NSMutableDictionary dictionary];
+    for (NSNumber *pid in self.usagePopoverObservers.allKeys) if (![wanted containsObject:pid]) [self.usagePopoverObservers removeObjectForKey:pid];
+    for (NSNumber *pid in wanted) if (!self.usagePopoverObservers[pid]) {
+        __weak Launcher *weak = self;
+        id observer = ObserveUsagePopover(pid.intValue,^{
+            Launcher *owner = weak;
+            if (!owner || NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier != pid.intValue ||
+                ![owner.settings[@"showUsageHistory"] boolValue] || owner.loginAccount || owner.scanError) return;
+            if (!owner.pendingUsagePopovers) owner.pendingUsagePopovers = [NSMutableSet set];
+            if ([owner.pendingUsagePopovers containsObject:pid]) return;
+            [owner.pendingUsagePopovers addObject:pid];
+            // One user expansion, one snapshot after the existing panel settles. No recurring timer.
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(0.2*NSEC_PER_SEC)),dispatch_get_main_queue(),^{ [weak readNextUsagePopover]; });
+        });
+        self.usagePopoverObservers[pid] = observer ?: NSNull.null; // Unsupported notifications are not retried by the process timer.
+        if (!observer) [self addLog:[NSString stringWithFormat:@"PID %@ 未提供用量展开通知；仍可在实例页主动读取。",pid]];
+    }
+}
+- (void)readUsageForPID:(pid_t)triggerPID {
+    if (self.snapshotMode || ![self.settings[@"showUsageHistory"] boolValue] || self.loginAccount || self.scanError || self.readingUsageInterface ||
+        (!triggerPID && NSProcessInfo.processInfo.systemUptime-self.lastUsageRead < 1)) return;
     self.readingUsageInterface = YES; self.lastUsageRead = NSProcessInfo.processInfo.systemUptime;
-    self.usageInterface = @{}; [self updateUsageCards]; // Revalidate cached ownership only on an explicit viewing action.
+    if (!triggerPID) self.usageInterface = @{};
+    [self updateUsageCards]; // Revalidate cached ownership only on an explicit viewing action.
     NSUInteger generation = self.usageGeneration;
     NSDictionary *processes = self.processes;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY,0), ^{
@@ -1842,6 +1878,7 @@ static const unsigned CardFill = 0xFFFCF7;
             NSMutableDictionary *results = [NSMutableDictionary dictionary], *identities = [NSMutableDictionary dictionary], *observedTimes = [NSMutableDictionary dictionary];
             for (NSInteger n=1;n<=10;n++) {
                 NSArray *pids = processes[@(n)];
+                if (triggerPID && [pids.firstObject intValue] != triggerPID) continue;
                 NSArray *before = UsageIdentity(n,pids);
                 if (!before) { if (pids.count) results[@(n)] = @{@"status":@"账号状态待核对"}; continue; }
                 NSDictionary *result = ReadUsageInterface([pids.firstObject intValue]); observedTimes[@(n)] = NSDate.date;
@@ -1864,6 +1901,7 @@ static const unsigned CardFill = 0xFFFCF7;
                 }
                 if (![saved isEqual:self.savedUsageInterface]) { self.savedUsageInterface = saved; [self.preferences setObject:StoredUsageInterface(saved) forKey:@"usageInterfaceObservations"]; }
                 self.usageInterface = combined; [self updateUsageCards];
+                [self readNextUsagePopover];
             });
         }
     });
@@ -1887,7 +1925,7 @@ static const unsigned CardFill = 0xFFFCF7;
         if (![self.settings[@"showUsageHistory"] boolValue]) status = @"本地用量显示已关闭";
         BOOL available = [status isEqual:@"界面已读取"];
         card.usageValues = @[(available ? record[@"fh"][@"percent"] : nil) ?: NSNull.null,(available ? record[@"sd"][@"percent"] : nil) ?: NSNull.null];
-        NSString *detail = @"仅在实例管理页重新获得焦点、返回该页或点击时，只读此账号官方主进程已有的 Code 用量控件；不定时读取，不监听 Claude，不点击、不请求、不读官方历史或登录信息。保留最近观察值，重启后核对归属再恢复。‘上次显示’不是当前服务器额度，两项时间独立；组织变化会使缓存失效，普通 Cookie 写入不会。从未观察到显示 —，不从其他账号补位。辅助功能权限由用户自行授权。";
+        NSString *detail = @"在实例页聚焦／点击，或你手动展开官方 Code 用量弹窗时，读取一次已有控件并记录。不定时轮询、不代点、不调用用量查询，不读官方历史或登录信息。必要时仅启用该官方进程的本机网页辅助功能树，不更改系统权限。弹窗关闭后保留最近周记录和原时间；重启后核对归属再恢复。‘上次显示’不是服务器实时额度，两项时间独立；账号或组织变化不沿用缓存。";
         card.usageSource.stringValue = available ? @"Claude 界面 · 非服务器查询" : status;
         card.usageSource.toolTip = detail;
         for (NSUInteger row=0;row<2;row++) {
@@ -1999,6 +2037,7 @@ static const unsigned CardFill = 0xFFFCF7;
     }
     [self refreshAccountTable];
     if (self.page == 3) [self reloadLogs];
+    [self syncUsagePopoverObservers]; // Registration only: never reads quota controls or organization files on a timer.
     [self updateUsageCards];
 }
 - (void)refreshAccountTable {
