@@ -41,10 +41,32 @@ static NSDictionary *ParseHistory(NSData *data, NSDate *now, NSString *currentOr
     }
     if (!latest) return Unavailable(@"无对应组织记录");
     NSDate *date = [NSDate dateWithTimeIntervalSince1970:[latest[@"t"] doubleValue]/1000];
-    if ([now timeIntervalSinceDate:date] > 15*60) return @{@"status":@"记录已过期",@"date":date};
     NSMutableDictionary *result = [@{@"status":@"本地记录",@"date":date} mutableCopy];
     for (NSString *key in @[@"fh",@"sd"]) if (latest[@"u"][key]) result[key] = latest[@"u"][key];
     return result;
+}
+
+NSArray *UsageHistoryFileState(NSString *profile) {
+    NSMutableArray *state = [NSMutableArray array];
+    for (NSString *name in @[@"",@"plan-usage-history.json",@"Cookies",@"Cookies-journal",@"Cookies-wal",@"Cookies-shm"]) {
+        NSString *path = name.length ? [profile stringByAppendingPathComponent:name] : profile;
+        struct stat st;
+        if (lstat(path.fileSystemRepresentation,&st)) { [state addObject:@(errno)]; continue; }
+        if (!name.length) { [state addObject:@[@(st.st_dev),@(st.st_ino),@(st.st_mode),@(st.st_uid)]]; continue; }
+        // No contents or access time: our own reads must not trigger another refresh.
+        [state addObject:@[@(st.st_dev),@(st.st_ino),@(st.st_mode),@(st.st_uid),@(st.st_nlink),@(st.st_size),
+            @(st.st_mtimespec.tv_sec),@(st.st_mtimespec.tv_nsec),@(st.st_ctimespec.tv_sec),@(st.st_ctimespec.tv_nsec)]];
+    }
+    return state;
+}
+
+NSString *UsageHistorySourceLabel(NSDate *date, NSDate *now) {
+    if (![date isKindOfClass:NSDate.class]) return nil;
+    NSTimeInterval age = [now timeIntervalSinceDate:date];
+    if (!isfinite(age) || age < 0) return nil;
+    NSString *elapsed = age < 60 ? @"刚刚" : age < 3600 ? [NSString stringWithFormat:@"%.0f分钟前",floor(age/60)] :
+        age < 86400 ? [NSString stringWithFormat:@"%.0f小时前",floor(age/3600)] : [NSString stringWithFormat:@"%.0f天前",floor(age/86400)];
+    return age > 15*60 ? [NSString stringWithFormat:@"历史值 · %@ · 非实时",elapsed] : [@"本地记录 · " stringByAppendingString:elapsed];
 }
 
 static void ClearBytes(void *memory, size_t length) {
@@ -250,7 +272,13 @@ void TestUsageHistory(void) {
     }
     sample[@"u"] = @{@"fh":@62,@"sd":@70};
     sample[@"t"] = @1999999000000;
-    NSCAssert([ParseHistory(encode(),now,org)[@"status"] isEqual:@"记录已过期"],@"old numbers hidden");
+    result = ParseHistory(encode(),now,org);
+    NSCAssert([result[@"fh"] isEqual:@62] && [result[@"sd"] isEqual:@70],@"old matching values remain historical data");
+    NSCAssert([UsageHistorySourceLabel(result[@"date"],now) isEqual:@"历史值 · 16分钟前 · 非实时"],@"old values visibly labeled");
+    NSCAssert([UsageHistorySourceLabel([now dateByAddingTimeInterval:-900],now) isEqual:@"本地记录 · 15分钟前"],@"age boundary");
+    NSCAssert([UsageHistorySourceLabel([now dateByAddingTimeInterval:-7200],now) isEqual:@"历史值 · 2小时前 · 非实时"],@"historical hours");
+    NSCAssert([UsageHistorySourceLabel([now dateByAddingTimeInterval:-172800],now) isEqual:@"历史值 · 2天前 · 非实时"],@"historical days");
+    NSCAssert(!UsageHistorySourceLabel([now dateByAddingTimeInterval:1],now) && !UsageHistorySourceLabel(nil,now),@"invalid display dates hidden");
     sample[@"t"] = @2000000001000;
     NSCAssert(!ParseHistory(encode(),now,org)[@"fh"],@"future time rejected");
     sample[@"t"] = @1999999990000;
@@ -300,6 +328,23 @@ void TestUsageHistory(void) {
     NSCAssert(!readFixture(folder)[@"fh"],@"missing file");
     NSCAssert([encode() writeToFile:path atomically:YES],@"write fixture"); chmod(path.fileSystemRepresentation,0600);
     NSCAssert([readFixture(folder)[@"fh"] isEqual:@62],@"read safe fixture");
+    NSArray *unchanged = UsageHistoryFileState(folder);
+    NSCAssert([readFixture(folder)[@"fh"] isEqual:@62] && [unchanged isEqual:UsageHistoryFileState(folder)],@"reading alone does not schedule another read");
+    NSString *unrelated = [folder stringByAppendingPathComponent:@"unrelated-fixture"];
+    NSCAssert([[@"ignored" dataUsingEncoding:NSUTF8StringEncoding] writeToFile:unrelated atomically:YES],@"unrelated fixture");
+    NSCAssert([unchanged isEqual:UsageHistoryFileState(folder)],@"unrelated directory entries do not trigger usage reads");
+    unlink(unrelated.fileSystemRepresentation);
+    sample[@"u"] = @{@"fh":@73,@"sd":@81};
+    NSCAssert([encode() writeToFile:path atomically:YES],@"official-style atomic history replacement"); chmod(path.fileSystemRepresentation,0600);
+    NSCAssert(![unchanged isEqual:UsageHistoryFileState(folder)] && [readFixture(folder)[@"fh"] isEqual:@73],@"local replacement delivers new matched values");
+    NSArray *replaced = UsageHistoryFileState(folder);
+    NSString *pendingJournal = [folder stringByAppendingPathComponent:@"Cookies-journal"];
+    NSCAssert([[@"busy" dataUsingEncoding:NSUTF8StringEncoding] writeToFile:pendingJournal atomically:NO],@"journal metadata fixture");
+    NSCAssert(![replaced isEqual:UsageHistoryFileState(folder)],@"journal changes trigger identity revalidation");
+    unlink(pendingJournal.fileSystemRepresentation);
+    NSCAssert([replaced isEqual:UsageHistoryFileState(folder)],@"journal completion detected without directory noise");
+    sample[@"u"] = @{@"fh":@62,@"sd":@70};
+    NSCAssert([encode() writeToFile:path atomically:YES],@"restore synthetic history"); chmod(path.fileSystemRepresentation,0600);
     __block NSUInteger selectedReads = 0;
     NSCAssert([ReadUsageHistoryWithKey(folder,now,^BOOL(uint8_t *key) { selectedReads++; return testKey(key); })[@"fh"] isEqual:@62] && selectedReads == 2,@"only selector is decrypted, before and after history");
     __block NSUInteger changingReads = 0;

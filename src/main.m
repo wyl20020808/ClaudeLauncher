@@ -607,6 +607,8 @@ static const unsigned CardFill = 0xFFFCF7;
 @property NSDictionary<NSNumber *,NSDictionary *> *usageHistory;
 @property BOOL readingUsageHistory;
 @property NSTimeInterval lastUsageRead;
+@property NSTimeInterval lastUsageFileCheck;
+@property NSDictionary *usageFileState;
 @end
 @implementation Launcher
 - (instancetype)init {
@@ -1429,10 +1431,24 @@ static const unsigned CardFill = 0xFFFCF7;
 - (void)show:(id)sender { [self.window deminiaturize:nil]; [self.window makeKeyAndOrderFront:nil]; [NSApp activateIgnoringOtherApps:YES]; [self readLocalUsage]; }
 - (void)applicationDidBecomeActive:(NSNotification *)note { [self readLocalUsage]; }
 - (void)windowDidBecomeKey:(NSNotification *)note { if (note.object == self.window) [self readLocalUsage]; }
+- (NSDictionary *)localUsageFileState {
+    NSMutableDictionary *state = [NSMutableDictionary dictionary];
+    for (NSInteger n=1;n<=10;n++) state[@(n)] = UsageHistoryFileState(ProfilePath(n));
+    return state;
+}
+- (void)checkLocalUsageChanges {
+    if (self.snapshotMode || !NSApp.isActive || !self.window.visible || self.window.miniaturized || self.page != 0 || self.readingUsageHistory ||
+        NSProcessInfo.processInfo.systemUptime-self.lastUsageFileCheck < 5) return;
+    self.lastUsageFileCheck = NSProcessInfo.processInfo.systemUptime;
+    if (![[self localUsageFileState] isEqual:self.usageFileState]) [self readLocalUsage];
+}
 - (void)readLocalUsage {
-    if (self.snapshotMode || !NSApp.isActive || !self.window.visible || self.page != 0 || self.readingUsageHistory ||
+    if (self.snapshotMode || !NSApp.isActive || !self.window.visible || self.window.miniaturized || self.page != 0 || self.readingUsageHistory ||
         NSProcessInfo.processInfo.systemUptime-self.lastUsageRead < 1) return;
     self.readingUsageHistory = YES; self.lastUsageRead = NSProcessInfo.processInfo.systemUptime;
+    // Capture before reading, so a concurrent write is noticed again on the next foreground check.
+    self.usageFileState = [self localUsageFileState]; self.lastUsageFileCheck = self.lastUsageRead;
+    self.usageHistory = @{}; [self updateUsageCards]; // Do not retain another organization's values during revalidation.
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY,0), ^{
         NSMutableDictionary *results = [NSMutableDictionary dictionary]; NSDate *now = NSDate.date;
         for (NSInteger n=1;n<=10;n++) results[@(n)] = ReadUsageHistory(ProfilePath(n),now);
@@ -1442,18 +1458,19 @@ static const unsigned CardFill = 0xFFFCF7;
     });
 }
 - (void)updateUsageCards {
-    NSDateFormatter *clock = [NSDateFormatter new]; clock.dateFormat = @"HH:mm";
+    NSDate *now = NSDate.date;
     for (AccountCard *card in self.cards) {
         NSDictionary *record = self.usageHistory[@(card.number)];
         NSString *status = record[@"status"] ?: @"待读取"; NSDate *date = record[@"date"];
-        if ([status isEqual:@"本地记录"] && -date.timeIntervalSinceNow > 15*60) status = @"记录已过期";
         if (self.loginAccount == card.number) status = @"登录保护中";
         if (self.scanError) status = @"进程待核对";
-        BOOL available = [status isEqual:@"本地记录"];
+        NSString *source = [status isEqual:@"本地记录"] ? UsageHistorySourceLabel(date,now) : nil;
+        BOOL available = source != nil;
+        if ([status isEqual:@"本地记录"] && !available) status = @"记录时间异常";
         card.usageValues = @[(available ? record[@"fh"] : nil) ?: NSNull.null,(available ? record[@"sd"] : nil) ?: NSNull.null];
-        NSString *detail = @"仅显示与此目录中 lastActiveOrg 组织标识匹配的官方本地用量，不是实时查询或登录验证。仅在本机使用 Claude Safe Storage 解密组织标识，不读取登录 Token，不发送查询、不触发刷新。无法匹配或记录超过 15 分钟时隐藏百分比；未授权钥匙串时请重启后按系统提示允许。请在官方 Claude 的「用量」中核对。";
+        NSString *detail = @"显示此目录当前本地组织对应的最后一次官方记录。超过 15 分钟标为「历史值／非实时」，保留当时的真实百分比，不代表当前额度，也不推算消耗或重置。官方用量查询成功才可能写入记录，正在使用 Claude 不保证历史文件更新。窗口前台每 5 秒仅检查本地文件变化，有变化才重读；后台不轮询。仅在本机使用 Claude Safe Storage 解密组织标识，不读取登录 Token，不发送查询、不触发官方刷新。无法匹配时隐藏数值；未授权钥匙串时请重启后按系统提示允许。";
         if (date) detail = [detail stringByAppendingFormat:@"\n官方记录时间：%@。记录不含重置时间。",[NSDateFormatter localizedStringFromDate:date dateStyle:NSDateFormatterMediumStyle timeStyle:NSDateFormatterMediumStyle]];
-        card.usageSource.stringValue = available ? [@"本地记录 · " stringByAppendingString:[clock stringFromDate:date]] : status;
+        card.usageSource.stringValue = available ? source : status;
         card.usageSource.toolTip = detail;
         for (NSUInteger row=0;row<2;row++) {
             id value = card.usageValues[row];
@@ -1551,6 +1568,7 @@ static const unsigned CardFill = 0xFFFCF7;
     }
     [self refreshAccountTable];
     [self updateUsageCards];
+    [self checkLocalUsageChanges];
 }
 - (void)refreshAccountTable {
     NSUInteger shown = 0, running = 0, attention = 0; CGFloat y = 0;
@@ -2110,7 +2128,7 @@ int main(int argc, const char *argv[]) {
                 @{@"name":@"归档资料",@"group":@"",@"path":@"/Volumes/Archive/Research",@"lastAccount":@0,@"previewStatus":@"无权限"}];
             [launcher makeWindow]; [launcher refresh];
             if (argc > 4 && strcmp(argv[4],"--usage-demo") == 0) {
-                launcher.usageHistory = @{@1:@{@"status":@"本地记录",@"date":NSDate.date,@"fh":@62,@"sd":@70},@2:@{@"status":@"无对应组织记录"}};
+                launcher.usageHistory = @{@1:@{@"status":@"本地记录",@"date":[NSDate.date dateByAddingTimeInterval:-26*60],@"fh":@62,@"sd":@70},@2:@{@"status":@"本地记录",@"date":[NSDate.date dateByAddingTimeInterval:-120],@"fh":@73,@"sd":@81}};
                 [launcher updateUsageCards];
             }
             NSView *view = launcher.window.contentView;

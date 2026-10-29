@@ -1,12 +1,12 @@
 # Claude 启动器
 
-非官方工具，与 Anthropic 无关联。原生 macOS 桌面账号启动器，Objective-C / AppKit。当前 macOS 版本号为 1.7.3 / build 10；新增本机项目识别与批量导入，发布进度见 docs/STATUS.md。
+非官方工具，与 Anthropic 无关联。原生 macOS 桌面账号启动器，Objective-C / AppKit。当前 macOS 版本号为 1.7.8 / build 15；发布进度见 docs/STATUS.md。
 
 2026-10-28：`feature/project-import` 基于 dev `5cb6626`，保留手动项目管理，新增所有已创建账号的本机目录识别与批量导入；账号隔离机制保持不变。本轮只修改 macOS 实现、发布构建和文档，不修改 Windows；Windows 1.7.2 的清单和安装包原样沿用。验证结果见 [当前状态](docs/STATUS.md)。
 
 管理本机的 Claude 桌面账号（最多 10 个，只显示已有的）。水墨风界面：左侧导航（实例管理、账号管理、项目管理、日志记录、系统设置），右侧账号卡片；运行中显示棕色“打开”，已有目录未运行显示“启动”，无目录显示“创建”，“+ 新建实例”创建第一个未使用的编号。使用同一份官方 Claude.app，通过不同数据目录启动，不复制、修改或重签官方应用。
 
-macOS 用量卡片在窗口切到前台时读取官方本地历史，并用同目录 `lastActiveOrg` 精确匹配组织。经用户授权，仅在本机使用 `Claude Safe Storage` 解密该组织标识；不读取登录 Token、不发送 Claude 请求、不触发官方刷新。多组织历史可以正确匹配；缺少对应记录、组织不可读取或记录超过 15 分钟时隐藏百分比。支持 Claude 4.29.0 的本地格式，不能替代官方实时用量页面。发布状态见 [状态](docs/STATUS.md)，读取边界见 [用量调查](docs/USAGE-RESEARCH.md)。
+macOS 用量卡片在窗口切到前台时读取官方本地历史，并用同目录 `lastActiveOrg` 精确匹配组织。经用户授权，仅在本机使用 `Claude Safe Storage` 解密该组织标识；不读取登录 Token、不发送 Claude 请求、不触发官方刷新。超过 15 分钟的对应记录保留数值，明确标注“历史值／非实时”和记录年龄；缺少对应记录、组织不可读取或数据异常才隐藏百分比。前台每 5 秒只检查本地文件元数据，有变化才重读，后台不检查。正在使用 Claude 不保证官方历史更新。支持 Claude 4.29.0 的本地格式，不能替代官方实时用量页面。发布状态见 [状态](docs/STATUS.md)，读取边界见 [用量调查](docs/USAGE-RESEARCH.md)。
 
 ![界面](docs/assets/界面.png)
 
