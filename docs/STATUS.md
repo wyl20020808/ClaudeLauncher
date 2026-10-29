@@ -1,5 +1,12 @@
 # 项目状态
 
+## macOS 1.7.13 已发布（2026-10-29，build 20）
+
+- 发布目标 4fa09e3，已推送 main。实例卡片去掉目录与 Code 配置标签，运行状态移到左下角，Code 配置状态和目录移入悬停提示；无别名时显示本地 `.claude.json` 的 `oauthAccount.displayName`（只读该字段，不联网、不访问钥匙串或 `config.json`）。
+- DMG 1968472 字节，SHA-256 `b78f68f6d339c88555ac49c1c590da8302d215210543cf05358e121084b6d0c8`；固定证书不变，Windows 1.7.3 清单与 Setup 原样带入。草稿附件经 API 核对后转正式，latest/download 复核四个文件一致。
+- 发布前 `--self-test`、`--ui-self-test` 通过，实例页离屏截图已人工查看；名称读取用合成文件测试，本机两个真实配置文件只核对到 displayName 非空（未输出内容）。
+- 未验证：安装版真机显示用户名与卡片布局、软件内更新到 1.7.13。dev 分支未同步。未覆盖 /Applications。
+
 ## 发布脚本复核修复与 README 改版（2026-10-29）
 
 - 1.7.12 首次发布暴露两个问题：脚本只等 30 秒 latest/download 缓存，复核失败即退回草稿；退回后 GitHub 自动把 Latest 落到 1.7.9，latest-macos.json 返回 404，用户短暂无法检查更新。
