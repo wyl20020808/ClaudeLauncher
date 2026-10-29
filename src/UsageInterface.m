@@ -1,6 +1,84 @@
 #import "UsageInterface.h"
 #import <ApplicationServices/ApplicationServices.h>
 #import <math.h>
+#import <sqlite3.h>
+#import <CommonCrypto/CommonDigest.h>
+#import <sys/stat.h>
+#import <fcntl.h>
+#import <unistd.h>
+
+static BOOL MarkerFile(struct stat st) { return S_ISREG(st.st_mode) && st.st_uid == getuid() && st.st_nlink == 1 && !(st.st_mode & 0022); }
+static BOOL MarkerSame(struct stat a, struct stat b) {
+    return a.st_dev == b.st_dev && a.st_ino == b.st_ino && a.st_size == b.st_size &&
+        a.st_mtimespec.tv_sec == b.st_mtimespec.tv_sec && a.st_mtimespec.tv_nsec == b.st_mtimespec.tv_nsec &&
+        a.st_ctimespec.tv_sec == b.st_ctimespec.tv_sec && a.st_ctimespec.tv_nsec == b.st_ctimespec.tv_nsec;
+}
+static BOOL MarkerQuiet(int directory) {
+    // shortcut: immutable SQLite ignores WAL; reject WAL and active journals until a read-only WAL reader is supported.
+    for (NSString *name in @[@"Cookies-journal",@"Cookies-wal",@"Cookies-shm"]) {
+        struct stat st;
+        if (fstatat(directory,name.fileSystemRepresentation,&st,AT_SYMLINK_NOFOLLOW)) { if (errno != ENOENT) return NO; }
+        else if (!MarkerFile(st) || st.st_size) return NO;
+    }
+    return YES;
+}
+static int MarkerAuthorizer(void *context, int action, const char *table, const char *column, const char *database, const char *source) {
+    if (source) return SQLITE_DENY;
+    if (action == SQLITE_SELECT) return SQLITE_OK;
+    if (action != SQLITE_READ || !table || !column || !database || strcmp(database,"main")) return SQLITE_DENY;
+    if (!strcmp(table,"meta") && [@[@"key",@"value"] containsObject:@(column)]) return SQLITE_OK;
+    if (!strcmp(table,"cookies") && [@[@"host_key",@"name",@"path",@"value",@"encrypted_value",@"has_expires",@"expires_utc",@"is_persistent",@"source_scheme",@"source_port",@"top_frame_site_key"] containsObject:@(column)]) return SQLITE_OK;
+    return SQLITE_DENY;
+}
+static int MarkerBudget(void *context) { return --*(int *)context <= 0; }
+NSData *UsageOrganizationMarker(NSString *profile) {
+    if (!profile.isAbsolutePath || ![profile isEqual:profile.stringByStandardizingPath]) return nil;
+    int directory = open("/",O_RDONLY|O_DIRECTORY|O_CLOEXEC);
+    for (NSString *part in profile.pathComponents) {
+        if ([part isEqual:@"/"]) continue;
+        int next = openat(directory,part.fileSystemRepresentation,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC|O_NONBLOCK);
+        if (directory >= 0) close(directory); directory = next;
+        struct stat st;
+        if (directory < 0) return nil;
+        if (fstat(directory,&st) || (st.st_mode & 0022) || (st.st_uid != 0 && st.st_uid != getuid())) { close(directory); return nil; }
+    }
+    int file = openat(directory,"Cookies",O_RDONLY|O_NOFOLLOW|O_CLOEXEC|O_NONBLOCK);
+    struct stat before,after,pathStat; uint8_t header[20];
+    if (file < 0 || fstat(file,&before) || !MarkerFile(before) || before.st_size < 100 || before.st_size > 16*1024*1024 ||
+        pread(file,header,sizeof(header),0) != sizeof(header) || memcmp(header,"SQLite format 3\0",16) ||
+        header[18] != 1 || header[19] != 1 || !MarkerQuiet(directory)) {
+        if (file >= 0) close(file); close(directory); return nil;
+    }
+    NSString *uri = [NSString stringWithFormat:@"file:/dev/fd/%d?mode=ro&immutable=1",file];
+    sqlite3 *db = NULL; sqlite3_stmt *statement = NULL; NSData *marker = nil; int budget = 1000;
+    if (sqlite3_open_v2(uri.UTF8String,&db,SQLITE_OPEN_READONLY|SQLITE_OPEN_URI|SQLITE_OPEN_NOMUTEX,NULL) == SQLITE_OK) {
+        sqlite3_db_config(db,SQLITE_DBCONFIG_DEFENSIVE,1,NULL); sqlite3_db_config(db,SQLITE_DBCONFIG_TRUSTED_SCHEMA,0,NULL);
+        sqlite3_limit(db,SQLITE_LIMIT_LENGTH,4096); sqlite3_set_authorizer(db,MarkerAuthorizer,NULL);
+        sqlite3_progress_handler(db,1000,MarkerBudget,&budget);
+        BOOL version = sqlite3_prepare_v2(db,"SELECT value FROM meta WHERE key='version' LIMIT 2",-1,&statement,NULL) == SQLITE_OK &&
+            sqlite3_step(statement) == SQLITE_ROW && sqlite3_column_bytes(statement,0) == 2 &&
+            !memcmp(sqlite3_column_text(statement,0),"24",2) && sqlite3_step(statement) == SQLITE_DONE;
+        sqlite3_finalize(statement); statement = NULL;
+        // This fixed query returns only the authorized non-login selector. No other cookie values are selected.
+        const char *sql = "SELECT host_key,value,encrypted_value FROM cookies WHERE name='lastActiveOrg' "
+            "AND host_key IN ('claude.ai','.claude.ai') AND path='/' AND top_frame_site_key='' "
+            "AND source_scheme=2 AND source_port IN (-1,443) AND is_persistent=1 AND has_expires=1 AND expires_utc>? LIMIT 2";
+        if (version && sqlite3_prepare_v2(db,sql,-1,&statement,NULL) == SQLITE_OK) {
+            sqlite3_bind_int64(statement,1,(sqlite3_int64)((NSDate.date.timeIntervalSince1970+11644473600.0)*1000000));
+            if (sqlite3_step(statement) == SQLITE_ROW && sqlite3_column_bytes(statement,1) == 0 && sqlite3_column_bytes(statement,2) == 83 &&
+                !memcmp(sqlite3_column_blob(statement,2),"v10",3)) {
+                CC_SHA256_CTX context; uint8_t digest[CC_SHA256_DIGEST_LENGTH]; CC_SHA256_Init(&context);
+                CC_SHA256_Update(&context,sqlite3_column_text(statement,0),(CC_LONG)sqlite3_column_bytes(statement,0));
+                CC_SHA256_Update(&context,sqlite3_column_blob(statement,2),83); CC_SHA256_Final(digest,&context);
+                if (sqlite3_step(statement) == SQLITE_DONE) marker = [NSData dataWithBytes:digest length:sizeof(digest)];
+            }
+        }
+    }
+    sqlite3_finalize(statement); if (db) sqlite3_close(db);
+    BOOL stable = MarkerQuiet(directory) && !fstat(file,&after) && MarkerSame(before,after) &&
+        !fstatat(directory,"Cookies",&pathStat,AT_SYMLINK_NOFOLLOW) && MarkerSame(before,pathStat);
+    close(file); close(directory); return stable ? marker : nil;
+}
 
 static NSString *String(id value) { return [value isKindOfClass:NSString.class] && [value length] <= 512 ? value : @""; }
 static NSNumber *Percent(id value) {
@@ -243,13 +321,13 @@ NSDictionary *LoadedUsageInterface(id stored, NSDate *now) {
     for (id item in stored) {
         if (![item isKindOfClass:NSDictionary.class]) return @{};
         id identity = item[@"identity"];
-        if (![identity isKindOfClass:NSArray.class] || [identity count] != 9) continue;
+        if (![identity isKindOfClass:NSArray.class] || [identity count] != 6) continue;
         BOOL valid = YES;
-        for (NSUInteger i=0;i<9;i++) {
+        for (NSUInteger i=0;i<6;i++) {
             id component = identity[i];
             if (i < 4) { if (![component isKindOfClass:NSNumber.class] || [component longLongValue] < 0) valid = NO; }
-            else if ([component isKindOfClass:NSNumber.class]) { if (i == 4 || [component longLongValue] != 0) valid = NO; }
-            else if ([component isKindOfClass:NSArray.class] && [component count] == (i == 4 ? 2u : 7u)) {
+            else if (i == 5) { if (![component isKindOfClass:NSData.class] || [component length] != CC_SHA256_DIGEST_LENGTH) valid = NO; }
+            else if ([component isKindOfClass:NSArray.class] && [component count] == 2) {
                 for (id value in component) if (![value isKindOfClass:NSNumber.class] || !isfinite([value doubleValue]) || [value doubleValue] < 0) valid = NO;
             } else valid = NO;
         }
@@ -332,7 +410,8 @@ void TestUsageInterface(void) {
     NSDictionary *deep = node(@"AXGroup",@{},@[secondButton]);
     for (NSUInteger i=0;i<45;i++) deep = node(@"AXGroup",@{},@[deep]);
     NSCAssert(read(@[page(@[deep,button])])[@"fh"] && !read(@[page(@[deep])])[@"fh"],@"deep unrelated branches cannot block supported quota controls or become quota candidates");
-    NSArray *identity = @[@1,@123,@456,@0,@[@1,@2],@0,@0,@0,@0];
+    NSData *syntheticMarker = [NSMutableData dataWithLength:CC_SHA256_DIGEST_LENGTH];
+    NSArray *identity = @[@1,@123,@456,@0,@[@1,@2],syntheticMarker];
     NSDictionary *persisted = MergeUsageInterface(nil,open,identity,now);
     NSArray *stored = StoredUsageInterface(@{@1:persisted});
     NSCAssert(!stored[0][@"page"] && !stored[0][@"fh"][@"visible"],@"only quota fields and matching metadata persist");
@@ -345,6 +424,48 @@ void TestUsageInterface(void) {
     NSCAssert([LoadedUsageInterface([NSPropertyListSerialization propertyListWithData:plist options:0 format:nil error:nil],now) isEqual:restored],@"persistent property-list dates and identity survive round trip");
     NSDictionary *hidden = MergeUsageInterface(restored[@1],@{@"status":@"未观察到 Code 用量"},identity,[now dateByAddingTimeInterval:60]);
     NSCAssert([hidden[@"sd"][@"percent"] isEqual:@7] && [hidden[@"sd"][@"observedAt"] isEqual:now] && ![hidden[@"sd"][@"visible"] boolValue],@"closed interface retains last observation without fabricating freshness");
-    NSCAssert(!MergeUsageInterface(restored[@1],closed,@[@2,@123,@456,@0,@[@1,@2],@0,@0,@0,@0],now)[@"sd"],@"persisted quota never crosses accounts");
+    NSCAssert(!MergeUsageInterface(restored[@1],closed,@[@2,@123,@456,@0,@[@1,@2],syntheticMarker],now)[@"sd"],@"persisted quota never crosses accounts");
+    // Production rejects shared writable ancestors; keep fixtures under the owned home directory.
+    NSString *folder = [NSHomeDirectory() stringByAppendingPathComponent:[@".claude-launcher-marker-test-" stringByAppendingString:NSUUID.UUID.UUIDString]];
+    NSCAssert([NSFileManager.defaultManager createDirectoryAtPath:folder withIntermediateDirectories:NO attributes:@{NSFilePosixPermissions:@0700} error:nil],@"marker fixture directory");
+    sqlite3 *fixture = NULL; NSString *path = [folder stringByAppendingPathComponent:@"Cookies"];
+    NSCAssert(sqlite3_open(path.fileSystemRepresentation,&fixture) == SQLITE_OK,@"marker fixture database"); chmod(path.fileSystemRepresentation,0600);
+    const char *schema = "CREATE TABLE meta(key TEXT,value TEXT); INSERT INTO meta VALUES('version','24');"
+        "CREATE TABLE cookies(host_key TEXT,name TEXT,path TEXT,value TEXT,encrypted_value BLOB,has_expires INTEGER,expires_utc INTEGER,is_persistent INTEGER,source_scheme INTEGER,source_port INTEGER,top_frame_site_key TEXT);"
+        "INSERT INTO cookies VALUES('.claude.ai','lastActiveOrg','/','',NULL,1,20000000000000000,1,2,443,'');"
+        "INSERT INTO cookies VALUES('.claude.ai','unrelated','/','synthetic-only',NULL,1,20000000000000000,1,2,443,'');";
+    NSCAssert(sqlite3_exec(fixture,schema,NULL,NULL,NULL) == SQLITE_OK,@"marker schema");
+    NSMutableData *encrypted = [NSMutableData dataWithLength:83]; memcpy(encrypted.mutableBytes,"v10",3);
+    void (^setMarker)(void) = ^{
+        sqlite3_stmt *stmt = NULL;
+        NSCAssert(sqlite3_prepare_v2(fixture,"UPDATE cookies SET encrypted_value=? WHERE name='lastActiveOrg'",-1,&stmt,NULL) == SQLITE_OK,@"marker update");
+        sqlite3_bind_blob(stmt,1,encrypted.bytes,(int)encrypted.length,SQLITE_TRANSIENT);
+        NSCAssert(sqlite3_step(stmt) == SQLITE_DONE,@"marker write"); sqlite3_finalize(stmt);
+    };
+    setMarker(); NSData *firstMarker = UsageOrganizationMarker(folder);
+    NSCAssert(firstMarker.length == 32,@"only a selector fingerprint leaves local reader");
+    NSCAssert(sqlite3_exec(fixture,"UPDATE cookies SET value='different synthetic value' WHERE name='unrelated'",NULL,NULL,NULL) == SQLITE_OK,@"unrelated cookie write");
+    NSCAssert([UsageOrganizationMarker(folder) isEqual:firstMarker],@"ordinary cookie writes do not invalidate observations");
+    ((uint8_t *)encrypted.mutableBytes)[20] = 1; setMarker();
+    NSCAssert(![UsageOrganizationMarker(folder) isEqual:firstMarker],@"changed organization selector invalidates observations");
+    sqlite3_exec(fixture,"BEGIN IMMEDIATE; UPDATE cookies SET value='active' WHERE name='unrelated'",NULL,NULL,NULL);
+    NSCAssert(!UsageOrganizationMarker(folder),@"active journal hides observations pending stable identity");
+    sqlite3_exec(fixture,"ROLLBACK",NULL,NULL,NULL);
+    NSCAssert(UsageOrganizationMarker(folder),@"stable identity recovers after temporary write");
+    sqlite3_exec(fixture,"INSERT INTO cookies SELECT * FROM cookies WHERE name='lastActiveOrg'",NULL,NULL,NULL);
+    NSCAssert(!UsageOrganizationMarker(folder),@"ambiguous selector rejected");
+    sqlite3_exec(fixture,"DELETE FROM cookies WHERE rowid=(SELECT MAX(rowid) FROM cookies); UPDATE meta SET value='25'",NULL,NULL,NULL);
+    NSCAssert(!UsageOrganizationMarker(folder),@"unknown cookie schema rejected");
+    sqlite3_exec(fixture,"UPDATE meta SET value='24'",NULL,NULL,NULL); sqlite3_close(fixture);
+    NSString *wal = [folder stringByAppendingPathComponent:@"Cookies-wal"];
+    [@"synthetic WAL" writeToFile:wal atomically:NO encoding:NSUTF8StringEncoding error:nil];
+    NSCAssert(!UsageOrganizationMarker(folder),@"WAL never ignored as current identity"); [NSFileManager.defaultManager removeItemAtPath:wal error:nil];
+    NSString *hard = [folder stringByAppendingPathComponent:@"hard-link"];
+    NSCAssert(link(path.fileSystemRepresentation,hard.fileSystemRepresentation) == 0 && !UsageOrganizationMarker(folder),@"hard-linked store rejected");
+    [NSFileManager.defaultManager removeItemAtPath:hard error:nil];
+    NSString *sym = [folder stringByAppendingPathComponent:@"profile-link"];
+    NSCAssert(symlink(folder.fileSystemRepresentation,sym.fileSystemRepresentation) == 0 && !UsageOrganizationMarker(sym),@"linked profile rejected");
+    NSCAssert(UsageOrganizationMarker(folder),@"valid local selector still readable");
+    [NSFileManager.defaultManager removeItemAtPath:folder error:nil];
     puts("PASS: passive Code AX traversal, five-hour/weekly/reset fields, closed popover, ambiguous pages, embedded content, invalid values, account/PID cache isolation, separate observation times and persisted observation validation");
 }

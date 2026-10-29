@@ -377,14 +377,26 @@ static NSArray *UsageIdentity(NSInteger account, NSArray *pids) {
     NSString *profile = ProfilePath(account);
     if (ValidateProfileRoot(profile,profile)) return nil;
     NSMutableArray *identity = [NSMutableArray arrayWithArray:@[@(account),@(pid),@(process.pbi_start_tvsec),@(process.pbi_start_tvusec)]];
-    // Metadata invalidates observations on profile replacement or identity-store changes; no file is opened.
+    // Metadata triggers selector revalidation; ordinary cookie writes are not an account change.
     for (NSString *name in @[@"",@"Cookies",@"Cookies-journal",@"Cookies-wal",@"Cookies-shm"]) {
         struct stat st; NSString *path = name.length ? [profile stringByAppendingPathComponent:name] : profile;
         if (lstat(path.fileSystemRepresentation,&st)) { if (errno != ENOENT || !name.length) return nil; [identity addObject:@0]; continue; }
         if (st.st_uid != getuid() || (st.st_mode & 0022) || (name.length ? (!S_ISREG(st.st_mode) || st.st_nlink != 1) : !S_ISDIR(st.st_mode))) return nil;
         [identity addObject:name.length ? @[@(st.st_dev),@(st.st_ino),@(st.st_size),@(st.st_mtimespec.tv_sec),@(st.st_mtimespec.tv_nsec),@(st.st_ctimespec.tv_sec),@(st.st_ctimespec.tv_nsec)] : @[@(st.st_dev),@(st.st_ino)]];
     }
-    return identity;
+    static NSMutableDictionary *markers;
+    @synchronized(NSProcessInfo.processInfo) {
+        if (!markers) markers = [NSMutableDictionary dictionary];
+        NSDictionary *cached = markers[@(account)]; NSData *marker = nil;
+        if ([cached[@"state"] isEqual:identity] && [cached[@"until"] doubleValue] > NSProcessInfo.processInfo.systemUptime) marker = cached[@"marker"];
+        else {
+            marker = UsageOrganizationMarker(profile);
+            if (marker) markers[@(account)] = @{@"state":identity,@"marker":marker,@"until":@(NSProcessInfo.processInfo.systemUptime+60)};
+            else [markers removeObjectForKey:@(account)];
+        }
+        if (!marker) return nil;
+        return @[@(account),@(pid),@(process.pbi_start_tvsec),@(process.pbi_start_tvusec),identity[4],marker];
+    }
 }
 static BOOL VisibleWindow(pid_t pid) {
     NSArray *windows = CFBridgingRelease(CGWindowListCopyWindowInfo(kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements, kCGNullWindowID));
@@ -1763,8 +1775,8 @@ static const unsigned CardFill = 0xFFFCF7;
     for (NSNumber *n in kept.allKeys) if (![identities[n] isEqual:self.usageIdentities[n]]) [kept removeObjectForKey:n];
     NSMutableDictionary *saved = [self.savedUsageInterface mutableCopy] ?: [NSMutableDictionary dictionary];
     for (NSNumber *n in saved.allKeys) {
-        if (![identities[n] isEqual:saved[n][@"identity"]]) [saved removeObjectForKey:n];
-        else if (!kept[n]) kept[n] = MergeUsageInterface(saved[n],@{@"status":@"未观察到 Code 用量"},identities[n],NSDate.date);
+        if (identities[n] && ![identities[n] isEqual:saved[n][@"identity"]]) [saved removeObjectForKey:n];
+        else if (identities[n] && !kept[n]) kept[n] = MergeUsageInterface(saved[n],@{@"status":@"未观察到 Code 用量"},identities[n],NSDate.date);
     }
     if (![saved isEqual:self.savedUsageInterface]) { self.savedUsageInterface = saved; [self.preferences setObject:StoredUsageInterface(saved) forKey:@"usageInterfaceObservations"]; }
     self.usageInterface = kept; self.usageIdentities = identities;
@@ -1808,7 +1820,7 @@ static const unsigned CardFill = 0xFFFCF7;
                 NSMutableDictionary *saved = [self.savedUsageInterface mutableCopy] ?: [NSMutableDictionary dictionary];
                 for (NSNumber *n in results) {
                     NSArray *current = UsageIdentity(n.integerValue,self.processes[n]);
-                    if (![current isEqual:identities[n]]) { [combined removeObjectForKey:n]; [saved removeObjectForKey:n]; continue; }
+                    if (![current isEqual:identities[n]]) { [combined removeObjectForKey:n]; if (current && ![current isEqual:saved[n][@"identity"]]) [saved removeObjectForKey:n]; continue; }
                     NSDictionary *previous = [combined[n][@"status"] isEqual:@"界面已读取"] ? combined[n] : saved[n];
                     combined[n] = MergeUsageInterface(previous,results[n],current,observedTimes[n]); observedIdentities[n] = current;
                     if ([combined[n][@"status"] isEqual:@"界面已读取"]) saved[n] = combined[n];
