@@ -5,8 +5,6 @@
 NSDictionary *ReadUsageInterface(pid_t pid);
 // Fingerprint only the non-login lastActiveOrg selector; no decryption, keychain or login rows.
 NSData *UsageOrganizationMarker(NSString *profile);
-// Optional AX notifications only schedule another read; unsupported notifications fall back to the timer.
-id ObserveUsageInterface(pid_t pid, void (^changed)(void));
 NSDictionary *MergeUsageInterface(NSDictionary *previous, NSDictionary *snapshot, NSArray *identity, NSDate *now);
 NSString *UsageInterfaceTimeLabel(NSDictionary *metric, NSDate *now);
 NSArray *StoredUsageInterface(NSDictionary *records);

@@ -248,31 +248,6 @@ NSDictionary *ReadUsageInterface(pid_t pid) {
     reader.attribute = nil; CFRelease(app); return result;
 }
 
-@interface UsageAXObservation : NSObject
-@property AXObserverRef observer;
-@property (copy) void (^changed)(void);
-@end
-@implementation UsageAXObservation
-- (void)dealloc {
-    if (_observer) { CFRunLoopRemoveSource(CFRunLoopGetMain(),AXObserverGetRunLoopSource(_observer),kCFRunLoopCommonModes); CFRelease(_observer); }
-}
-@end
-static void UsageAXChanged(AXObserverRef observer, AXUIElementRef element, CFStringRef notification, void *context) {
-    UsageAXObservation *observation = (__bridge UsageAXObservation *)context;
-    if (observation.changed) observation.changed();
-}
-id ObserveUsageInterface(pid_t pid, void (^changed)(void)) {
-    if (!AXIsProcessTrusted() || pid <= 0) return nil;
-    UsageAXObservation *observation = [UsageAXObservation new]; AXObserverRef observer = NULL;
-    if (AXObserverCreate(pid,UsageAXChanged,&observer) != kAXErrorSuccess) return nil;
-    observation.observer = observer; observation.changed = changed;
-    AXUIElementRef app = AXUIElementCreateApplication(pid); AXUIElementSetMessagingTimeout(app,0.1f);
-    for (NSString *name in @[@"AXFocusedUIElementChanged",@"AXLayoutChanged",@"AXValueChanged",@"AXWindowCreated"])
-        AXObserverAddNotification(observer,app,(__bridge CFStringRef)name,(__bridge void *)observation);
-    CFRelease(app); CFRunLoopAddSource(CFRunLoopGetMain(),AXObserverGetRunLoopSource(observer),kCFRunLoopCommonModes);
-    return observation;
-}
-
 NSDictionary *MergeUsageInterface(NSDictionary *previous, NSDictionary *snapshot, NSArray *identity, NSDate *now) {
     if (![snapshot[@"status"] isEqual:@"界面已读取"] || !identity || !CodeURL(snapshot[@"page"])) {
         BOOL unavailable = [snapshot[@"status"] hasPrefix:@"未观察到 Code 用量"] || [snapshot[@"status"] hasPrefix:@"界面读取未完成"];

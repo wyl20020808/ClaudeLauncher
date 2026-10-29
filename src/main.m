@@ -671,12 +671,11 @@ static const unsigned CardFill = 0xFFFCF7;
 @property NSDictionary<NSNumber *,NSDictionary *> *savedUsageInterface;
 @property BOOL readingUsageInterface;
 @property NSTimeInterval lastUsageRead;
-@property NSDictionary *usageIdentities;
-@property NSMutableDictionary *usageObservers;
 @property NSUInteger usageGeneration;
-@property BOOL usageEventPending;
+@property id usageClickMonitor;
 @end
 @implementation Launcher
+- (void)dealloc { if (_usageClickMonitor) [NSEvent removeMonitor:_usageClickMonitor]; }
 - (instancetype)init {
     if ((self = [super init])) {
         self.preferences = NSUserDefaults.standardUserDefaults;
@@ -719,6 +718,11 @@ static const unsigned CardFill = 0xFFFCF7;
     [self makeWindow]; [self applySettings];
     if ([self.settings[@"showUsageHistory"] boolValue]) self.savedUsageInterface = LoadedUsageInterface([self.preferences objectForKey:@"usageInterfaceObservations"],NSDate.date);
     [self refresh]; [self show:nil];
+    __weak Launcher *weak = self;
+    self.usageClickMonitor = [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskLeftMouseUp handler:^NSEvent *(NSEvent *event) {
+        if (event.window == weak.window) dispatch_async(dispatch_get_main_queue(),^{ [weak readLocalUsage]; });
+        return event; // Observe clicks in this launcher only; never consume or synthesize input.
+    }];
     if (self.projectStore.notice) [self alert:@"项目清单提示" detail:self.projectStore.notice];
     [self finishPendingUpdate];
     // One check per launch (only when the user enabled updates); no timers or repeated background checks.
@@ -1328,9 +1332,8 @@ static const unsigned CardFill = 0xFFFCF7;
     for (AccountCard *card in self.cards) { card.art = [self.settings[@"showArtwork"] boolValue] ? Art([NSString stringWithFormat:@"card-%ld",(long)(card.number-1)%4+1]) : nil; card.needsDisplay = YES; }
     self.sidebar.needsDisplay = YES; self.mainCanvas.needsDisplay = YES;
     if (![self.settings[@"localNotifications"] boolValue]) self.toast.hidden = YES;
-    self.usageGeneration++; self.usageInterface = nil; self.usageIdentities = nil; self.usageObservers = nil;
+    self.usageGeneration++; self.usageInterface = nil;
     if (![self.settings[@"showUsageHistory"] boolValue]) { self.savedUsageInterface = nil; if (!self.snapshotMode) [self.preferences removeObjectForKey:@"usageInterfaceObservations"]; }
-    if ([self.settings[@"showUsageHistory"] boolValue]) [self readLocalUsage];
     [self updateUsageCards]; [self trimLogs]; [self reloadLogs];
 }
 - (NSString *)loginItemDescription {
@@ -1751,61 +1754,23 @@ static const unsigned CardFill = 0xFFFCF7;
 - (void)applicationDidBecomeActive:(NSNotification *)note { [self readLocalUsage]; }
 - (void)windowDidBecomeKey:(NSNotification *)note { if (note.object == self.window) [self readLocalUsage]; }
 - (BOOL)canObserveUsage {
-    if (![self.settings[@"showUsageHistory"] boolValue] || self.snapshotMode || self.loginAccount || self.scanError) return NO;
-    if (NSApp.isActive) return self.window.visible && !self.window.miniaturized && self.page == 0;
-    pid_t front = NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier;
-    for (NSNumber *n in self.processes) if (n.integerValue > 0 && self.processes[n].count == 1 && [self.processes[n].firstObject intValue] == front) return YES;
-    return NO;
-}
-- (void)usageInterfaceChanged {
-    if (![self canObserveUsage] || self.usageEventPending) return;
-    self.usageEventPending = YES;
-    // Wait for the existing control tree to settle, coalescing event bursts without any UI action.
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(0.3*NSEC_PER_SEC)),dispatch_get_main_queue(),^{
-        self.usageEventPending = NO; [self readLocalUsage];
-    });
-}
-- (void)checkLocalUsageChanges {
-    if (self.snapshotMode) return;
-    NSMutableDictionary *identities = [NSMutableDictionary dictionary];
-    if ([self.settings[@"showUsageHistory"] boolValue] && !self.scanError && !self.loginAccount) {
-        for (NSInteger n=1;n<=10;n++) { NSArray *identity = UsageIdentity(n,self.processes[@(n)]); if (identity) identities[@(n)] = identity; }
-    }
-    NSMutableDictionary *kept = [self.usageInterface mutableCopy] ?: [NSMutableDictionary dictionary];
-    for (NSNumber *n in kept.allKeys) if (![identities[n] isEqual:self.usageIdentities[n]]) [kept removeObjectForKey:n];
-    NSMutableDictionary *saved = [self.savedUsageInterface mutableCopy] ?: [NSMutableDictionary dictionary];
-    for (NSNumber *n in saved.allKeys) {
-        if (identities[n] && ![identities[n] isEqual:saved[n][@"identity"]]) [saved removeObjectForKey:n];
-        else if (identities[n] && !kept[n]) kept[n] = MergeUsageInterface(saved[n],@{@"status":@"未观察到 Code 用量"},identities[n],NSDate.date);
-    }
-    if (![saved isEqual:self.savedUsageInterface]) { self.savedUsageInterface = saved; [self.preferences setObject:StoredUsageInterface(saved) forKey:@"usageInterfaceObservations"]; }
-    self.usageInterface = kept; self.usageIdentities = identities;
-    if (!AXIsProcessTrusted()) self.usageInterface = nil;
-    if (!self.usageObservers) self.usageObservers = [NSMutableDictionary dictionary];
-    NSMutableSet *pids = [NSMutableSet set];
-    if (AXIsProcessTrusted()) for (NSNumber *n in identities) [pids addObject:self.processes[n].firstObject];
-    for (NSNumber *pid in self.usageObservers.allKeys) if (![pids containsObject:pid]) [self.usageObservers removeObjectForKey:pid];
-    for (NSNumber *pid in pids) if (!self.usageObservers[pid]) {
-        __weak Launcher *weak = self;
-        id observer = ObserveUsageInterface(pid.intValue,^{ [weak usageInterfaceChanged]; });
-        if (observer) self.usageObservers[pid] = observer;
-    }
-    if (NSProcessInfo.processInfo.systemUptime-self.lastUsageRead >= 5) [self readLocalUsage];
+    if (![self.settings[@"showUsageHistory"] boolValue] || self.snapshotMode || self.loginAccount || self.scanError || !self.processes) return NO;
+    // Callers are viewing actions only; accessibility clicks need not first activate the application.
+    return self.window.visible && !self.window.miniaturized && self.page == 0;
 }
 - (void)readLocalUsage {
     if (![self canObserveUsage] || self.readingUsageInterface || NSProcessInfo.processInfo.systemUptime-self.lastUsageRead < 1) return;
     self.readingUsageInterface = YES; self.lastUsageRead = NSProcessInfo.processInfo.systemUptime;
+    self.usageInterface = @{}; [self updateUsageCards]; // Revalidate cached ownership only on an explicit viewing action.
     NSUInteger generation = self.usageGeneration;
     NSDictionary *processes = self.processes;
-    pid_t front = NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier; BOOL launcherActive = NSApp.isActive;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY,0), ^{
         @autoreleasepool {
             NSMutableDictionary *results = [NSMutableDictionary dictionary], *identities = [NSMutableDictionary dictionary], *observedTimes = [NSMutableDictionary dictionary];
             for (NSInteger n=1;n<=10;n++) {
                 NSArray *pids = processes[@(n)];
-                if (!launcherActive && [pids.firstObject intValue] != front) continue;
                 NSArray *before = UsageIdentity(n,pids);
-                if (!before) continue;
+                if (!before) { if (pids.count) results[@(n)] = @{@"status":@"账号状态待核对"}; continue; }
                 NSDictionary *result = ReadUsageInterface([pids.firstObject intValue]); observedTimes[@(n)] = NSDate.date;
                 NSString *scanFailure = nil; NSDictionary *afterProcesses = Scan(&scanFailure);
                 NSArray *after = scanFailure ? nil : UsageIdentity(n,afterProcesses[@(n)]);
@@ -1816,17 +1781,16 @@ static const unsigned CardFill = 0xFFFCF7;
                 self.readingUsageInterface = NO;
                 if (generation != self.usageGeneration || ![self.settings[@"showUsageHistory"] boolValue] || self.loginAccount || self.scanError) return;
                 NSMutableDictionary *combined = [self.usageInterface mutableCopy] ?: [NSMutableDictionary dictionary];
-                NSMutableDictionary *observedIdentities = [self.usageIdentities mutableCopy] ?: [NSMutableDictionary dictionary];
                 NSMutableDictionary *saved = [self.savedUsageInterface mutableCopy] ?: [NSMutableDictionary dictionary];
                 for (NSNumber *n in results) {
                     NSArray *current = UsageIdentity(n.integerValue,self.processes[n]);
                     if (![current isEqual:identities[n]]) { [combined removeObjectForKey:n]; if (current && ![current isEqual:saved[n][@"identity"]]) [saved removeObjectForKey:n]; continue; }
                     NSDictionary *previous = [combined[n][@"status"] isEqual:@"界面已读取"] ? combined[n] : saved[n];
-                    combined[n] = MergeUsageInterface(previous,results[n],current,observedTimes[n]); observedIdentities[n] = current;
+                    combined[n] = MergeUsageInterface(previous,results[n],current,observedTimes[n]);
                     if ([combined[n][@"status"] isEqual:@"界面已读取"]) saved[n] = combined[n];
                 }
                 if (![saved isEqual:self.savedUsageInterface]) { self.savedUsageInterface = saved; [self.preferences setObject:StoredUsageInterface(saved) forKey:@"usageInterfaceObservations"]; }
-                self.usageInterface = combined; self.usageIdentities = observedIdentities; [self updateUsageCards];
+                self.usageInterface = combined; [self updateUsageCards];
             });
         }
     });
@@ -1836,6 +1800,12 @@ static const unsigned CardFill = 0xFFFCF7;
     for (AccountCard *card in self.cards) {
         NSDictionary *record = self.usageInterface[@(card.number)];
         NSString *status = record[@"status"] ?: @"未观察到 Code 用量";
+        if (!self.snapshotMode && record[@"identity"]) {
+            NSArray *identity = record[@"identity"]; struct proc_bsdinfo process = {0};
+            pid_t pid = [self.processes[@(card.number)].firstObject intValue];
+            if (pid != [identity[1] intValue] || proc_pidinfo(pid,PROC_PIDTBSDINFO,0,&process,sizeof(process)) != sizeof(process) ||
+                process.pbi_start_tvsec != [identity[2] unsignedLongLongValue] || process.pbi_start_tvusec != [identity[3] unsignedLongLongValue]) status = @"账号进程变化，待读取";
+        }
         if (!self.snapshotMode && !self.processes[@(card.number)].count) status = @"Claude 未运行";
         else if (!self.snapshotMode && !AXIsProcessTrusted()) status = @"需辅助功能权限";
         if (self.processes[@(card.number)].count > 1) status = @"多个主进程，待核对";
@@ -1844,7 +1814,7 @@ static const unsigned CardFill = 0xFFFCF7;
         if (![self.settings[@"showUsageHistory"] boolValue]) status = @"本地用量显示已关闭";
         BOOL available = [status isEqual:@"界面已读取"];
         card.usageValues = @[(available ? record[@"fh"][@"percent"] : nil) ?: NSNull.null,(available ? record[@"sd"][@"percent"] : nil) ?: NSNull.null];
-        NSString *detail = @"只读此账号官方主进程的 Code 用量控件，不点击、不请求、不读官方历史或登录信息。自动记录你正常查看时已显示的两项数据；关闭弹窗后仍显示最近观察值，重启启动器可恢复。‘上次显示’不是当前服务器额度，两项时间独立。账号、进程或本地身份文件变化会清除缓存；从未观察到显示 —，不从其他账号补位。辅助功能权限由用户自行授权。";
+        NSString *detail = @"仅在实例管理页重新获得焦点、返回该页或点击时，只读此账号官方主进程已有的 Code 用量控件；不定时读取，不监听 Claude，不点击、不请求、不读官方历史或登录信息。保留最近观察值，重启后核对归属再恢复。‘上次显示’不是当前服务器额度，两项时间独立；组织变化会使缓存失效，普通 Cookie 写入不会。从未观察到显示 —，不从其他账号补位。辅助功能权限由用户自行授权。";
         card.usageSource.stringValue = available ? @"Claude 界面 · 非服务器查询" : status;
         card.usageSource.toolTip = detail;
         for (NSUInteger row=0;row<2;row++) {
@@ -1956,7 +1926,6 @@ static const unsigned CardFill = 0xFFFCF7;
     }
     [self refreshAccountTable];
     if (self.page == 3) [self reloadLogs];
-    [self checkLocalUsageChanges];
     [self updateUsageCards];
 }
 - (void)refreshAccountTable {
