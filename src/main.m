@@ -1925,8 +1925,8 @@ static const unsigned CardFill = 0xFFFCF7;
         if (![self.settings[@"showUsageHistory"] boolValue]) status = @"本地用量显示已关闭";
         BOOL available = [status isEqual:@"界面已读取"];
         card.usageValues = @[(available ? record[@"fh"][@"percent"] : nil) ?: NSNull.null,(available ? record[@"sd"][@"percent"] : nil) ?: NSNull.null];
-        NSString *detail = @"在实例页聚焦／点击，或你手动展开官方 Code 用量弹窗时，读取一次已有控件并记录。不定时轮询、不代点、不调用用量查询，不读官方历史或登录信息。必要时仅启用该官方进程的本机网页辅助功能树，不更改系统权限。弹窗关闭后保留最近周记录和原时间；重启后核对归属再恢复。‘上次显示’不是服务器实时额度，两项时间独立；账号或组织变化不沿用缓存。";
-        card.usageSource.stringValue = available ? @"Claude 界面 · 非服务器查询" : status;
+        NSString *detail = @"在实例页聚焦／点击，或你手动展开官方 Code 用量弹窗时，读取一次已有控件并记录。不定时轮询、不代点、不调用用量查询，不读官方历史或登录信息。必要时仅启用该官方进程的本机网页辅助功能树，不更改系统权限。弹窗关闭后保留最近周记录和原时间；重启后核对归属再恢复。卡片上的时间是本机观察时间，不是服务器实时额度，两项时间独立；账号或组织变化不沿用缓存。";
+        card.usageSource.stringValue = available ? @"" : status;
         card.usageSource.toolTip = detail;
         for (NSUInteger row=0;row<2;row++) {
             NSString *key = row == 0 ? @"fh" : @"sd"; NSDictionary *metric = available ? record[key] : nil;
@@ -1935,7 +1935,7 @@ static const unsigned CardFill = 0xFFFCF7;
             card.usageTimes[row].stringValue = UsageInterfaceTimeLabel(metric,now);
             NSString *specific = metric ? [NSString stringWithFormat:@"%@\n观察时间：%@\n官方重置说明：%@",detail,[NSDateFormatter localizedStringFromDate:metric[@"observedAt"] dateStyle:NSDateFormatterMediumStyle timeStyle:NSDateFormatterMediumStyle],[metric[@"reset"] length] ? metric[@"reset"] : @"未提供"] : detail;
             card.usageLabels[row].toolTip = specific; card.usageTimes[row].toolTip = specific;
-            card.usageLabels[row].accessibilityLabel = [NSString stringWithFormat:@"%@，%@，%@，%@",row == 0 ? @"5小时已使用" : @"每周已使用",card.usageLabels[row].stringValue,card.usageTimes[row].stringValue,card.usageSource.stringValue];
+            card.usageLabels[row].accessibilityLabel = [NSString stringWithFormat:@"%@，%@，观察时间 %@%@",row == 0 ? @"5小时已使用" : @"每周已使用",card.usageLabels[row].stringValue,card.usageTimes[row].stringValue,available ? @"" : [@"，" stringByAppendingString:status]];
         }
         card.needsDisplay = YES;
     }
@@ -2597,8 +2597,8 @@ static int UISettingsTest(NSString *output) {
         launcher.usageInterface = @{@1:UsageDemo(@62,@70),@2:UsageDemo(@73,nil)};
         [launcher updateUsageCards];
         NSCAssert([launcher.cards[0].usageLabels[0].stringValue isEqual:@"62%"] &&
-            [launcher.cards[0].usageSource.stringValue isEqual:@"Claude 界面 · 非服务器查询"] &&
-            [launcher.cards[0].usageTimes[1].stringValue hasPrefix:@"上次显示"] &&
+            !launcher.cards[0].usageSource.stringValue.length &&
+            [launcher.cards[0].usageTimes[1].stringValue rangeOfString:@"^[0-9]{2}:[0-9]{2}:[0-9]{2}$|^[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}$" options:NSRegularExpressionSearch].location != NSNotFound &&
             [launcher.cards[1].usageLabels[1].stringValue isEqual:@"—"],@"account-specific interface values, individual times and missing weekly reach native controls");
         NSCAssert([launcher.cards[1].usageLabels[0].stringValue isEqual:@"73%"],@"account two does not inherit account one's quota");
         launcher.loginAccount = 1; [launcher updateUsageCards];
@@ -2609,6 +2609,8 @@ static int UISettingsTest(NSString *output) {
             NSBitmapImageRep *bitmap = [view bitmapImageRepForCachingDisplayInRect:view.bounds]; [view cacheDisplayInRect:view.bounds toBitmapImageRep:bitmap];
             NSCAssert([[bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:[output stringByAppendingPathComponent:name] atomically:YES],@"snapshot saved");
         };
+        launcher.usageInterface = @{@1:UsageDemo(@62,@70),@2:UsageDemo(@73,nil)}; [launcher updateUsageCards]; [launcher showPage:0]; capture(@"instances.png");
+        launcher.usageInterface = nil; [launcher updateUsageCards];
         [launcher showPage:4];
         for (NSInteger section=0;section<6;section++) {
             [launcher.settingsTabs[section] performClick:nil]; NSCAssert(launcher.settingsSection == section,@"settings tab action");
@@ -2665,7 +2667,7 @@ static int UISettingsTest(NSString *output) {
         Fetch([NSURL URLWithString:@"https://api.anthropic.com/v1/messages"],YES,100,1,nil,^(NSData *data,NSString *failure) { refused = !data && failure.length; });
         NSCAssert(refused,@"Claude requests rejected even with update opt-in"); NetworkEnabled = NO;
         NSCAssert(!launcher.timer && !launcher.statusItem && !launcher.projectStore,@"UI checks do not start normal lifecycle or load projects");
-        puts("PASS: native settings controls, isolated save/reload, draft cancellation, reset scope, artwork/interface-usage/notifications, log retention/persistence/filter/paging, account search/status/selection, network rejection before session creation; 8 offscreen renders");
+        puts("PASS: native settings controls, isolated save/reload, draft cancellation, reset scope, artwork/interface-usage/notifications, log retention/persistence/filter/paging, account search/status/selection, network rejection before session creation; 9 offscreen renders");
     } @finally {
         NetworkEnabled = NO; [preferences removePersistentDomainForName:suite]; [preferences synchronize];
     }

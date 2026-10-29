@@ -347,7 +347,7 @@ NSString *UsageInterfaceTimeLabel(NSDictionary *metric, NSDate *now) {
     if (![date isKindOfClass:NSDate.class] || [now timeIntervalSinceDate:date] < 0) return @"尚未观察到";
     NSDateFormatter *format = [NSDateFormatter new]; format.dateFormat = @"HH:mm:ss";
     if (![NSCalendar.currentCalendar isDate:date inSameDayAsDate:now]) format.dateFormat = @"MM-dd HH:mm";
-    return [NSString stringWithFormat:@"%@ %@",[metric[@"visible"] boolValue] ? @"读取于" : @"上次显示",[format stringFromDate:date]];
+    return [format stringFromDate:date]; // Time only; tooltips explain it is a local observation time.
 }
 
 NSArray *StoredUsageInterface(NSDictionary *records) {
@@ -449,7 +449,7 @@ void TestUsageInterface(void) {
     NSMutableDictionary *otherPage = [closed mutableCopy]; otherPage[@"page"] = [url stringByAppendingString:@"2"];
     NSCAssert(MergeUsageInterface(first,otherPage,@[@1,@123,@456],now)[@"sd"],@"same validated account retains quota across Code conversations");
     NSCAssert(!MergeUsageInterface(first,@{@"status":@"需辅助功能权限"},@[@1,@123,@456],now)[@"fh"],@"permission loss clears values");
-    NSCAssert([UsageInterfaceTimeLabel(nil,now) isEqual:@"尚未观察到"] && [UsageInterfaceTimeLabel(second[@"sd"],now) hasPrefix:@"上次显示"],@"missing and last observation remain explicit");
+    NSCAssert([UsageInterfaceTimeLabel(nil,now) isEqual:@"尚未观察到"] && [UsageInterfaceTimeLabel(second[@"sd"],now) rangeOfString:@"^[0-9]{2}:[0-9]{2}:[0-9]{2}$|^[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}$" options:NSRegularExpressionSearch].location != NSNotFound,@"missing observation is explicit; observed values show time only");
     NSMutableDictionary *wrongWeek = [panel mutableCopy];
     wrongWeek[@"AXChildren"] = [panel[@"AXChildren"] arrayByAddingObject:node(@"AXLevelIndicator",@{@"AXDescription":@"每周 · 所有模型",@"AXValue":@8},@[])];
     NSCAssert(!read(@[page(@[button,wrongWeek])])[@"fh"],@"conflicting weekly values fail closed");
