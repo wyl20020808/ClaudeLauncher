@@ -69,7 +69,7 @@ SIGN_IDENTITY="ClaudeLauncher Local Signing" /bin/zsh scripts/dmg.sh
 
 ### Windows
 
-Windows 的版本、Setup 安装程序与验证状态见 [windows/README.md](windows/README.md)。本轮未修改 Windows。
+Windows 的版本、Setup 安装程序与验证状态见 [windows/README.md](windows/README.md)。Windows 正在同步当前规格（feature/windows-update-boundary：更新仅 GitHub、默认关闭）。
 
 ## 项目管理（macOS，第一版）
 

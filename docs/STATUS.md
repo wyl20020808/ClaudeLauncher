@@ -1,5 +1,14 @@
 # 项目状态
 
+## Windows 更新网络边界（2026-10-29，feature/windows-update-boundary，未发布）
+
+- 按 SPEC「网络边界」改造 Windows 客户端：移除自建来源、`BaseUrl`、取较高版本、启动 8 秒／24 小时自动检查与 `last-update-check`。只取本项目 GitHub `latest-windows.json` 与同 Release 的 Setup。
+- 新增 `allowUpdates`（默认关闭，`%LOCALAPPDATA%\Claude-MultiLauncher\settings.json`，异常回落关闭）。系统设置“检查启动器更新”为草稿开关，点“保存设置”生效；开启后每次打开启动器检查一次 + 手动／托盘检查；未开启时不联网。有未保存设置时不开始更新，下载期间设置被改则安装前取消并删除临时文件。替换了虚假的“默认浏览器”行；其余设置项仍为占位，留给第 2 项。
+- URL 校验集中到 `Updates.UrlAllowed`，在创建请求前执行；跳转只允许同仓库 Release 下载路径与两个 GitHub 附件主机，HTTPS／443／无用户信息；请求不带凭据、无 Cookie、不缓存。
+- `publish-release.ps1` 仅把自建服务地址从 `Updates.BaseUrl` 移到脚本内常量，发布行为不变；`updates/` 与 `sync.py` 未改。版本仍为 1.7.3。
+- 自检：`build.ps1 -Preview` 通过，LauncherTests 246 项、`--self-test` 169 项、离屏预览。真实只读复核：GitHub 清单与 Setup 的实际跳转链通过白名单，验签与哈希一致。
+- 未验证：GUI 中开关保存、启动检查提示、未开启／未保存拦截、下载安装全流程；`test-install.ps1` 未运行（`--apply-update` 未改动）。
+
 ## 按需读取用量（2026-10-28，macOS 1.7.10 / build 17，已发布）
 
 - 用户要求降低读取频率：仅在实例管理页重新获得焦点、返回该页或在该页点击时读取一次。删除 Claude 辅助功能通知监听、5 秒轮询及定时器中的组织指纹核对。后台不采集；连续停留不会刷新时间。1 秒内重复激活／点击仍合并。

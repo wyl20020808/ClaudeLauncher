@@ -29,19 +29,20 @@ namespace ClaudeLauncher {
         public string version, file, sha256, signature;
         public long size;
     }
-    public sealed class UpdateSource { public string Name, Base; public bool GitHub; }
-    public sealed class SourceCheck { public UpdateSource Source; public Release Release; public string Failure; }
 
     public static class Updates {
         public const string Version = "1.7.3.0";
         public const string DisplayVersion = "1.7.3";
-        public const string BaseUrl = "https://www.u4139693.nyat.app:53569/claude-launcher/";
         public const string GitHubBase = "https://github.com/wyl20020808/ClaudeLauncher/releases/latest/download/";
         public const string ReleasesPage = "https://github.com/wyl20020808/ClaudeLauncher/releases";
         public const long SizeLimit = 50L * 1024 * 1024;
-        static readonly string[] GitHubHosts = { "github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com" };
+        const string ReleasePath = "/wyl20020808/ClaudeLauncher/releases/";
+        const string AssetName = @"(latest-windows\.json|ClaudeLauncherSetup-[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}\.exe)";
+        static readonly string[] AssetHosts = { "objects.githubusercontent.com", "release-assets.githubusercontent.com" };
         public static readonly string Cache = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Claude-MultiLauncher", "updates");
-        static string CheckedFile { get { return Path.Combine(Path.GetDirectoryName(Cache), "last-update-check"); } }
+        // 已创建的网络请求数，供自检确认拒绝发生在建立连接之前。
+        static int requests;
+        public static int Requests { get { return requests; } }
         public static string PublicKey() {
             using (var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("ClaudeLauncher.UpdateKey"))
             using (var reader = new StreamReader(stream)) return reader.ReadToEnd();
@@ -86,9 +87,14 @@ namespace ClaudeLauncher {
         }
         public static bool IsNewer(Release r) { return Compare(r.version, DisplayVersion) > 0; }
         public static bool OsSupported(string minimum, System.Version os) { return Compare(os.Major + "." + os.Minor + "." + os.Build, minimum) >= 0; }
-        // 自建服务不允许跳转；GitHub 只允许跳到自身下载域名，且只走 HTTPS 默认端口。
-        public static bool RedirectAllowed(Uri uri, bool github) {
-            return github && uri.Scheme == Uri.UriSchemeHttps && uri.IsDefaultPort && GitHubHosts.Contains(uri.Host.ToLowerInvariant());
+        // SPEC 网络边界：唯一的 URL 白名单。initial 为首次请求（只允许本项目 latest/download 下的清单与 Setup），否则为跳转目标
+        // （同仓库 releases/download/<标签>/ 下的同类文件，或 GitHub 附件下载主机）。一律 HTTPS、443、无用户信息。
+        public static bool UrlAllowed(Uri uri, bool initial) {
+            if (uri == null || !uri.IsAbsoluteUri || uri.Scheme != Uri.UriSchemeHttps || uri.Port != 443 || uri.UserInfo.Length > 0 || uri.Fragment.Length > 0) return false;
+            string host = uri.Host.ToLowerInvariant(), path = uri.AbsolutePath;
+            if (initial) return host == "github.com" && uri.Query.Length == 0 && Regex.IsMatch(path, "^" + Regex.Escape(ReleasePath) + "latest/download/" + AssetName + "$");
+            if (host == "github.com") return uri.Query.Length == 0 && Regex.IsMatch(path, "^" + Regex.Escape(ReleasePath) + @"(latest/download|download/[A-Za-z0-9._-]{1,64})/" + AssetName + "$");
+            return AssetHosts.Contains(host);
         }
         public static string Hash(string path) {
             using (var sha = SHA256.Create()) using (var file = File.OpenRead(path)) return BitConverter.ToString(sha.ComputeHash(file)).Replace("-", "").ToLowerInvariant();
@@ -97,16 +103,21 @@ namespace ClaudeLauncher {
             if (new FileInfo(path).Length != size || Hash(path) != sha256) throw new IOException("安装包大小或 SHA-256 不匹配，已拒绝。");
         }
 
-        static void Fetch(Uri uri, bool github, long maximum, int seconds, Stream output) { Fetch(uri, github, maximum, seconds, output, null, null); }
+        // 未开启更新时在任何网络操作前拒绝。
+        static void RequireAllowed(bool allowed) {
+            if (!allowed) throw new InvalidOperationException("未开启检查启动器更新，未联网。");
+        }
         // progress 回报已下载字节数（在下载线程调用）；cancelled 返回 true 时中止并抛出 OperationCanceledException。
-        static void Fetch(Uri uri, bool github, long maximum, int seconds, Stream output, Action<long> progress, Func<bool> cancelled) {
-            if (uri.Scheme != Uri.UriSchemeHttps) throw new IOException("更新地址必须使用 HTTPS。");
+        static void Fetch(Uri uri, long maximum, int seconds, Stream output, Action<long> progress, Func<bool> cancelled) {
+            if (!UrlAllowed(uri, true)) throw new IOException("更新地址不在允许范围内，已拒绝。");
             ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12;
             var time = Stopwatch.StartNew();
             for (int hop = 0; ; hop++) {
+                Interlocked.Increment(ref requests);
                 var request = (HttpWebRequest)WebRequest.Create(uri);
                 request.Timeout = 15000; request.ReadWriteTimeout = 15000; request.AllowAutoRedirect = false;
                 request.CachePolicy = new RequestCachePolicy(RequestCacheLevel.NoCacheNoStore);
+                request.CookieContainer = null; request.Credentials = null; request.UseDefaultCredentials = false; request.PreAuthenticate = false;
                 request.UserAgent = "ClaudeProfileLauncher/" + DisplayVersion;
                 HttpWebResponse response;
                 try { response = (HttpWebResponse)request.GetResponse(); }
@@ -120,7 +131,7 @@ namespace ClaudeLauncher {
                     if (status == 301 || status == 302 || status == 303 || status == 307 || status == 308) {
                         Uri next;
                         string location = response.Headers["Location"];
-                        if (location == null || !Uri.TryCreate(uri, location, out next) || !RedirectAllowed(next, github)) throw new IOException("更新地址跳转到未允许的位置，已拒绝。");
+                        if (location == null || !Uri.TryCreate(uri, location, out next) || !UrlAllowed(next, false)) throw new IOException("更新地址跳转到未允许的位置，已拒绝。");
                         if (hop >= 5) throw new IOException("更新地址跳转次数过多。");
                         uri = next; continue;
                     }
@@ -141,62 +152,36 @@ namespace ClaudeLauncher {
                 }
             }
         }
-        public static UpdateSource[] Sources() {
-            var list = new List<UpdateSource>();
-            if (!String.IsNullOrEmpty(BaseUrl)) list.Add(new UpdateSource { Name = "自建服务", Base = BaseUrl, GitHub = false });
-            list.Add(new UpdateSource { Name = "GitHub", Base = GitHubBase, GitHub = true });
-            return list.ToArray();
-        }
-        public static Release CheckSource(UpdateSource source) {
+        // SPEC 来源：只取本项目 GitHub Releases 的 latest-windows.json 并验签。
+        public static Release Check(bool allowed) {
+            RequireAllowed(allowed);
             using (var buffer = new MemoryStream()) {
-                Fetch(new Uri(source.Base + "latest-windows.json"), source.GitHub, 16384, 30, buffer);
+                Fetch(new Uri(GitHubBase + "latest-windows.json"), 16384, 30, buffer, null, null);
                 Release release = Verify(Encoding.UTF8.GetString(buffer.ToArray()), PublicKey());
-                Diagnostics.Write("update_check", "source=" + source.Name + "; available=" + release.version);
+                Diagnostics.Write("update_check", "available=" + release.version);
                 return release;
             }
         }
-        // SPEC 来源与回退·取较高版本：同时向所有来源取清单，各自验签；失败原因记在 Failure。
-        public static SourceCheck[] CheckAll(UpdateSource[] sources) {
-            var tasks = sources.Select(source => System.Threading.Tasks.Task.Run(() => {
-                var check = new SourceCheck { Source = source };
-                try { check.Release = CheckSource(source); } catch (Exception error) { check.Failure = error.Message; }
-                return check;
-            })).ToArray();
-            System.Threading.Tasks.Task.WaitAll(tasks);
-            return tasks.Select(t => t.Result).ToArray();
-        }
-        // 在验签通过的清单中取版本最高者；同版本按来源顺序（自建优先）排列，供下载失败时换下一个。空数组表示全部来源失败。
-        public static SourceCheck[] Candidates(SourceCheck[] checks) {
-            var valid = checks.Where(c => c.Release != null).ToArray();
-            if (valid.Length == 0) return valid;
-            string best = valid.Select(c => c.Release.version).Aggregate((a, b) => Compare(a, b) >= 0 ? a : b);
-            return valid.Where(c => Compare(c.Release.version, best) == 0).ToArray();
-        }
-        // 启动后自动检查：距上次成功检查超过 24 小时才进行。
-        public static bool CheckDue() {
-            try {
-                long ticks;
-                return !Int64.TryParse(File.ReadAllText(CheckedFile).Trim(), out ticks) || DateTime.UtcNow - new DateTime(ticks, DateTimeKind.Utc) > TimeSpan.FromHours(24);
-            } catch (IOException) { return true; } catch (UnauthorizedAccessException) { return true; }
-        }
-        public static void MarkChecked() {
-            try { Directory.CreateDirectory(Path.GetDirectoryName(CheckedFile)); File.WriteAllText(CheckedFile, DateTime.UtcNow.Ticks.ToString()); }
-            catch (Exception error) { Diagnostics.Error("update_mark_error", error); }
-        }
-        // 下载到本用户更新缓存；大小或哈希不符时删除并抛出，由调用方换下一个来源。
-        public static string Download(Release r, UpdateSource source) { return Download(r, source, null, null); }
-        public static string Download(Release r, UpdateSource source, Action<long> progress, Func<bool> cancelled) {
+        // 下载到本用户更新缓存；大小或哈希不符时删除并抛出。
+        public static string Download(Release r, bool allowed, Action<long> progress, Func<bool> cancelled) {
+            RequireAllowed(allowed);
             Verify(new JavaScriptSerializer().Serialize(r), PublicKey());
             string directory = Path.Combine(Cache, Guid.NewGuid().ToString("N")); Directory.CreateDirectory(directory);
             string path = Path.Combine(directory, r.file);
             try {
-                using (var file = File.Create(path)) Fetch(new Uri(source.Base + Uri.EscapeDataString(r.file)), source.GitHub, r.size, 300, file, progress, cancelled);
+                using (var file = File.Create(path)) Fetch(new Uri(GitHubBase + Uri.EscapeDataString(r.file)), r.size, 300, file, progress, cancelled);
                 VerifyFile(path, r.size, r.sha256);
-            } catch {
-                try { File.Delete(path); Directory.Delete(directory); } catch (Exception cleanup) { Diagnostics.Error("update_cleanup_error", cleanup); }
-                throw;
-            }
+            } catch { Discard(path); throw; }
             return path;
+        }
+        // 删除下载的安装包及其随机目录（只处理更新缓存内的路径）。
+        public static void Discard(string path) {
+            try {
+                string directory = Path.GetDirectoryName(Path.GetFullPath(path));
+                if (!String.Equals(Path.GetDirectoryName(directory), Path.GetFullPath(Cache), StringComparison.OrdinalIgnoreCase)) return;
+                if (File.Exists(path)) File.Delete(path);
+                if (Directory.Exists(directory)) Directory.Delete(directory);
+            } catch (Exception cleanup) { Diagnostics.Error("update_cleanup_error", cleanup); }
         }
 
         [StructLayout(LayoutKind.Sequential)]

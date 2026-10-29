@@ -38,7 +38,12 @@ namespace ClaudeLauncher {
         readonly Border indicator;
         readonly TextBlock summary, message, emptyHint, tableFooter, logSummary;
         readonly TextBlock[] stats = new TextBlock[3];
-        readonly Button create, endLogin, update;
+        readonly Button create, endLogin, update, saveSettings;
+        // 已保存的设置与草稿；草稿与已保存值不同即为未保存更改（SPEC 网络边界）。
+        LauncherSettings settings = LauncherSettings.Load(LauncherSettings.DefaultPath);
+        bool draftAllowUpdates;
+        Border updateToggle;
+        bool SettingsDirty { get { return draftAllowUpdates != settings.AllowUpdates; } }
         readonly StackPanel cardList, rowList;
         readonly Canvas logRows;
         readonly Dictionary<int, Card> cards = new Dictionary<int, Card>();
@@ -90,8 +95,13 @@ namespace ClaudeLauncher {
             return At(canvas, box, x, y, width, height);
         }
         static Border Toggle(bool on) {
-            var knob = new Ellipse { Width = 16, Height = 16, Fill = Brushes.White, HorizontalAlignment = on ? HorizontalAlignment.Right : HorizontalAlignment.Left, Margin = new Thickness(2) };
-            return new Border { Width = 40, Height = 20, CornerRadius = new CornerRadius(10), Background = B(on ? Brown : "#E6DED4"), Child = knob, IsHitTestVisible = false };
+            var knob = new Ellipse { Width = 16, Height = 16, Fill = Brushes.White, Margin = new Thickness(2) };
+            var toggle = new Border { Width = 40, Height = 20, CornerRadius = new CornerRadius(10), Child = knob, IsHitTestVisible = false };
+            SetToggle(toggle, on); return toggle;
+        }
+        static void SetToggle(Border toggle, bool on) {
+            toggle.Background = B(on ? Brown : "#E6DED4");
+            ((Ellipse)toggle.Child).HorizontalAlignment = on ? HorizontalAlignment.Right : HorizontalAlignment.Left;
         }
         Button Action(string text, string style, string icon, double size) {
             var button = new Button { Style = (Style)window.FindResource(style), FontSize = size };
@@ -278,7 +288,7 @@ namespace ClaudeLauncher {
                     new object[] { "本地诊断日志", "启动、进程与异常记录，不含账号信息", "logs" } },
                 new object[][] { new object[] { "默认行为", "新实例将沿用这些设置" },
                     new object[] { "默认打开方式", "控制 Claude 实例的窗口行为", "独立窗口" },
-                    new object[] { "默认浏览器", "用于登录回调的浏览器", "系统默认浏览器" },
+                    new object[] { "检查启动器更新", "仅 GitHub；保存后每次打开检查一次，默认关闭", "updates" },
                     new object[] { "启动间隔", "批量启动时的间隔时间", "3 秒" } },
                 new object[][] { new object[] { "界面与存储", "" },
                     new object[] { "应用语言", "界面显示语言", "简体中文" },
@@ -299,7 +309,14 @@ namespace ClaudeLauncher {
                     At(settings, T((string)section[r][1], 10, "#8A7F74", FontWeights.Normal), 246, y + 19, 240);
                     object control = section[r][2];
                     if (control is bool) At(settings, Toggle((bool)control), 690, y + 8);
-                    else if ((string)control == "logs") {
+                    else if ((string)control == "updates") {
+                        // 草稿开关：点“保存设置”后才生效。
+                        draftAllowUpdates = this.settings.AllowUpdates;
+                        updateToggle = Toggle(draftAllowUpdates);
+                        var flip = At(settings, new Button { Style = (Style)window.FindResource("Icon"), Content = updateToggle, Cursor = Cursors.Hand, ToolTip = "开启后只访问本项目 GitHub Releases" }, 686, y + 4, 48, 28);
+                        AutomationProperties.SetName(flip, "检查启动器更新");
+                        flip.Click += delegate { draftAllowUpdates = !draftAllowUpdates; SetToggle(updateToggle, draftAllowUpdates); saveSettings.IsEnabled = SettingsDirty; };
+                    } else if ((string)control == "logs") {
                         var open = At(settings, Action("打开", "Btn", null, 12), 664, y + 5, 70, 26);
                         open.Click += delegate {
                             try { Diagnostics.OpenFolder(); } catch (Exception error) { Diagnostics.Error("open_logs_error", error); Alert("无法打开日志目录", error.Message); }
@@ -317,17 +334,26 @@ namespace ClaudeLauncher {
             update = At(settings, Action("检查更新", "Btn", "", 14), 400, 642, 120, 38);
             update.Click += async delegate { await CheckUpdate(true); };
             var reset = At(settings, Action("恢复默认", "Btn", null, 14), 530, 642, 100, 38); reset.IsHitTestVisible = false; reset.Focusable = false;
-            var save = At(settings, Action("保存设置", "Primary", "", 14), 640, 642, 116, 38); save.IsHitTestVisible = false; save.Focusable = false;
+            saveSettings = At(settings, Action("保存设置", "Primary", "", 14), 640, 642, 116, 38);
+            saveSettings.IsEnabled = false;
+            saveSettings.Click += delegate {
+                var next = new LauncherSettings { AllowUpdates = draftAllowUpdates };
+                try { next.Save(LauncherSettings.DefaultPath); }
+                catch (Exception error) { Diagnostics.Error("settings_save_error", error); Alert("无法保存设置", error.Message + "\n已保留草稿，原设置未改动。"); return; }
+                this.settings = next; saveSettings.IsEnabled = false;
+                Diagnostics.Write("settings_saved", "allowUpdates=" + next.AllowUpdates);
+                Message(next.AllowUpdates ? "设置已保存：已开启检查启动器更新（仅 GitHub）。" : "设置已保存：已关闭检查启动器更新，启动器不再联网检查。", false);
+            };
 
             ShowPage(0);
             AddLog("启动器已完成初始化");
+            if (this.settings.LoadError != null) { Diagnostics.Write("settings_load_error", this.settings.LoadError); AddLog("设置文件无法读取，已按默认（更新关闭）：" + this.settings.LoadError); }
             timer.Interval = TimeSpan.FromSeconds(2);
             timer.Tick += async delegate { await Refresh(); };
             window.Loaded += async delegate {
                 await Refresh(); timer.Start();
-                // 启动 8 秒后，距上次检查超过 24 小时才自动检查；失败只记日志。
-                await Task.Delay(TimeSpan.FromSeconds(8));
-                if (!closed && Updates.CheckDue()) await CheckUpdate(false);
+                // SPEC 网络边界：已保存开启时，每次打开启动器检查一次；只在有新版时提示，失败只记日志。
+                if (!closed && this.settings.AllowUpdates) await CheckUpdate(false);
             };
             window.Closed += delegate { closed = true; timer.Stop(); processWatch.Dispose(); Diagnostics.Write("window_closed", "正常关闭启动器"); };
             window.Closing += delegate(object sender, System.ComponentModel.CancelEventArgs e) {
@@ -993,46 +1019,48 @@ namespace ClaudeLauncher {
             if (progress == null || progress.Finished) return;
             progress.Finished = true; progress.Window.Close();
         }
-        // SPEC 更新与安装：同时查自建服务与 GitHub，取较高版本；同版本自建优先，下载失败换同版本的下一个来源，都失败时提供“前往 GitHub 下载”。
+        // SPEC 网络边界：只在已保存开启时检查本项目 GitHub Releases；有未保存设置时不开始；失败时提供“前往 GitHub 下载”。
         async Task CheckUpdate(bool manual) {
             if (updating || closed) return;
+            if (!settings.AllowUpdates) {
+                if (manual) Alert("未开启检查更新", "请在系统设置中开启“检查启动器更新”并点“保存设置”后再检查。未开启时启动器不会联网。");
+                return;
+            }
+            if (SettingsDirty) {
+                if (manual) Alert("有未保存的设置", "请先保存或改回未保存的设置，再检查更新。");
+                else AddLog("有未保存的设置，跳过本次更新检查");
+                return;
+            }
             if (manual && (deleting || pending.Count > 0 || checking.Count > 0)) { Message("请先等待当前操作完成。", true); return; }
             updating = true; update.IsEnabled = false; Render();
             object buttonContent = update.Content;
             if (manual) update.Content = "正在检查…";
-            var failures = new List<string>();
             bool accepted = false;
+            string failure = null;
             UpdateProgress progress = null;
             try {
-                // 同时取所有来源的清单，取验签通过的最高版本；某个来源落后或失败不再挡住其他来源的新版本。
-                SourceCheck[] checks = await Task.Run(() => Updates.CheckAll(Updates.Sources()));
+                Release release;
+                try { release = await Task.Run(() => Updates.Check(settings.AllowUpdates)); }
+                catch (Exception error) { release = null; failure = error.Message; }
                 if (closed) return;
-                foreach (SourceCheck check in checks) if (check.Failure != null) failures.Add(check.Source.Name + "：" + check.Failure);
-                SourceCheck[] candidates = Updates.Candidates(checks);
-                if (candidates.Length > 0) {
-                    Updates.MarkChecked();
-                    Release latest = candidates[0].Release;
-                    Diagnostics.Write("update_select", "version=" + latest.version + "; sources=" + String.Join(",", candidates.Select(c => c.Source.Name)));
-                    if (!Updates.IsNewer(latest)) { if (manual) Alert("已是最新版本", "当前版本 " + Updates.DisplayVersion + "。"); return; }
-                    if (!Updates.OsSupported(latest.minimumOS, Environment.OSVersion.Version)) {
-                        if (manual) Alert("新版本需要更高的系统版本", latest.version + " 需要 Windows " + latest.minimumOS + " 及以上。");
+                if (release != null) {
+                    Diagnostics.Write("update_select", "version=" + release.version);
+                    if (!Updates.IsNewer(release)) { if (manual) Alert("已是最新版本", "当前版本 " + Updates.DisplayVersion + "。"); return; }
+                    if (!Updates.OsSupported(release.minimumOS, Environment.OSVersion.Version)) {
+                        if (manual) Alert("新版本需要更高的系统版本", release.version + " 需要 Windows " + release.minimumOS + " 及以上。");
                         return;
                     }
-                    if (deleting || pending.Count > 0 || checking.Count > 0) { Message("发现新版本 " + latest.version + "，当前操作完成后可在系统设置中更新。", false); return; }
-                    if (Ask("发现新版本 " + latest.version, "当前版本 " + Updates.DisplayVersion + "。更新会先校验安装包，再关闭启动器、卸载旧版并安装新版，完成后重新打开；Claude 实例和账号数据不受影响。",
+                    if (deleting || pending.Count > 0 || checking.Count > 0) { Message("发现新版本 " + release.version + "，当前操作完成后可在系统设置中更新。", false); return; }
+                    if (Ask("发现新版本 " + release.version, "当前版本 " + Updates.DisplayVersion + "。更新会先校验安装包，再关闭启动器、卸载旧版并安装新版，完成后重新打开；Claude 实例和账号数据不受影响。",
                         new[] { "稍后", "立即更新" }, 0, 1) != 1) return;
+                    if (SettingsDirty || !settings.AllowUpdates) { Message("设置已更改，未开始更新。", true); return; }
                     accepted = true;
-                    progress = BuildUpdateProgress(latest.version);
+                    progress = BuildUpdateProgress(release.version);
                     progress.Window.Owner = window;
                     window.IsEnabled = false;
                     progress.Window.Show();
-                }
-                foreach (SourceCheck candidate in candidates) {
-                    UpdateSource source = candidate.Source; Release release = candidate.Release;
-                    SetUpdateStep(progress, 0);
-                    progress.Bar.IsIndeterminate = false; progress.Bar.Value = 0;
-                    progress.Source.Text = "来源：" + source.Name;
-                    progress.Status.Text = "正在从" + source.Name + "下载 " + release.file + "…";
+                    progress.Source.Text = "来源：GitHub";
+                    progress.Status.Text = "正在从 GitHub 下载 " + release.file + "…";
                     progress.Detail.Text = "0.0 MB / " + Megabytes(release.size);
                     Message(progress.Status.Text, false);
                     var shown = progress; long total = release.size; int lastPercent = -1;
@@ -1045,38 +1073,42 @@ namespace ClaudeLauncher {
                             shown.Detail.Text = Megabytes(received) + " / " + Megabytes(total) + " · " + percent + "%";
                         }));
                     };
-                    string setup;
-                    try { setup = await Task.Run(() => Updates.Download(release, source, report, () => shown.Cancelled)); }
+                    string setup = null;
+                    bool allowed = settings.AllowUpdates;
+                    try { setup = await Task.Run(() => Updates.Download(release, allowed, report, () => shown.Cancelled)); }
                     catch (OperationCanceledException) { CloseProgress(progress); Message("已取消更新，未做任何改动。", false); return; }
                     catch (Exception error) {
-                        failures.Add(source.Name + "：" + error.Message);
                         if (progress.Cancelled) { CloseProgress(progress); Message("已取消更新，未做任何改动。", false); return; }
-                        continue;
+                        failure = error.Message;
                     }
-                    if (closed) return;
-                    if (progress.Cancelled) { CloseProgress(progress); Message("已取消更新，未做任何改动。", false); return; }
-                    SetUpdateStep(progress, 1);
-                    progress.Cancel.IsEnabled = false;
-                    progress.Bar.IsIndeterminate = true;
-                    progress.Status.Text = "正在校验安装包的签名与完整性…";
-                    progress.Detail.Text = Megabytes(total) + " 已下载";
-                    try { await Task.Run(() => Updates.StartSetup(setup, release)); }
-                    catch (Exception error) { Diagnostics.Error("update_setup_error", error); CloseProgress(progress); window.IsEnabled = true; Alert("无法安装更新", error.Message); return; }
-                    SetUpdateStep(progress, 2);
-                    progress.Bar.IsIndeterminate = false; progress.Bar.Value = 100;
-                    progress.Status.Text = "校验通过。启动器即将关闭，由安装程序卸载旧版并安装新版，完成后会自动重新打开。";
-                    progress.Detail.Text = "请稍候，不要手动打开启动器。";
-                    Diagnostics.Write("update_handoff", "退出启动器，交由安装程序卸载旧版并安装新版");
-                    await Task.Delay(TimeSpan.FromSeconds(2));
-                    CloseProgress(progress);
-                    ExitLauncher(); return;
+                    if (closed) { if (setup != null) Updates.Discard(setup); return; }
+                    if (setup != null) {
+                        if (progress.Cancelled) { Updates.Discard(setup); CloseProgress(progress); Message("已取消更新，未做任何改动。", false); return; }
+                        // 下载期间出现未保存设置或更新被关闭：安装前取消并清理临时文件，保留当前程序和草稿。
+                        if (SettingsDirty || !settings.AllowUpdates) { Updates.Discard(setup); CloseProgress(progress); Message("设置在下载期间被更改，已取消更新并删除临时文件。", true); return; }
+                        SetUpdateStep(progress, 1);
+                        progress.Cancel.IsEnabled = false;
+                        progress.Bar.IsIndeterminate = true;
+                        progress.Status.Text = "正在校验安装包的签名与完整性…";
+                        progress.Detail.Text = Megabytes(total) + " 已下载";
+                        try { await Task.Run(() => Updates.StartSetup(setup, release)); }
+                        catch (Exception error) { Diagnostics.Error("update_setup_error", error); Updates.Discard(setup); CloseProgress(progress); window.IsEnabled = true; Alert("无法安装更新", error.Message); return; }
+                        SetUpdateStep(progress, 2);
+                        progress.Bar.IsIndeterminate = false; progress.Bar.Value = 100;
+                        progress.Status.Text = "校验通过。启动器即将关闭，由安装程序卸载旧版并安装新版，完成后会自动重新打开。";
+                        progress.Detail.Text = "请稍候，不要手动打开启动器。";
+                        Diagnostics.Write("update_handoff", "退出启动器，交由安装程序卸载旧版并安装新版");
+                        await Task.Delay(TimeSpan.FromSeconds(2));
+                        CloseProgress(progress);
+                        ExitLauncher(); return;
+                    }
                 }
                 CloseProgress(progress);
                 window.IsEnabled = true;
-                Diagnostics.Write("update_failed", String.Join("；", failures));
-                AddLog("检查更新失败：" + String.Join("；", failures));
+                Diagnostics.Write("update_failed", failure);
+                AddLog("检查更新失败：" + failure);
                 if ((manual || accepted) && !closed &&
-                    Ask("自动更新失败", String.Join("\n", failures) + "\n\n可以前往 GitHub 手动下载最新版本。", new[] { "关闭", "前往 GitHub 下载" }, 0, 1) == 1) {
+                    Ask("自动更新失败", "GitHub：" + failure + "\n\n可以前往 GitHub 手动下载最新版本。", new[] { "关闭", "前往 GitHub 下载" }, 0, 1) == 1) {
                     try { Process.Start(new ProcessStartInfo(Updates.ReleasesPage) { UseShellExecute = true }); }
                     catch (Exception error) { Message("无法打开浏览器：" + error.Message, true); }
                 }

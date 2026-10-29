@@ -2,7 +2,7 @@
 
 ## 本地安全与可操作界面（2026-10-28，macOS feature/local-settings）
 
-本节优先于下方旧版本更新描述。产品核心规则：管理器不向 Claude、Anthropic 或其 Cloud、API、遥测、登录服务发请求，不读取凭据，不通过 CLI、浏览器或官方界面刷新间接查询。设置不改变 Claude 的登录、会话、目录或运行状态。用户主动使用既有启动／激活功能时，官方客户端自身的正常联网不由管理器控制。规则写入根目录 AGENTS.md，后续两端开发均须遵循；本轮实现和验证仅覆盖 macOS，旧 Windows 更新行为尚未按此节改造。
+本节优先于下方旧版本更新描述。产品核心规则：管理器不向 Claude、Anthropic 或其 Cloud、API、遥测、登录服务发请求，不读取凭据，不通过 CLI、浏览器或官方界面刷新间接查询。设置不改变 Claude 的登录、会话、目录或运行状态。用户主动使用既有启动／激活功能时，官方客户端自身的正常联网不由管理器控制。规则写入根目录 AGENTS.md，后续两端开发均须遵循；本轮实现和验证仅覆盖 macOS；Windows 的网络边界于 2026-10-29 在 feature/windows-update-boundary 对齐（见下文「网络边界」中的 [Windows]），系统设置与账号／日志交互待后续分支。
 
 ### 系统设置
 
@@ -34,6 +34,8 @@
 - 重定向只允许本项目 Release 下载路径及 GitHub 的 `objects.githubusercontent.com`／`release-assets.githubusercontent.com`；拒绝所有其他域名，包括 Claude／Anthropic。使用无 Cookie、无凭据存储、无 URL 缓存的临时会话。签名、哈希、版本和安装证书校验保留。
 - `--update-test` 也需明确的 `--allow-updates` 参数，且仍经过同一 URL 白名单；普通自检和 UI 自检不联网。导出、诊断、帮助不产生网络请求。
 - 有未保存设置时不开始更新；下载期间若出现未保存更改，安装前取消并清理临时更新文件，保留当前程序和草稿。
+- **[Windows]** `allowUpdates` 保存在 `%LOCALAPPDATA%\Claude-MultiLauncher\settings.json`（`{"version":1,"allowUpdates":false}`，同目录临时文件写完后替换；缺失、损坏或类型不符按默认关闭）。系统设置“检查启动器更新”开关先进入草稿，点“保存设置”才生效。开启后每次打开启动器检查一次（只在有新版时提示，失败只记日志），另可从设置页或托盘“检查更新…”手动检查；未开启时这些入口都不联网，只提示先开启并保存。删除自建来源、取较高版本、启动 8 秒后／24 小时自动检查及 `last-update-check` 记录。
+- **[Windows]** 唯一网络入口 `Updates.UrlAllowed` 在创建请求前校验：首次请求只允许 `https://github.com/wyl20020808/ClaudeLauncher/releases/latest/download/` 下的 `latest-windows.json` 与严格版本文件名的 `ClaudeLauncherSetup-<x.y.z>.exe`；跳转只允许同仓库 `releases/download/<标签>/` 下的这两类文件，以及 `objects.githubusercontent.com`／`release-assets.githubusercontent.com`。一律 HTTPS、443、无用户信息，最多 5 跳；请求不带凭据、不预认证、无 Cookie、不缓存，TLS 证书校验保持系统默认。发布脚本与自建服务过渡期仍为 1.7.3 及更早客户端发布，客户端不再读取。
 
 
 macOS（`src/main.m`）和 Windows（`windows/`）各自原生实现，共同遵守本规格。macOS 1.6 是参考实现；规格变化时两端同步修改并在 STATUS 记录。
@@ -181,7 +183,7 @@ Windows 对应：重解析点（符号链接、junction）等同链接；硬链�
 
 ## 更新与安装
 
-> **Windows 已实现（1.7.0，feature/windows-sync）**：`latest-windows.json` 验签、自建 → GitHub 回退、跳转白名单、只升不降、`minimumOS` 判断、下载后大小/SHA-256 核对（不符删除并换下一来源）、静默运行 Setup 并由 Setup 重新打开启动器、启动 8 秒后距上次检查超过 24 小时才自动检查；发布脚本 `windows/scripts/publish-release.ps1`。真实发布与公网下载未验证（见 `windows/README.md`）。
+> **Windows 已实现（1.7.0 起，2026-10-29 按「网络边界」收紧）**：`latest-windows.json` 验签、仅 GitHub 来源、集中 URL 白名单、只升不降、`minimumOS` 判断、下载后大小/SHA-256 核对（不符删除）、静默运行 Setup 并由 Setup 重新打开启动器；检查时机与开关见「网络边界」[Windows]。发布脚本 `windows/scripts/publish-release.ps1`（过渡期仍同步自建服务）。
 >
 > - **[Windows 差异]** 同一证书：当前 Windows 程序与 Setup 都没有 Authenticode 签名。程序已签名时要求 Setup 由同一证书签名且签名有效；当前程序未签名时无法比对签名者，只依赖清单 RSA 签名与 SHA-256。取得代码签名证书后此限制自动消失。
 > - **[Windows 差异]** 回滚：Setup 先卸载旧版再安装，新版安装失败时旧版已卸载，无法自动回滚到旧版（账号数据不受影响，可重新运行 Setup 或从 GitHub 下载）。旧版卸载失败、启动器无法正常关闭时则中止并保留旧版。
@@ -222,7 +224,7 @@ Windows 对应：重解析点（符号链接、junction）等同链接；硬链�
 
 ### 来源与回退
 
-1. **GitHub Releases（唯一来源，2026-10-28 用户决定）**：`https://github.com/wyl20020808/ClaudeLauncher/releases/latest/download/latest-<平台>.json` 与同一 Release 中的安装包。自建更新服务不再作为客户端来源：macOS 自 1.7.8 起移除；Windows 待同步。此前的“自建优先、回退 GitHub”与 1.7.6 的“取较高版本”随之停用。
+1. **GitHub Releases（唯一来源，2026-10-28 用户决定）**：`https://github.com/wyl20020808/ClaudeLauncher/releases/latest/download/latest-<平台>.json` 与同一 Release 中的安装包。自建更新服务不再作为客户端来源：macOS 自 1.7.8 起移除；Windows 于 feature/windows-update-boundary 移除（随下一个 Windows 版本发布）。此前的“自建优先、回退 GitHub”与 1.7.6 的“取较高版本”随之停用。
 2. 取不到有效清单、验签失败或下载失败：提示原因，并提供“前往 GitHub 下载”按钮打开 Releases 页面，由用户手动下载安装。
 
 检查时机：启动器每次打开时检查一次，以及用户手动点“检查更新”；不定时、不在后台重复。两者都只在设置中开启了更新时进行（默认关闭）。启动时的检查只在发现新版本时提示，失败只记日志。

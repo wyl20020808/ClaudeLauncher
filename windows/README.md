@@ -44,7 +44,8 @@ artifacts\bin\ClaudeLauncher.exe --self-test | Write-Output
 - 删除准入（01、运行中、启动或检查中、登录保护中均拒绝）；
 - 登录保护准入（其他账号、未管理实例、目标重复主进程、其他账号进行中均拒绝）、保护期间只能打开目标、持久化与清除；
 - 检查期间原 PID 退出或被替换时不自动重启、不切换；
-- 更新协议（一次性 RSA-3072 测试密钥）：`latest-windows.json` 验签与签名原文格式、篡改哈希/大小拒绝、其他密钥拒绝、平台/文件名/版本格式/大小上限/哈希格式/minimumOS 不符拒绝（即使签名正确）、非 Base64 签名与超大清单拒绝、`latest-macos.json` 验签；版本比较只升不降；系统版本比较；跳转白名单（GitHub 三个下载域名允许，其他域名、HTTP、非默认端口、相似域名拒绝，自建服务任何跳转拒绝）；来源顺序；Authenticode 签名者规则与未签名文件识别；内置公钥为 RSA-3072。
+- 更新协议（一次性 RSA-3072 测试密钥）：`latest-windows.json` 验签与签名原文格式、篡改哈希/大小拒绝、其他密钥拒绝、平台/文件名/版本格式/大小上限/哈希格式/minimumOS 不符拒绝（即使签名正确）、非 Base64 签名与超大清单拒绝、`latest-macos.json` 验签；版本比较只升不降；系统版本比较；Authenticode 签名者规则与未签名文件识别；内置公钥为 RSA-3072。
+- 网络边界：`UrlAllowed` 允许本项目清单／Setup 首次请求、同仓库标签下载路径及两个 GitHub 附件主机作跳转；拒绝 HTTP、非 443、用户信息、其他仓库、任意路径、查询串、其他清单、相似域名、自建服务、claude.ai、anthropic.com 等（每个地址首次与跳转两种情形）；未开启更新时检查与下载在创建任何请求前拒绝（请求计数不变）。设置文件默认关闭、保存往返、覆盖不残留临时文件、损坏／未知版本／类型不符回落关闭。
 
 1.2.0 兼容的 `--apply-update` 原地替换改动后，另运行 `scripts/test-install.ps1`。
 
@@ -62,20 +63,21 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup.ps1
 - 先卸载再安装（SPEC）：用固定 AppId 查当前用户的卸载项；已安装时提示“检测到已安装 x.y.z，将先卸载再安装新版”。随后按 PID 核对、对旧安装目录中运行的启动器窗口发送正常关闭（WM_CLOSE，不结束进程，不涉及 Claude），等待退出；再静默运行旧版卸载程序，等卸载项和旧卸载程序都消失后才安装新版。启动器无法正常关闭（如删除未完成）或旧版卸载失败、超时，都中止安装并提示原因。
 - 卸载只删除安装的 `ClaudeLauncher.exe`、卸载程序以及自建更新在安装目录内留下的 `.previous-*`、`.new-*`、`.failed-*` 文件。**不删除任何账号数据目录**（`%APPDATA%\Claude-*`、`%LOCALAPPDATA%\Claude-Data`、商店版 `Packages\Claude_*`），也不删除启动器日志、登录保护和删除状态目录 `%LOCALAPPDATA%\Claude-MultiLauncher`。
 - 升级覆盖安装时，Inno Setup 只会请求关闭占用本程序文件的进程（启动器本身），不涉及 Claude。
-- 版本号 1.7.2（程序集 1.7.2.0，见 `src/Updates.cs`）；与 macOS 各自递增，不要求一致。
+- 版本号 1.7.3（程序集 1.7.3.0，见 `src/Updates.cs`）；与 macOS 各自递增，不要求一致。
 - 安装向导为简体中文：`installer/ChineseSimplified.isl` 取自 Inno Setup 官方源码 `Files/Languages/ChineseSimplified.isl`（6.5.0+；6.7.3 安装包未自带）。
 - **代码签名：未签名。** 本机没有代码签名证书，安装程序和 `ClaudeLauncher.exe` 都没有 Authenticode 签名。客户首次运行会看到 SmartScreen“Windows 已保护你的电脑”，需点“更多信息 → 仍要运行”；部分杀毒软件可能更谨慎。需要正式证书（OV/EV）后在打包时对 exe 和 setup.exe 签名，此项待用户决定。
 - 应用内更新运行 Setup 的参数 `/SILENT /SUPPRESSMSGBOXES /NORESTART /RELAUNCH=1`：只显示中文进度窗口（“正在卸载旧版… / 正在安装”），不显示向导页和确认框；`/RELAUNCH=1` 仅在静默模式下让 Setup 装好后重新打开启动器。1.7.1 及更早版本用 `/VERYSILENT`，不显示任何窗口。
 
 ## 应用内更新（SPEC 更新与安装）
 
-- 入口：系统设置“检查更新”；启动 8 秒后若距上次检查超过 24 小时自动检查一次（失败只记日志）。
-- 来源：自建服务 `Updates.BaseUrl` + `latest-windows.json` → 失败回退 `https://github.com/wyl20020808/ClaudeLauncher/releases/latest/download/latest-windows.json` → 都失败时列出原因并提供“前往 GitHub 下载”（打开 Releases 页面）。
+- 开关（feature/windows-update-boundary 起）：`allowUpdates` 默认关闭，保存在 `%LOCALAPPDATA%\Claude-MultiLauncher\settings.json`；系统设置“检查启动器更新”切换后需点“保存设置”。未开启时设置页“检查更新”与托盘“检查更新…”都不联网，只提示开启；有未保存设置时不开始；下载期间设置被改则安装前取消并删除临时文件。
+- 时机：开启后每次打开启动器检查一次（只在有新版时提示，失败只记日志）+ 手动检查；没有定时或后台重复检查，已删除 8 秒／24 小时自动检查及 `last-update-check`。
+- 来源：只用 `https://github.com/wyl20020808/ClaudeLauncher/releases/latest/download/latest-windows.json` 与同 Release 的 Setup；失败时显示原因并提供“前往 GitHub 下载”（打开 Releases 页面）。自建服务与“取较高版本”已从客户端移除（发布脚本过渡期仍为旧客户端同步自建服务）。
 - 清单：`platform=windows`、`version` x.y.z、`file=ClaudeLauncherSetup-<版本>.exe`、`size`（1 KB～50 MB）、小写 `sha256`、`minimumOS`、`signature`；签名原文为 platform、version、file、size、sha256 各一行（`\n` 结尾），RSA-3072 + SHA-256（PKCS#1 v1.5），公钥 `assets/update-public-key.xml`（与 macOS 同一把）。清单上限 16 KB。
-- 网络：只走 HTTPS（TLS 1.2）；不自动跳转，自建服务出现任何跳转即拒绝，GitHub 只允许跳到 `github.com`、`objects.githubusercontent.com`、`release-assets.githubusercontent.com`（HTTPS、默认端口），最多 5 跳；每次请求 15 秒超时，清单 30 秒、安装包 300 秒总时限，并按清单 `size` 限制下载字节数。
-- 只升级不降级；系统低于 `minimumOS` 时只提示不安装。下载到 `%LOCALAPPDATA%\Claude-MultiLauncher\updates\<随机>\`，大小或 SHA-256 不符即删除并换下一个来源。
+- 网络：只走 HTTPS（TLS 1.2，证书校验保持系统默认）；所有地址经 `Updates.UrlAllowed` 在创建请求前校验：首次请求只允许上面的清单与严格版本文件名 Setup；不自动跳转，跳转只允许同仓库 `releases/download/<标签>/` 下的同类文件及 `objects.githubusercontent.com`、`release-assets.githubusercontent.com`；一律 443、无用户信息，最多 5 跳。请求不带凭据、不预认证、无 Cookie、不缓存；每次请求 15 秒超时，清单 30 秒、安装包 300 秒总时限，并按清单 `size` 限制下载字节数。
+- 只升级不降级；系统低于 `minimumOS` 时只提示不安装。下载到 `%LOCALAPPDATA%\Claude-MultiLauncher\updates\<随机>\`，大小或 SHA-256 不符即删除。
 - 运行前再次核对哈希，并比对 Authenticode 签名者：当前程序已签名时，Setup 必须由同一证书签名且签名有效。**当前程序与 Setup 都没有签名，无法比对签名者，只依赖清单签名与 SHA-256**（SPEC【Windows 差异】）。
-- 进度窗口（1.7.2 起）：确认“立即更新”后显示“下载 → 校验 → 安装”三步；下载有真实进度（MB 与百分比、当前来源），可取消（取消即删除临时文件，不做任何改动），关闭窗口视为取消；来源失败时窗口内自动切换到下一个来源；校验时为不定进度；校验通过后提示“启动器即将关闭…完成后会自动重新打开”，2 秒后启动器关闭，Setup 接着显示中文安装进度。不退出、不结束任何 Claude。
+- 进度窗口（1.7.2 起）：确认“立即更新”后显示“下载 → 校验 → 安装”三步；下载有真实进度（MB 与百分比、来源 GitHub），可取消（取消即删除临时文件，不做任何改动），关闭窗口视为取消；校验时为不定进度；校验通过后提示“启动器即将关闭…完成后会自动重新打开”，2 秒后启动器关闭，Setup 接着显示中文安装进度。不退出、不结束任何 Claude。
 - 1.2.0 兼容：程序保留 `--apply-update`（旧清单 `latest.json` + 单个 exe 原地替换），供仍在 1.2.0 的客户端升级到 1.7.0 单 exe。
 
 ## 发布（发布机）
@@ -132,6 +134,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup.ps1
 9. **1.2.0 遗留的 01 删除标记**：01 不可删，因此 1.2.0 中对 01 发起且未完成的删除无法在启动器内重试，01 会一直提示“删除未完成”。需用户手动处理该标记（`%LOCALAPPDATA%\Claude-MultiLauncher\pending-01`），启动器不自动清除。
 
 ## 验证记录
+
+### 网络边界（2026-10-29，feature/windows-update-boundary）
+
+- 自检（已执行）：`build.ps1 -Preview` 通过，LauncherTests 246 项、`--self-test` 169 项（删去取较高版本 6 项，新增 URL 白名单、离线拒绝与设置文件检查）、离屏预览四页与两种更新状态。设置页离屏图已人工查看，新开关默认关闭、无遮挡。
+- 真实网络只读复核（已执行，构建产物代码经反射调用内部下载函数，不写日志、不落盘）：GitHub `latest-windows.json` 与 `ClaudeLauncherSetup-1.7.3.exe` 的实际跳转链（latest → 标签路径 → 附件主机）均通过白名单，清单验签通过，Setup 2794723 字节、SHA-256 一致；非白名单首次地址在请求前拒绝。
+- GUI（**未验证**）：桌面窗口中切换开关并保存、重开后保持、启动时自动检查的实际提示、未开启时手动／托盘检查的提示、有未保存设置时的拦截、下载与安装流程。
 
 ### 自检与自动检查（2026-10-28，feature/windows-sync，已执行）
 

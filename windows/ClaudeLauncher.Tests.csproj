@@ -36,6 +36,7 @@
     <Compile Include="src\ProfileDeletion.cs" />
     <Compile Include="src\Diagnostics.cs" />
     <Compile Include="src\Updates.cs" />
+    <Compile Include="src\Settings.cs" />
     <Compile Include="src\Storage.cs" />
     <Compile Include="src\LauncherUI.cs" />
     <Compile Include="tests\LauncherTests.cs" />

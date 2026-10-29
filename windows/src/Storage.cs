@@ -281,31 +281,52 @@ namespace ClaudeLauncher {
                 Rejects(() => Updates.Verify(sign(oldName), key, "macos"), "旧的中文 DMG 文件名必须拒绝");
             }
             Check(Updates.Compare("1.10.0", "1.9.9") > 0 && Updates.Compare("1.7.0", "1.7") == 0 && Updates.Compare("1.6.9", "1.7.0") < 0, "版本比较错误");
-            // 取较高版本：自建落后选 GitHub；同版本自建优先、GitHub 作下载备用；全部失败为空；按数值而非字符串比较。
-            var self = new UpdateSource { Name = "自建服务" }; var hub = new UpdateSource { Name = "GitHub", GitHub = true };
-            Func<UpdateSource, string, SourceCheck> found = (s, v) => new SourceCheck { Source = s, Release = new Release { version = v } };
-            Func<UpdateSource, SourceCheck> failed = s => new SourceCheck { Source = s, Failure = "服务器返回 502。" };
-            var picked = Updates.Candidates(new[] { found(self, "1.7.2"), found(hub, "1.7.3") });
-            Check(picked.Length == 1 && picked[0].Source == hub && picked[0].Release.version == "1.7.3", "自建落后时应选 GitHub");
-            picked = Updates.Candidates(new[] { found(self, "1.7.3"), found(hub, "1.7.3") });
-            Check(picked.Length == 2 && picked[0].Source == self && picked[1].Source == hub, "同版本应自建优先、GitHub 备用");
-            picked = Updates.Candidates(new[] { failed(self), found(hub, "1.7.3") });
-            Check(picked.Length == 1 && picked[0].Source == hub, "自建失败时应用 GitHub");
-            Check(Updates.Candidates(new[] { failed(self), failed(hub) }).Length == 0, "全部来源失败应为空");
-            picked = Updates.Candidates(new[] { found(self, "1.10.0"), found(hub, "1.9.9") });
-            Check(picked.Length == 1 && picked[0].Source == self, "版本须按数值比较（1.10.0 > 1.9.9）");
-            var unreachable = Updates.CheckAll(new[] { new UpdateSource { Name = "无效地址", Base = "http://127.0.0.1/" } });
-            Check(unreachable.Length == 1 && unreachable[0].Release == null && !String.IsNullOrEmpty(unreachable[0].Failure), "来源失败须记录原因而不是抛出");
             // 相对当前版本构造“更高/更低”，版本号递增后无需改测试。
             int[] current = Updates.DisplayVersion.Split('.').Select(Int32.Parse).ToArray();
             string higher = current[0] + "." + current[1] + "." + (current[2] + 1);
             Check(!Updates.IsNewer(new Release { version = Updates.DisplayVersion }) && !Updates.IsNewer(new Release { version = "1.6.0" }) && Updates.IsNewer(new Release { version = higher }), "只升级、不降级");
             Check(Updates.OsSupported("10.0.19041", new Version(10, 0, 26200)) && !Updates.OsSupported("10.0.19041", new Version(10, 0, 18363)), "系统版本比较错误");
-            Check(Updates.RedirectAllowed(new Uri("https://objects.githubusercontent.com/x"), true) && Updates.RedirectAllowed(new Uri("https://release-assets.githubusercontent.com/x"), true) && Updates.RedirectAllowed(new Uri("https://github.com/x"), true), "GitHub 下载域名应允许");
-            Check(!Updates.RedirectAllowed(new Uri("https://evil.example/x"), true) && !Updates.RedirectAllowed(new Uri("http://github.com/x"), true) &&
-                !Updates.RedirectAllowed(new Uri("https://github.com:8443/x"), true) && !Updates.RedirectAllowed(new Uri("https://github.com.evil.example/x"), true), "未允许的跳转必须拒绝");
-            Check(!Updates.RedirectAllowed(new Uri("https://github.com/x"), false), "自建服务不允许任何跳转");
-            Check(Updates.Sources().Last().Base == Updates.GitHubBase && Updates.Sources().All(s => s.Base.StartsWith("https://")), "更新来源顺序或协议错误");
+            // SPEC 网络边界：集中 URL 白名单。首次请求只允许本项目 latest/download 下的清单与 Setup；跳转只允许同仓库 Release 下载路径与 GitHub 附件主机。
+            string base_ = Updates.GitHubBase, tagged = "https://github.com/wyl20020808/ClaudeLauncher/releases/download/windows-v1.8.0/";
+            foreach (string ok in new[] { base_ + "latest-windows.json", base_ + "ClaudeLauncherSetup-1.8.0.exe" })
+                Check(Updates.UrlAllowed(new Uri(ok), true) && Updates.UrlAllowed(new Uri(ok), false), "本项目清单与 Setup 地址应允许：" + ok);
+            foreach (string ok in new[] { tagged + "latest-windows.json", tagged + "ClaudeLauncherSetup-1.8.0.exe",
+                "https://objects.githubusercontent.com/github-production-release-asset/1?X-Amz-Signature=a", "https://release-assets.githubusercontent.com/github-production-release-asset/1?sp=r" })
+                Check(Updates.UrlAllowed(new Uri(ok), false), "允许的跳转被拒绝：" + ok);
+            Check(!Updates.UrlAllowed(new Uri(tagged + "latest-windows.json"), true) && !Updates.UrlAllowed(new Uri("https://objects.githubusercontent.com/x"), true), "附件主机与标签路径不能作为首次请求");
+            string[] denied = {
+                "http://github.com/wyl20020808/ClaudeLauncher/releases/latest/download/latest-windows.json",
+                "https://github.com:8443/wyl20020808/ClaudeLauncher/releases/latest/download/latest-windows.json",
+                "https://user:pass@github.com/wyl20020808/ClaudeLauncher/releases/latest/download/latest-windows.json",
+                "https://github.com/other/ClaudeLauncher/releases/latest/download/latest-windows.json",
+                "https://github.com/wyl20020808/ClaudeLauncher/archive/main.zip",
+                "https://github.com/wyl20020808/ClaudeLauncher/releases/latest/download/latest-macos.json",
+                "https://github.com/wyl20020808/ClaudeLauncher/releases/latest/download/ClaudeLauncherSetup-1.8.exe",
+                "https://github.com/wyl20020808/ClaudeLauncher/releases/latest/download/latest-windows.json?x=1",
+                "https://github.com/wyl20020808/ClaudeLauncher/releases/latest/download/../../../../evil/latest-windows.json",
+                "https://github.com.evil.example/wyl20020808/ClaudeLauncher/releases/latest/download/latest-windows.json",
+                "https://evilgithub.com/wyl20020808/ClaudeLauncher/releases/latest/download/latest-windows.json",
+                "https://objects.githubusercontent.com.evil.example/x", "https://objects.githubusercontent.com:8443/x", "http://release-assets.githubusercontent.com/x",
+                "https://www.u4139693.nyat.app:53569/claude-launcher/latest-windows.json",
+                "https://claude.ai/latest-windows.json", "https://api.anthropic.com/latest-windows.json", "https://anthropic.com/x" };
+            foreach (string bad in denied) Check(!Updates.UrlAllowed(new Uri(bad), true) && !Updates.UrlAllowed(new Uri(bad), false), "非白名单地址必须拒绝：" + bad);
+            Check(!Updates.UrlAllowed(null, true) && !Updates.UrlAllowed(new Uri("/relative", UriKind.Relative), false), "空或相对地址必须拒绝");
+            // 离线拒绝：未开启时检查与下载在创建任何请求前拒绝。
+            int before = Updates.Requests;
+            Rejects(() => Updates.Check(false), "未开启更新时检查必须拒绝");
+            Rejects(() => Updates.Download(new Release { platform = "windows", version = "1.8.0", file = "ClaudeLauncherSetup-1.8.0.exe", size = 2048, sha256 = new string('a', 64), minimumOS = "10.0.19041", signature = "AA==" }, false, null, null), "未开启更新时下载必须拒绝");
+            Check(Updates.Requests == before, "未开启更新时不得创建网络请求");
+            // 设置：默认关闭；往返；损坏、未知版本、类型不符回落关闭；保存不留临时文件。
+            string settingsFile = Path.Combine(root, "settings", "settings.json");
+            Check(!LauncherSettings.Load(settingsFile).AllowUpdates, "缺少设置文件时更新应默认关闭");
+            new LauncherSettings { AllowUpdates = true }.Save(settingsFile);
+            Check(LauncherSettings.Load(settingsFile).AllowUpdates, "设置保存后读取不一致");
+            new LauncherSettings { AllowUpdates = false }.Save(settingsFile);
+            Check(!LauncherSettings.Load(settingsFile).AllowUpdates && Directory.GetFiles(Path.GetDirectoryName(settingsFile)).Length == 1, "覆盖保存失败或残留临时文件");
+            foreach (string broken in new[] { "{", "null", "[]", "{\"version\":2,\"allowUpdates\":true}", "{\"allowUpdates\":true}", "{\"version\":1,\"allowUpdates\":\"true\"}", "{\"version\":\"1\",\"allowUpdates\":true}" }) {
+                File.WriteAllText(settingsFile, broken);
+                Check(!LauncherSettings.Load(settingsFile).AllowUpdates, "异常设置必须回落为关闭：" + broken);
+            }
             Check(Updates.SignerProblem(null, null) == null && Updates.SignerProblem("AA", "aa") == null, "签名者规则错误");
             Check(Updates.SignerProblem("AA", null) != null && Updates.SignerProblem("AA", "BB") != null, "签名者不一致必须拒绝");
             string unsigned = Path.Combine(root, "unsigned.exe");
