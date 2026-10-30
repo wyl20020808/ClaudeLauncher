@@ -1,5 +1,11 @@
 # 项目状态
 
+## macOS 1.7.17 已发布（2026-10-30，macos-v1.7.17）
+
+- `scripts/publish-macos.sh` 退出 0：标签 macos-v1.7.17，目标 `3ec4b20`，已转正式并为 Latest（上一版 Latest 为 macos-v1.7.16）。附件 `ClaudeLauncher-1.7.17.dmg` 2283969 字节，SHA-256 `7b351bbc7bc229287b73437cd63bfb720e9e556fb4ad6fa8e8b994b83587fd15`；带入已签名的 `ClaudeLauncherSetup-1.8.3.exe`（2823828 字节）与 latest-windows.json，不重签。草稿附件经 API 逐字节核对，latest/download 复核通过。
+- Windows 交接：[HANDOFF-windows-1.7.17.md](HANDOFF-windows-1.7.17.md)。
+- 未验证：1.7.16 → 1.7.17 软件内更新；/Applications 中的日常版本尚未更新。
+
 ## macOS 1.7.17 发布准备（2026-10-30，dev）
 
 - 内容：同步到账号（多选账号、兼容 Claude 4.4212.0）、用量读取稳定性与歧义收紧、账号配置同步（含链接模式）、用量趋势、登录启动开关、英文界面，以及 Astra 审查的 7 项修复（更新任务隔离、重开失败回滚、发布复核区分下载失败、日志存储防链接与写入失败提示、文档同步）。发布说明 [RELEASE-macos-1.7.17.md](RELEASE-macos-1.7.17.md)，使用说明已同步。
