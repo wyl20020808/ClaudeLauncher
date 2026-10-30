@@ -2,13 +2,16 @@
 
 ## 审查问题修复（2026-10-30，dev，未发布，macOS）
 
+- 第 7 条：README 的 Windows 当前发布版按最新发布记录改为 1.8.3；开发说明改为固定 GitHub Releases、默认关闭、开启后每次启动一次及手动检查，补齐两份离线脚本运行方式。SPEC 的恢复默认统一为确认后立即保存，禁止复制官方图标。已检查 `src/`、`scripts/`、`resources/`、`windows/`，没有 `UPDATE_BASE_URL`／`ClaudeLauncherUpdateBaseURL` 运行时代码残留；历史发布报告未改。
 - 第 6 条：`saveLogs` 返回保存结果；追加失败保留内存记录，清空先写入空列表再清内存，失败则保留原列表。新增离屏 `TestLogWriteFailures`，缺失目录／只读目录下追加、清空失败保留记录，非递归提示只出现一次，以及正常清空写盘均通过；固定证书构建、自检、UI 自检通过。
 - 第 5 条：日志初始化与读写逐级拒绝目录链接，使用 `openat`／`O_NOFOLLOW`；文件须为当前用户普通文件、单链接、≤16 MiB，0600 原子写入。一次性状态提示与日志页失败标记不再进入日志递归。新增 `TestLogStorage`，覆盖目录／上级链接、文件链接、硬链接目标不变、缺失文件、正常读写及大小限制。固定证书构建与自检通过；首轮测试发现 Foundation 标准化会改写 `/private/var`，改用逐组件校验后通过。
 - 第 4 条：开始／取消更新递增任务编号，下载进度与结果、校验完成、延迟安装均拒绝过期任务。新增离屏 `TestUpdateGeneration`，模拟 A 取消、B 开始后 A 的失败、成功和安装回调晚到，验证 B 的窗口与进度不变且仅删除 A 的临时文件；固定证书构建、自检、UI 自检通过。未发网络请求或启动安装器。
 - 第 3 条：发布后的三处附件复核分离下载失败与内容不符；下载失败保留发布、提示“待复核”并返回 2。新增 `scripts/test-release-verification.sh`，三类附件各覆盖超时、正确内容、错误内容，共 9 个离线场景；不实际发布。
 - 第 2 条：更新辅助脚本检查 `open`，失败即恢复旧版并以新增退出码 6 退出。新增 `scripts/test-update-helper.sh`，临时签名夹具的替换失败、签名失败、open 失败、正常重开四种情况均通过；没有真正打开应用。
 - 第 1 条：用量预算耗尽的例外限制为单窗口、单 Code 页面、URL 未变化、唯一完整结果，并拒绝尚有未遍历兄弟分支的情况；保留倒序遍历和长对话兼容。`TestUsageInterface` 新增同页冲突按钮＋2001 子节点、首窗口超预算＋第二窗口反例。固定证书 `scripts/build.sh`（含 `--self-test`）通过。
+- 最终验证：`SIGN_IDENTITY='ClaudeLauncher Local Signing' /bin/zsh scripts/build.sh` 退出 0，16 组自检全部 PASS，无编译警告，通用二进制含 x86_64／arm64，证书未变；`build/Claude 启动器.app/Contents/MacOS/ClaudeLauncher --ui-self-test <随机临时目录>` 退出 0，新增 2 组测试和原有原生控件验收全部 PASS，生成 11 张离屏截图（其中 2 张深色）。两份 zsh 测试脚本重复运行仍分别 4/4、9/9 PASS；5 份相关 shell 脚本语法检查、严格签名验证及 `git diff --check` 均通过。完整输出保存在本机 `build/review-fixes-20261030/RESULTS.txt`；构建、自检、离屏控件验证与真实 GUI 实测分开记录。
 - 本轮只使用合成数据；真实 Claude 界面读取、真实账号操作与 Windows 未验证，也未发布或安装到 `/Applications`。
+- 未验证：真实网络更新／正式发布、真实安装后 LaunchServices 重开、人工 GUI 交互及新增提示的视觉排版。替身只验证 `open` 退出状态，无法证明应用启动后的健康状态；本轮无未完成修复项。首次日志自检的临时目录路径问题修正后复测通过，失败输出另存 `build-5-initial-failure.log` 与 `build-5-fixture-failure.log`。
 
 ## 新版 Claude 兼容、账号配置同步、用量趋势（2026-10-30，dev，未发布，macOS）
 

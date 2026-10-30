@@ -50,7 +50,7 @@
 
 ### Windows
 
-Windows 版为独立的原生实现（C# / WPF），安装包 `ClaudeLauncherSetup-<版本>.exe` 同样发布在 Releases 中，需要 Windows 10 2004（19041）及以上。构建与验证见 [windows/README.md](windows/README.md)。当前发布版为 1.7.3；dev 上已同步更新网络边界、系统设置六分类与账号／日志交互（尚未发布）。
+Windows 版为独立的原生实现（C# / WPF），安装包 `ClaudeLauncherSetup-<版本>.exe` 同样发布在 Releases 中，需要 Windows 10 2004（19041）及以上。构建与验证见 [windows/README.md](windows/README.md)。当前发布版为 1.8.3，发布与待验证事项见 [项目状态](docs/STATUS.md)。
 
 ## 使用
 

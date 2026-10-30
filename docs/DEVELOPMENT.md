@@ -117,14 +117,14 @@ arch -x86_64 "build/Claude 启动器.app/Contents/MacOS/ClaudeLauncher" --self-t
 
 规则见 SPEC“更新与安装”。实现要点：
 
-- 来源：构建时 `UPDATE_BASE_URL=https://…` 写入 Info.plist 的 `ClaudeLauncherUpdateBaseURL`（可不设）；之后固定回退 GitHub Releases `latest/download/`。都失败时提示并提供“前往 GitHub 下载”。
-- 公钥：构建时复制 `windows/assets/update-public-key.xml`（RSA-3072，与 Windows 同一把）。私钥只在 Windows 发布机。
+- 来源：只用本项目 GitHub Releases `latest/download/`，固定目标白名单，不支持自定义地址；更新默认关闭，用户主动开启后才允许请求。失败时提示并提供“前往 GitHub 下载”。
+- 公钥：构建时复制共用的 `windows/assets/update-public-key.xml` 和 macOS 独立公钥 `resources/update-public-key-macos.xml`（包内名称 `macos-publisher-key.xml`），均为 RSA-3072；私钥不进入应用包。
 - 校验：清单形状 + RSA-SHA256 签名 → 版本只升不降、系统版本 → 下载包大小与 SHA-256 → 挂载 DMG，核对包标识、版本 → 新应用须满足当前应用的签名要求（同一证书）→ 复制到同目录隐藏的暂存包并再次核对。
-- 替换：`resources/update-helper.sh` 等启动器退出后，旧版改名备份、新版就位并 `codesign --verify`，失败则回滚旧版；新版启动后把备份移到废纸篓。只动这三个应用包。
-- 入口：系统设置“检查更新”、应用菜单“检查更新…”；启动 8 秒后若距上次检查超过 24 小时自动检查一次（失败只记日志）。
+- 替换：`resources/update-helper.sh` 等启动器退出后，旧版改名备份、新版就位并 `codesign --verify`，失败则回滚旧版；`open` 返回失败也恢复并打开旧版，以退出码 6 退出。成功打开新版后，由新版把备份移到废纸篓。只动这三个应用包。
+- 入口：开启更新后，每次打开启动器检查一次（只在有新版时提示，失败只记日志）；支持系统设置和应用菜单的手动“检查更新”。不开定时器，不重复后台检查；未开启时手动检查也不联网。
 - `ClaudeLauncher --check-signer <应用路径>`：开发用，判断该应用能否作为更新被接受。
 - `scripts/dmg.sh` 输出发布机签名清单需要的 `file`、`size`、`sha256`。
-- `ClaudeLauncher --update-test [--github-only]`：开发用。不弹对话框、自动接受更新，打印每个请求、跳转主机和结果，然后走真实下载与替换。只在临时目录的测试副本上运行（可把副本 Info.plist 的版本调低、改 `ClaudeLauncherUpdateBaseURL` 后用同一证书重签），不要对日常应用运行。
+- `ClaudeLauncher --update-test --allow-updates`：开发用，显式授权联网且自动接受更新，打印请求、跳转主机和结果，再走真实下载与替换。来源仍固定为本项目 GitHub Releases；只在另行授权的临时应用副本上运行，不要对日常应用运行。未传 `--allow-updates` 时直接返回 2。本轮离线回归不运行此命令。
 
 ## macOS 1.7.3 发布交接
 
