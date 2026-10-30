@@ -696,7 +696,7 @@ namespace ClaudeLauncher {
             catch (Exception error) { Alert("导出失败", error.Message); }
         }
         void ShowHelp() {
-            Alert("本地使用帮助", "实例管理：手动启动或打开指定账号；“···”菜单可显示或复制目录、管理登录保护、删除账号（移到回收站）。\n账号管理：查看本机账号空间与运行状态。\n日志记录：本次运行的提示，可导出或清空，仅保留在内存。\n系统设置：编辑后保存；撤销恢复已保存值；恢复默认只填入草稿，不处理账号数据。\n\n启动器不查询 Claude 服务、不读取凭据，不控制官方客户端自身正常联网。联网更新默认关闭，开启后只访问本项目 GitHub。");
+            Alert("本地使用帮助", "实例管理：手动启动或打开指定账号；“···”菜单可显示或复制目录、管理登录保护、删除账号（移到回收站）。\n账号管理：查看本机账号空间与运行状态。\n日志记录：本次运行的提示，可导出或清空，仅保留在内存。\n系统设置：切换或选择即保存生效；恢复默认确认后立即保存，不处理账号数据。\n\n启动器不查询 Claude 服务、不读取凭据，不控制官方客户端自身正常联网。联网更新默认关闭，开启后只访问本项目 GitHub。");
         }
         internal string DiagnosticsText() {
             return "Claude MultiLauncher " + Updates.DisplayVersion + " (" + Updates.Version + ")\nWindows " + Environment.OSVersion.Version +
