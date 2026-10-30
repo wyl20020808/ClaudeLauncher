@@ -142,6 +142,8 @@ arch -x86_64 "build/Claude 启动器.app/Contents/MacOS/ClaudeLauncher" --self-t
 - `src/Handoff.m/.h` 本地交接：只追加的 CLAUDE.md 规则写入、HANDOFF.md 元数据与时间、两段指令文本；`TestHandoff` 合入 `--self-test`（临时目录）。
 - `src/ProxyCheck.m/.h` 启动前本机代理检测（SystemConfiguration.framework，只连回环端口；`KnownProxyApps` 识别代理软件名）；`TestProxyCheck` 合入 `--self-test`，`--proxy-check` 输出本机结果。
 - `src/Localization.m/.h` 界面语言：`L(@"中文")` 在英文模式下查 `resources/i18n/english.strings`（构建时复制进包），未收录则回退原文；`TestLocalization` 合入 `--self-test`，校验词典可载入且格式占位符一致。新增界面文字时用 `L()` 包裹并补词典；内部状态码、日志级别与路径不包裹。离屏英文截图：`CLAUDE_LAUNCHER_SNAPSHOT_ENGLISH=1 ClaudeLauncher --snapshot <png> <页码>`，不改已保存设置。
+- `src/ConfigSync.m/.h` 账号配置同步：`ConfigSyncItems` 只列白名单条目及状态，`ApplyConfigSync` 默认只补缺、覆盖时旧内容进废纸篓；`TestConfigSync` 合入 `--self-test`（临时目录，不触碰真实配置）。
+- `src/UsageTrend.m/.h` 用量趋势：追加／校验 `usageTrend` 点、按重置分段预测剩余时间、轮换建议与图表视图；`TestUsageTrend` 合入 `--self-test`（合成数据）。
 - `src/Settings.m/.h` 管理默认值、类型／范围白名单、本地别名校验、日志组合筛选及更新 URL 白名单；`TestSettings` 合入 `--self-test`。
 - 构建加入系统 ServiceManagement.framework，无第三方依赖。固定证书构建到 `build/local-settings/`，保留已安装应用和其他开发构建。
 - 运行 `build/local-settings/'Claude 启动器.app'/Contents/MacOS/ClaudeLauncher --ui-self-test build/local-settings/checks`：在随机独立偏好 suite 中进行原生控件 target/action 测试，结束清理 suite；只用合成账号／日志，不运行正常启动生命周期、不扫描真实账号、不启动 Claude、不注册登录项，不创建网络会话。

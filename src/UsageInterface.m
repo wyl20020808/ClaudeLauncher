@@ -121,7 +121,7 @@ static BOOL UsageURL(NSString *value) {
 @property (copy) id (^attribute)(id,NSString *);
 @property NSUInteger count;
 @property NSTimeInterval deadline;
-@property BOOL limited;
+@property BOOL limited, changed;
 @property NSMutableArray *matches;
 @property NSHashTable *visited;
 @property NSUInteger codeAreas;
@@ -207,13 +207,19 @@ static BOOL UsageURL(NSString *value) {
     }
     if ([@[@"AXStaticText",@"AXTextArea",@"AXTextField",@"AXImage",@"AXLink",@"AXHeading",@"AXTable",@"AXOutline",@"AXList"] containsObject:role]) return;
     // No text/values are read from conversations. Only structural attributes and recognized quota controls.
-    for (id child in [self children:node]) [self walk:child parent:node page:page depth:depth+1];
-    if (codeArea && ![[self url:node] isEqual:page]) { self.limited = YES; }
+    // Newest-first: the composer and its quota button sit after long transcripts, so reach them before the node budget runs out.
+    for (id child in [[self children:node] reverseObjectEnumerator]) [self walk:child parent:node page:page depth:depth+1];
+    if (codeArea) {
+        // One direct read even after the budget ran out, so an unfinished walk still detects navigation.
+        id value = self.attribute(node,@"AXURL"); NSString *now = [value isKindOfClass:NSURL.class] ? [value absoluteString] : String(value);
+        if (![now isEqual:page]) self.limited = self.changed = YES;
+    }
 }
 - (NSDictionary *)result:(NSArray *)windows {
     self.matches = [NSMutableArray array]; self.visited = [NSHashTable hashTableWithOptions:NSPointerFunctionsStrongMemory];
     for (id window in windows) [self walk:window parent:nil page:nil depth:0];
-    if (self.limited) return @{@"status":@"界面读取未完成"};
+    // One fully verified control in this PID belongs to this account; an unfinished walk elsewhere cannot change its value.
+    if (self.limited && (self.changed || !(self.matches.count == 1 && [self.matches.firstObject[@"status"] isEqual:@"界面已读取"]))) return @{@"status":@"界面读取未完成"};
     if (self.matches.count > 1) return @{@"status":@"多个用量界面，待核对"};
     return self.matches.firstObject ?: @{@"status":self.codeAreas ? @"未观察到 Code 用量控件" : @"未观察到 Code 用量页面"};
 }
@@ -471,6 +477,15 @@ void TestUsageInterface(void) {
         NSCAssert(!(n == conversation && ![key isEqual:@"AXRole"]),@"conversation values never read"); return n[key];
     };
     NSCAssert([privacy result:@[page(@[conversation,button])]][@"fh"],@"quota still readable with conversation skipped");
+    NSMutableArray *transcript = [NSMutableArray array];
+    for (NSUInteger i=0;i<2001;i++) [transcript addObject:node(@"AXGroup",@{},@[])];
+    NSDictionary *longChat = node(@"AXGroup",@{},transcript);
+    NSCAssert([read(@[page(@[longChat,button])])[@"fh"][@"percent"] isEqual:@52],@"long transcripts cannot hide a verified quota control");
+    NSCAssert(!read(@[page(@[longChat])])[@"fh"] && [read(@[page(@[longChat])])[@"status"] isEqual:@"界面读取未完成"],@"unfinished walk without a control stays unfinished");
+    UsageAXReader *moving = [UsageAXReader new]; moving.deadline = NSProcessInfo.processInfo.systemUptime+5;
+    __block NSUInteger urlReads = 0; NSDictionary *movingPage = page(@[button]);
+    moving.attribute = ^id(id n,NSString *key) { if (n == movingPage && [key isEqual:@"AXURL"] && ++urlReads > 1) return [NSURL URLWithString:@"https://claude.ai/epitaxy/other"]; return n[key]; };
+    NSCAssert(![moving result:@[movingPage]][@"fh"],@"page change during read discards the match");
     NSDictionary *deep = node(@"AXGroup",@{},@[secondButton]);
     for (NSUInteger i=0;i<45;i++) deep = node(@"AXGroup",@{},@[deep]);
     NSCAssert(read(@[page(@[deep,button])])[@"fh"] && !read(@[page(@[deep])])[@"fh"],@"deep unrelated branches cannot block supported quota controls or become quota candidates");
