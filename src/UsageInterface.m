@@ -121,7 +121,8 @@ static BOOL UsageURL(NSString *value) {
 @property (copy) id (^attribute)(id,NSString *);
 @property NSUInteger count;
 @property NSTimeInterval deadline;
-@property BOOL limited, changed;
+@property BOOL limited, changed, unvisitedBranches;
+@property id oversizedBranch;
 @property NSMutableArray *matches;
 @property NSHashTable *visited;
 @property NSUInteger codeAreas;
@@ -138,7 +139,7 @@ static BOOL UsageURL(NSString *value) {
 - (NSArray *)children:(id)node {
     id children = [self read:node key:@"AXChildren"];
     if (!children) return @[];
-    if (![children isKindOfClass:NSArray.class] || [children count] > 2000) { self.limited = YES; return @[]; }
+    if (![children isKindOfClass:NSArray.class] || [children count] > 2000) { self.limited = YES; self.oversizedBranch = node; return @[]; }
     return children;
 }
 - (NSString *)url:(id)node {
@@ -175,7 +176,7 @@ static BOOL UsageURL(NSString *value) {
     return !self.limited;
 }
 - (void)walk:(id)node parent:(id)parent page:(NSString *)page depth:(NSUInteger)depth {
-    if (self.limited) return;
+    if (self.limited) { if (node != self.oversizedBranch) self.unvisitedBranches = YES; return; }
     // shortcut: only quota layouts within 40 levels are supported; validate deeper layouts before extending this scope.
     if (depth > 40 || [self.visited containsObject:node]) return;
     [self.visited addObject:node];
@@ -219,7 +220,9 @@ static BOOL UsageURL(NSString *value) {
     self.matches = [NSMutableArray array]; self.visited = [NSHashTable hashTableWithOptions:NSPointerFunctionsStrongMemory];
     for (id window in windows) [self walk:window parent:nil page:nil depth:0];
     // One fully verified control in this PID belongs to this account; an unfinished walk elsewhere cannot change its value.
-    if (self.limited && (self.changed || !(self.matches.count == 1 && [self.matches.firstObject[@"status"] isEqual:@"界面已读取"]))) return @{@"status":@"界面读取未完成"};
+    // This exception only covers the final oversized branch; unvisited siblings may contain another quota control.
+    if (self.limited && (windows.count != 1 || self.codeAreas != 1 || self.changed || self.unvisitedBranches ||
+        !(self.matches.count == 1 && [self.matches.firstObject[@"status"] isEqual:@"界面已读取"]))) return @{@"status":@"界面读取未完成"};
     if (self.matches.count > 1) return @{@"status":@"多个用量界面，待核对"};
     return self.matches.firstObject ?: @{@"status":self.codeAreas ? @"未观察到 Code 用量控件" : @"未观察到 Code 用量页面"};
 }
@@ -481,6 +484,13 @@ void TestUsageInterface(void) {
     for (NSUInteger i=0;i<2001;i++) [transcript addObject:node(@"AXGroup",@{},@[])];
     NSDictionary *longChat = node(@"AXGroup",@{},transcript);
     NSCAssert([read(@[page(@[longChat,button])])[@"fh"][@"percent"] isEqual:@52],@"long transcripts cannot hide a verified quota control");
+    NSDictionary *differentButton = node(@"AXPopUpButton",@{@"AXDescription":@"用量：5 小时限额的 75%"},@[]);
+    NSDictionary *firstGroup = node(@"AXGroup",@{},@[button]), *otherGroup = node(@"AXGroup",@{},@[differentButton]);
+    NSCAssert(!read(@[page(@[otherGroup,longChat,firstGroup])])[@"fh"],@"unfinished same-page traversal cannot hide a conflicting quota button");
+    UsageAXReader *twoWindows = [UsageAXReader new]; twoWindows.deadline = NSProcessInfo.processInfo.systemUptime+5;
+    twoWindows.attribute = ^id(id n,NSString *key) { return n[key]; };
+    NSDictionary *multipleWindows = [twoWindows result:@[node(@"AXWindow",@{},@[page(@[longChat,button])]),node(@"AXWindow",@{},@[page(@[differentButton])])]];
+    NSCAssert(!multipleWindows[@"fh"],@"first window exhausting budget cannot hide a second window");
     NSCAssert(!read(@[page(@[longChat])])[@"fh"] && [read(@[page(@[longChat])])[@"status"] isEqual:@"界面读取未完成"],@"unfinished walk without a control stays unfinished");
     UsageAXReader *moving = [UsageAXReader new]; moving.deadline = NSProcessInfo.processInfo.systemUptime+5;
     __block NSUInteger urlReads = 0; NSDictionary *movingPage = page(@[button]);
