@@ -134,6 +134,8 @@ arch -x86_64 "build/Claude 启动器.app/Contents/MacOS/ClaudeLauncher" --self-t
 
 更新辅助脚本的离线回归测试：`/bin/zsh scripts/test-update-helper.sh`。脚本在随机临时目录创建签名应用夹具，替换 `open` 与故障场景的 `mv`，覆盖替换失败、签名失败、重新打开失败和正常重开；不操作 `/Applications`，也不真正打开应用。重新打开新版失败的退出码为 6，恢复旧版后仍返回该失败码。
 
+发布附件复核的离线回归测试：`/bin/zsh scripts/test-release-verification.sh`。只加载 `release-verification.sh` 中的函数，用替身 `curl` 和 `revert` 分别模拟三类附件的超时、正确内容、错误内容，共 9 个场景；只有错误内容回滚。实际发布复核下载失败时保留发布、提示“待复核”，返回 2；测试不运行发布流程。
+
 - 密钥：`scripts/release-key.m`（编译为 `build/release-key`，用固定证书签名，标识 `local.claude.profile-launcher.release-key`）。`create` 在登录钥匙串生成 RSA-3072 私钥，**不可导出**（创建后立即尝试导出，若成功则删除并报错）；`public` 输出公钥 XML；`sign` / `verify` 用于清单。私钥不打印、不进仓库或 DMG。注意：“不可导出”必须写在 `SecKeyCreateRandomKey` 的顶层参数，只写在 `kSecPrivateKeyAttrs` 中会被忽略（实测）。
 - 发布：`scripts/publish-macos.sh [--dry-run]`。要求工作区干净、当前提交已推送、`gh` 已登录、钥匙串公钥与 `resources/update-public-key-macos.xml` 一致；版本必须高于 GitHub 上当前的 `latest-macos.json`。流程见脚本头注释与 SPEC。上传后先经 API 核对草稿附件；转为 Latest 后最多等 10 分钟 latest/download 缓存。仅内容不符才回滚（改回草稿并恢复上一版 Latest）；缓存未及时更新时保留发布、以状态 2 退出，稍后手动复核即可。自建服务由 Windows 端定时同步，脚本不操作。
 - 包内 Mac 公钥文件名为 `macos-publisher-key.xml`（不能以 `-macos` 结尾，见 SPEC【macOS 差异】）。

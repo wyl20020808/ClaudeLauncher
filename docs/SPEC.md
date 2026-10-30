@@ -316,6 +316,7 @@ Windows 对应：重解析点（符号链接、junction）等同链接；硬链�
 - 上传后先经 GitHub API 下载草稿附件，核对附件清单与逐字节内容（不经 latest/download 缓存）；不符则停在草稿，原 Latest 不变（Windows 另保证此时尚未切换自建服务清单）。
 - 转正式前记下上一版 Latest。只有内容确认不符才回滚：改回草稿，并显式把上一版设回 Latest（Windows 同时恢复自建清单），避免 GitHub 自动选中更早版本导致 latest/download 失效。
 - latest/download 最多等 10 分钟；仅缓存未更新（Windows 另含自建服务暂时不可达）时保留发布、提示稍后复核并以状态 2 退出。
+- macOS 正式发布后的 Windows 清单、DMG、Setup 复核若下载失败，同样保留发布并以状态 2 提示“待复核”；只有成功下载后确认内容或哈希不符才回滚。
 - `--dry-run`／`-DryRun` 只构建、签名、本地校验与带入核对，不创建 Release；Windows 允许测试密钥，同名 Release 已存在时只警告。
 
 **每个正式 Release 都必须同时包含两端当前的清单与安装包。** GitHub 回退地址 `releases/latest/download/` 只指向最新的一个 Release；若只放一个平台的文件，另一平台回退时会 404。
