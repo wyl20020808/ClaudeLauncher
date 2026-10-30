@@ -7,7 +7,7 @@ $framework = Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319'
 if (-not (Test-Path (Join-Path $framework 'csc.exe'))) { $framework = Join-Path $env:WINDIR 'Microsoft.NET\Framework\v4.0.30319' }
 $compiler = Join-Path $framework 'csc.exe'
 $references = @('System.dll', 'System.Core.dll', 'System.Management.dll', 'System.Xaml.dll', 'System.Web.Extensions.dll', 'System.Drawing.dll', 'System.Windows.Forms.dll')
-foreach ($name in @('WindowsBase.dll', 'PresentationCore.dll', 'PresentationFramework.dll')) { $references += Join-Path $framework ('WPF\' + $name) }
+foreach ($name in @('WindowsBase.dll', 'PresentationCore.dll', 'PresentationFramework.dll', 'UIAutomationClient.dll', 'UIAutomationTypes.dll')) { $references += Join-Path $framework ('WPF\' + $name) }
 $arguments = @('/nologo', '/optimize+', '/platform:anycpu', '/utf8output')
 foreach ($reference in $references) { $arguments += '/reference:' + $reference }
 $icon = Join-Path $projectRoot 'assets/app.ico'
@@ -36,7 +36,7 @@ foreach ($name in $widths.Keys) {
     $arguments += '/resource:' + $target + ',ClaudeLauncher.UI.' + $name
 }
 $output = Join-Path $bin 'ClaudeLauncher.exe'
-$sources = @((Join-Path $projectRoot 'src/ClaudeLauncher.cs'), (Join-Path $projectRoot 'src/ProfileDeletion.cs'), (Join-Path $projectRoot 'src/Diagnostics.cs'), (Join-Path $projectRoot 'src/Updates.cs'), (Join-Path $projectRoot 'src/Settings.cs'), (Join-Path $projectRoot 'src/Storage.cs'), (Join-Path $projectRoot 'src/LauncherUI.cs'), (Join-Path $projectRoot 'src/ProxyCheck.cs'))
+$sources = @((Join-Path $projectRoot 'src/ClaudeLauncher.cs'), (Join-Path $projectRoot 'src/ProfileDeletion.cs'), (Join-Path $projectRoot 'src/Diagnostics.cs'), (Join-Path $projectRoot 'src/Updates.cs'), (Join-Path $projectRoot 'src/Usage.cs'), (Join-Path $projectRoot 'src/Settings.cs'), (Join-Path $projectRoot 'src/Storage.cs'), (Join-Path $projectRoot 'src/LauncherUI.cs'))
 & $compiler @arguments /target:winexe ('/win32icon:' + $icon) ('/win32manifest:' + (Join-Path $projectRoot 'src/app.manifest')) ('/out:' + $output) @sources
 if ($LASTEXITCODE -ne 0) { throw 'GUI build failed.' }
 $test = Join-Path $bin 'LauncherTests.exe'

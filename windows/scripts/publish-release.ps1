@@ -11,7 +11,10 @@
 # - 两端同时发布（给出 -MacSize/-MacSha256）：标签 v<版本>，macOS 先把 DMG 传到同名草稿 Release。
 # - 只发布 Windows（不给 macOS 参数）：标签 windows-v<版本>，从当前最新 Release 取出 latest-macos.json 与对应 DMG，
 #   验签核对后一并放进新 Release，保证 GitHub latest/download 回退对 macOS 仍然有效；自建服务的 macOS 清单不动。
-# 任一步失败都不留下半成品：正式发布之后的失败会恢复自建清单并把 Release 改回草稿。私钥只在内存中使用，不落盘、不输出。
+# 上传后先经 GitHub API 下载草稿附件逐字节核对（不经 latest/download 缓存），不符则停在草稿，原 Latest 与自建服务不变。
+# 转正式前记下上一版 Latest；只有内容确认不符才回滚：恢复自建清单、改回草稿并显式把上一版设回 Latest。
+# latest/download 最多等 10 分钟；仅缓存未更新或自建服务暂时不可达时保留发布、列出未完成的复核并以状态 2 退出。
+# -DryRun 只构建、签名、本地校验，不上传（允许测试密钥；同名 Release 已存在时只警告）。私钥只在内存中使用，不落盘、不输出。
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Security
 Add-Type -AssemblyName System.Web.Extensions
@@ -88,7 +91,8 @@ if ($joint) {
     & $ghExe release view $tag --repo $Repository --json tagName *> $null
     $exists = $LASTEXITCODE -eq 0
     $ErrorActionPreference = 'Stop'
-    if ($exists) { throw ('Release ' + $tag + ' already exists. Increase the version instead of republishing.') }
+    if ($exists -and -not $DryRun) { throw ('Release ' + $tag + ' already exists. Increase the version instead of republishing.') }
+    if ($exists) { Write-Output ('WARNING: release ' + $tag + ' already exists; a real publish would stop here. Continuing the dry run.') }
     $latestTag = (& $ghExe release view --repo $Repository --json tagName | ConvertFrom-Json).tagName
     if ($LASTEXITCODE -ne 0 -or -not $latestTag) { throw 'Cannot find the latest published release to carry macOS files from.' }
     Invoke-Gh release download $latestTag --repo $Repository --pattern 'latest-macos.json' --dir $staging
@@ -167,8 +171,49 @@ if ($joint) {
     Invoke-Gh release create $tag @assets (Join-Path $staging $dmgName) --repo $Repository --draft --target $commit --title ('Windows ' + $version) --notes ('Windows ' + $version + '. macOS files carried from the previous release so GitHub fallback keeps working on both platforms.')
 }
 
+# 发布前经 GitHub API 下载草稿附件逐字节核对（不经 latest/download 缓存）；不符则停在草稿，原 Latest 与自建服务都不变。
+Step 'Verify draft assets via the GitHub API (not the latest/download cache)'
+$expectedAssets = @($setupName, 'latest-windows.json', 'latest-macos.json', $dmgName) | Sort-Object
+$draftAssets = @((& $ghExe release view $tag --repo $Repository --json assets | ConvertFrom-Json).assets | ForEach-Object { $_.name }) | Sort-Object
+if ($LASTEXITCODE -ne 0 -or (($draftAssets -join ',') -ne ($expectedAssets -join ','))) { throw ('Draft ' + $tag + ' assets are ' + ($draftAssets -join ',') + '; expected ' + ($expectedAssets -join ',') + '. Draft kept, not published.') }
+$draftDir = Join-Path $staging 'draft'
+[IO.Directory]::CreateDirectory($draftDir) | Out-Null
+Invoke-Gh release download $tag --repo $Repository --dir $draftDir
+foreach ($name in $expectedAssets) {
+    $downloaded = Join-Path $draftDir $name
+    if (-not (Test-Path -LiteralPath $downloaded) -or [ClaudeLauncher.Updates]::Hash($downloaded) -ne [ClaudeLauncher.Updates]::Hash((Join-Path $staging $name))) { throw ('Draft asset ' + $name + ' differs from the local file. Draft kept, not published.') }
+}
+Write-Output ('  draft assets match: ' + ($expectedAssets -join ', '))
+
+# 转正式前记下上一版 Latest，回滚时显式恢复，避免 GitHub 自动选到更早的版本使 latest/download 失效。
+$ErrorActionPreference = 'Continue'
+$previousLatest = (& $ghExe api ('repos/' + $Repository + '/releases/latest') --jq .tag_name 2>$null)
+$ErrorActionPreference = 'Stop'
+if ($previousLatest) { $previousLatest = $previousLatest.Trim() }
+Write-Output ('  previous Latest: ' + $(if ($previousLatest) { $previousLatest } else { '(none)' }))
+
 $switched = @()
 $published = $false
+# 只在确认内容不符时调用：恢复自建清单，Release 改回草稿，并把上一版设回 Latest。
+function Revert([string]$reason) {
+    Write-Output ('FAILED: ' + $reason + ' -- rolling back.')
+    foreach ($name in $script:switched) {
+        $target = Join-Path $PublicDirectory $name
+        if (Test-Path -LiteralPath ($target + '.previous')) { Copy-Item -LiteralPath ($target + '.previous') -Destination $target -Force }
+        else { Remove-Item -LiteralPath $target }
+    }
+    if ($script:published) {
+        $ErrorActionPreference = 'Continue'
+        & $ghExe release edit $tag --repo $Repository --draft=true *> $null
+        if ($previousLatest) { & $ghExe release edit $previousLatest --repo $Repository --latest *> $null }
+        $ErrorActionPreference = 'Stop'
+    }
+    throw ($reason + ' (rolled back: ' + $tag + ' is a draft again' + $(if ($previousLatest) { ', ' + $previousLatest + ' restored as Latest' } else { '' }) + ')')
+}
+function Fetch([string]$uri, [string]$path, [int]$redirects, [int]$seconds) {
+    Invoke-WebRequest -UseBasicParsing -Uri $uri -OutFile $path -MaximumRedirection $redirects -TimeoutSec $seconds -Headers @{ 'Cache-Control' = 'no-cache' }
+}
+
 try {
     Step 'Switch self-hosted manifests'
     $names = @('latest-windows.json', 'latest.json')
@@ -184,36 +229,54 @@ try {
     Step ('Publish ' + $tag)
     Invoke-Gh release edit $tag --repo $Repository --draft=false --latest
     $published = $true
+} catch { Revert ('publish step failed: ' + $_) }
 
-    Step 'Verify both sources'
-    # 客户端已不再读取自建服务；过渡期仍为 1.7.3 及更早客户端发布并复核，地址只保留在发布脚本中。
-    $base = 'https://www.u4139693.nyat.app:53569/claude-launcher/'
-    $sources = @(@('self-hosted', $base, 0), @('GitHub', [ClaudeLauncher.Updates]::GitHubBase, 5))
-    foreach ($source in $sources) {
-        foreach ($platform in @('windows', 'macos')) {
-            $name = 'latest-' + $platform + '.json'
-            $download = Join-Path $staging ('check-' + $source[0] + '-' + $name)
-            Invoke-WebRequest -UseBasicParsing -Uri ($source[1] + $name) -OutFile $download -MaximumRedirection $source[2] -TimeoutSec 60
-            $remote = VerifyManifest ([IO.File]::ReadAllText($download)) $platform
-            $expected = $manifests[$name]
-            # 只发布 Windows 时，自建服务的 macOS 清单保持原样，只要求验签通过且不低于随附版本。
-            $sameAsExpected = $remote.version -eq $expected.version -and $remote.sha256 -eq $expected.sha256 -and $remote.size -eq $expected.size
-            if (-not $sameAsExpected -and -not (-not $joint -and $platform -eq 'macos' -and $source[0] -eq 'self-hosted' -and [ClaudeLauncher.Updates]::Compare($remote.version, $expected.version) -ge 0)) { throw ($source[0] + ' serves a different ' + $name) }
-            $package = Join-Path $staging ('check-' + $source[0] + '-' + $platform + '.bin')
-            Invoke-WebRequest -UseBasicParsing -Uri ($source[1] + [Uri]::EscapeDataString($remote.file)) -OutFile $package -MaximumRedirection $source[2] -TimeoutSec 600
-            if ((Get-Item -LiteralPath $package).Length -ne $remote.size -or [ClaudeLauncher.Updates]::Hash($package) -ne $remote.sha256) { throw ($source[0] + ' package does not match ' + $name) }
-            Write-Output ('  ' + $source[0] + ' ' + $platform + ' ' + $remote.version + ': OK')
-        }
-    }
-    Step ('Published ' + $tag + '. Staging kept at ' + $staging)
-} catch {
-    $failure = $_
-    Write-Output ('FAILED: ' + $failure + ' -- rolling back.')
-    foreach ($name in $switched) {
-        $target = Join-Path $PublicDirectory $name
-        if (Test-Path -LiteralPath ($target + '.previous')) { Copy-Item -LiteralPath ($target + '.previous') -Destination $target -Force }
-        else { Remove-Item -LiteralPath $target }
-    }
-    if ($published) { & $ghExe release edit $tag --repo $Repository --draft=true }
-    throw $failure
+$pendingChecks = @()
+# 客户端已不再读取自建服务；过渡期仍为 1.7.3 及更早客户端发布并复核，地址只保留在发布脚本中。
+Step 'Verify the self-hosted service (transition for 1.7.3 and older clients)'
+$base = 'https://www.u4139693.nyat.app:53569/claude-launcher/'
+foreach ($platform in @('windows', 'macos')) {
+    $name = 'latest-' + $platform + '.json'
+    $download = Join-Path $staging ('check-self-hosted-' + $name)
+    try { Fetch ($base + $name) $download 0 60 } catch { $pendingChecks += ('self-hosted ' + $name + ' unreachable: ' + $_.Exception.Message); continue }
+    try { $remote = VerifyManifest ([IO.File]::ReadAllText($download)) $platform } catch { Revert ('self-hosted ' + $name + ' fails verification') }
+    $expected = $manifests[$name]
+    # 只发布 Windows 时，自建服务的 macOS 清单保持原样，只要求验签通过且不低于随附版本。
+    $sameAsExpected = $remote.version -eq $expected.version -and $remote.sha256 -eq $expected.sha256 -and $remote.size -eq $expected.size
+    if (-not $sameAsExpected -and -not (-not $joint -and $platform -eq 'macos' -and [ClaudeLauncher.Updates]::Compare($remote.version, $expected.version) -ge 0)) { Revert ('self-hosted serves a different ' + $name) }
+    $package = Join-Path $staging ('check-self-hosted-' + $platform + '.bin')
+    try { Fetch ($base + [Uri]::EscapeDataString($remote.file)) $package 0 600 } catch { $pendingChecks += ('self-hosted ' + $remote.file + ' unreachable: ' + $_.Exception.Message); continue }
+    if ((Get-Item -LiteralPath $package).Length -ne $remote.size -or [ClaudeLauncher.Updates]::Hash($package) -ne $remote.sha256) { Revert ('self-hosted package does not match ' + $name) }
+    Write-Output ('  self-hosted ' + $platform + ' ' + $remote.version + ': OK')
 }
+
+# latest/download 由 GitHub 缓存，最多等 10 分钟；只有内容确认不符才回滚，缓存未更新则保留发布并以状态 2 提示稍后复核。
+Step 'Wait for GitHub latest/download to serve the new release (up to 10 minutes)'
+$github = [ClaudeLauncher.Updates]::GitHubBase
+$served = $null
+for ($attempt = 1; $attempt -le 40; $attempt++) {
+    try {
+        Fetch ($github + 'latest-windows.json') (Join-Path $staging 'check-github-latest-windows.json') 5 60
+        $served = (VerifyManifest ([IO.File]::ReadAllText((Join-Path $staging 'check-github-latest-windows.json'))) 'windows').version
+        if ($served -eq $version) { break }
+    } catch { $served = $null }
+    Start-Sleep -Seconds 15
+}
+if ($served -ne $version) {
+    $pendingChecks += ('GitHub latest/download still serves ' + $(if ($served) { $served } else { 'nothing readable' }) + ' after 10 minutes (cache not updated; assets were already verified via the API)')
+} else {
+    foreach ($name in @('latest-windows.json', 'latest-macos.json', $setupName, $dmgName)) {
+        $download = Join-Path $staging ('check-github-' + $name)
+        try { Fetch ($github + [Uri]::EscapeDataString($name)) $download 5 600 } catch { $pendingChecks += ('GitHub ' + $name + ' unreachable: ' + $_.Exception.Message); continue }
+        if ([ClaudeLauncher.Updates]::Hash($download) -ne [ClaudeLauncher.Updates]::Hash((Join-Path $staging $name))) { Revert ('GitHub latest/download serves a different ' + $name) }
+        Write-Output ('  GitHub ' + $name + ': OK')
+    }
+}
+
+if ($pendingChecks.Count -gt 0) {
+    Write-Output ('Published ' + $tag + ' but some checks could not complete (not rolled back):')
+    $pendingChecks | ForEach-Object { Write-Output ('  - ' + $_) }
+    Write-Output ('Re-check later. Staging kept at ' + $staging)
+    exit 2
+}
+Step ('Published ' + $tag + '. Staging kept at ' + $staging)

@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Linq;
 using System.Security.Cryptography;
 using System.Web.Script.Serialization;
 using ClaudeLauncher;
@@ -14,7 +15,9 @@ public static class UpdateTests {
             var serializer = new JavaScriptSerializer();
             string json = serializer.Serialize(release), key = rsa.ToXmlString(false);
             check(Updates.VerifyLegacy(json, key).version == "1.7.0.0", "Valid signature rejected");
-            check(Updates.IsNewer(new Release { version="1.8.0" }), "New release not detected");
+            // 相对当前版本构造更高版本，版本号递增后无需改测试。
+            int[] current = Updates.DisplayVersion.Split('.').Select(Int32.Parse).ToArray();
+            check(Updates.IsNewer(new Release { version = current[0] + "." + current[1] + "." + (current[2] + 1) }), "New release not detected");
             check(!Updates.IsNewer(new Release { version=Updates.DisplayVersion }), "Same version offered as update");
             check(!Updates.IsNewer(new Release { version="1.6.9" }), "Downgrade offered");
             foreach (string bad in new[] { json.Replace("1.7.0.0", "9.2.0.0"), json.Replace(new string('a',64),new string('b',64)), json.Replace("2048", "4096"), json.Replace("ClaudeLauncher-1.7.0.0.exe", "../evil.exe"), "null", new string('x',16385) }) {

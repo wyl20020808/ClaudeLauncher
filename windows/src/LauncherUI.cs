@@ -29,7 +29,7 @@ namespace ClaudeLauncher {
         static readonly string[][] Palette = { new[] { "#FCE7D4", "#C0743A" }, new[] { "#E9E3FA", "#6A55C8" }, new[] { "#DDF0E6", "#3C8A68" }, new[] { "#FCE3DD", "#C75F47" } };
         static readonly FontFamily Icons = new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets");
 
-        sealed class Card { public Border Root; public Ellipse Dot; public TextBlock Title, Status, Code, Folder; public Button Action; }
+        sealed class Card { public Border Root; public Ellipse Dot; public TextBlock Title, Status, Source; public Button Action; public Border[] Bars = new Border[2]; public TextBlock[] Values = new TextBlock[2], Times = new TextBlock[2]; }
         sealed class Row { public Border Root; public Ellipse Dot; public TextBlock Name, Status, Recent; public CheckBox Select; }
 
         // 账号页：本地别名、搜索与状态筛选、可见选择（SPEC 账号与日志交互）。
@@ -40,8 +40,11 @@ namespace ClaudeLauncher {
         TextBox accountSearch; ComboBox accountStatus; CheckBox selectAll; Button copySelected; TextBlock accountsEmpty;
         static readonly string[] StatusFilters = { "全部状态", "运行中", "未运行", "处理中", "异常" };
         // 日志页：组合筛选与分页。
-        TextBox logSearch; ComboBox logTime, logInstance, logLevel; Button logPrev, logNext; TextBlock logPageLabel;
+        TextBox logSearch; ComboBox logTime, logInstance, logLevel; Button logPrev, logNext; StackPanel logPager;
         int logPageIndex;
+        // 日志文件（SPEC 账号与日志交互 [Windows]）与本次运行起点。
+        readonly string logPath;
+        readonly DateTime startedAt = DateTime.Now;
 
         readonly Window window;
         readonly Grid[] pages = new Grid[4];
@@ -50,10 +53,11 @@ namespace ClaudeLauncher {
         readonly TextBlock summary, message, emptyHint, tableFooter, logSummary;
         readonly TextBlock[] stats = new TextBlock[3];
         readonly Button create, endLogin;
-        Button update;
-        // 已保存的设置与编辑副本；每次更改即时保存，失败时副本回到已保存值（SPEC 系统设置）。
+        Button update, saveSettings;
+        // 已保存的设置与草稿；草稿与已保存值不同即为未保存更改（SPEC 系统设置）。
         LauncherSettings settings, draft;
         readonly string settingsPath, lastPagePath;
+        bool SettingsDirty { get { return !draft.SameAs(settings); } }
         // 水墨插画元素（侧栏、背景、卡片），按“显示水墨插画”切换。
         readonly List<UIElement> artwork = new List<UIElement>();
         Border toast; TextBlock toastText;
@@ -72,6 +76,15 @@ namespace ClaudeLauncher {
         readonly DispatcherTimer timer = new DispatcherTimer();
         readonly ProcessWatch processWatch = new ProcessWatch();
         List<Instance> instances = new List<Instance>();
+        // SPEC 本地界面用量 [Windows]：本次读取结果与已保存的观察记录（按账号编号）。
+        readonly Dictionary<int, UsageRecord> usage = new Dictionary<int, UsageRecord>();
+        Dictionary<int, UsageRecord> savedUsage = new Dictionary<int, UsageRecord>();
+        readonly string usagePath;
+        int usageGeneration;
+        readonly Dictionary<string, PopupWatch> popupWatches = new Dictionary<string, PopupWatch>(); // 身份 → 展开通知（null：注册中或失败，不重试）
+        readonly HashSet<int> pendingPopups = new HashSet<int>();
+        bool readingUsage;
+        DateTime lastUsageRead = DateTime.MinValue;
         int loginAccount, page;
         string executable, scanError, lastProcessState = "", lastRefreshError = "", lastLogged;
         bool scanning, closed, healthy, deleting, updating;
@@ -138,13 +151,39 @@ namespace ClaudeLauncher {
             } catch (Exception error) { Diagnostics.Error("ui_art_error", error); return null; }
         }
 
-        public LauncherUI() : this(LauncherSettings.Load(LauncherSettings.DefaultPath), LauncherSettings.DefaultPath) { }
+        public LauncherUI() : this(LauncherSettings.Load(LauncherSettings.DefaultPath), LauncherSettings.DefaultPath) {
+            string profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            CodeNameFiles = n => CodeUserName.Candidates(n, profile, Core.Root, ProfileDeletion.Local);
+            Render();
+        }
+        // 默认用户名的候选文件；测试与离屏预览不读取真实文件（默认无候选，可注入合成文件）。
+        internal Func<int, string[]> CodeNameFiles = n => new string[0];
+        // 内存缓存：账号 → (文件, 修改时间.大小, 用户名)。不持久化。
+        readonly Dictionary<int, Tuple<string, string, string>> codeNames = new Dictionary<int, Tuple<string, string, string>>();
+        string CodeName(int n) {
+            foreach (string file in CodeNameFiles(n)) {
+                string stamp = CodeUserName.Stamp(file);
+                if (stamp == null) continue;
+                Tuple<string, string, string> cached;
+                if (codeNames.TryGetValue(n, out cached) && cached.Item1 == file && cached.Item2 == stamp) return cached.Item3;
+                string name = CodeUserName.Read(file);
+                codeNames[n] = Tuple.Create(file, stamp, name);
+                return name;
+            }
+            codeNames.Remove(n);
+            return null;
+        }
         // 测试与离屏预览传入合成设置和临时路径，不读写用户的真实设置。
         internal LauncherUI(LauncherSettings initial, string path) {
             settings = initial; draft = initial.Clone(); settingsPath = path;
             lastPagePath = IOPath.Combine(IOPath.GetDirectoryName(path), IOPath.GetFileName(LauncherSettings.LastPagePath));
             namesPath = IOPath.Combine(IOPath.GetDirectoryName(path), IOPath.GetFileName(AccountNames.DefaultPath));
             try { accountNames = AccountNames.Load(namesPath); } catch (Exception error) { namesError = error.Message; }
+            logPath = IOPath.Combine(IOPath.GetDirectoryName(path), IOPath.GetFileName(LogStore.DefaultPath));
+            logs.AddRange(LogStore.Load(logPath));
+            if (logs.Count > settings.LogLimit) { logs.RemoveRange(settings.LogLimit, logs.Count - settings.LogLimit); SaveLogs(); }
+            usagePath = IOPath.Combine(IOPath.GetDirectoryName(path), IOPath.GetFileName(UsageInterface.DefaultPath));
+            if (settings.ShowUsage) savedUsage = UsageInterface.Load(usagePath, DateTime.Now);
             for (int i = 1; i <= 10; i++) if (DeletionJournal.IsPending(i, ProfileDeletion.Local)) incompleteDeletes.Add(i);
             loginAccount = LoginProtection.Read(ProfileDeletion.Local);
             window = new Window {
@@ -189,7 +228,7 @@ namespace ClaudeLauncher {
                 content.Children.Add(T(items[i][0], 16, Ink, FontWeights.Medium));
                 nav[i] = At(sidebar, new Button { Style = (Style)window.FindResource("Nav"), Content = content }, 20, 176 + i * 56, 232, 48);
                 AutomationProperties.SetName(nav[i], items[i][0]);
-                nav[i].Click += delegate { ShowPage(index); RememberPage(); };
+                nav[i].Click += async delegate { ShowPage(index); RememberPage(); if (index == 0) await ReadUsage(); };
             }
             indicator = At(sidebar, new Border { Background = B("#B9825F"), CornerRadius = new CornerRadius(2) }, 6, 188, 4, 24);
 
@@ -278,30 +317,31 @@ namespace ClaudeLauncher {
             export.Click += delegate { ExportLogs(); };
             var clear = At(logsPage, Action("清空日志", "Btn", "", 14), 640, 56, 132, 44);
             clear.Click += delegate {
-                if (logs.Count > 0 && Ask("清空日志？", "只清空启动器内存中的本次运行日志，不影响本地诊断日志、Claude 或账号数据。", new[] { "取消", "清空" }, 0, 0) == 1) { logs.Clear(); logPageIndex = 0; RenderLogs(); }
+                if (logs.Count > 0 && Ask("清空启动器日志？", "只清空启动器自己保存的记录（Claude-MultiLauncher 目录中的 launcher-log.json），不读取或删除 Claude 日志，也不影响本地诊断日志。", new[] { "取消", "清空" }, 0, 0) == 1) { logs.Clear(); SaveLogs(); logPageIndex = 0; RenderLogs(); }
             };
-            logTime = Choice(logsPage, 36, 140, 170, 40, new[] { "本次运行", "最近 5 分钟", "最近 1 小时" }, "日志时间范围");
+            logTime = Choice(logsPage, 36, 140, 170, 40, new[] { "最近 7 天", "最近 24 小时", "最近 1 小时", "最近 5 分钟", "本次运行", "全部时间" }, "日志时间范围");
+            logTime.Padding = new Thickness(38, 0, 30, 0);
+            At(logsPage, Glyph("", 14, Muted), 50, 152).IsHitTestVisible = false;
             logInstance = Choice(logsPage, 216, 140, 150, 40, new[] { "全部实例", "系统" }.Concat(Enumerable.Range(1, 10).Select(n => "Claude " + n)).ToArray(), "日志实例筛选");
             logLevel = Choice(logsPage, 376, 140, 150, 40, new[] { "全部级别", "信息", "警告", "错误" }, "日志级别筛选");
             logSearch = SearchBox(logsPage, 552, 140, 220, 40, "搜索日志内容…", "搜索日志");
             foreach (ComboBox box in new[] { logTime, logInstance, logLevel }) box.SelectionChanged += delegate { logPageIndex = 0; RenderLogs(); };
             logSearch.TextChanged += delegate { logPageIndex = 0; RenderLogs(); };
             At(logsPage, Panel(16, "#DBFFFDFA"), 36, 196, 736, 494);
+            At(logsPage, new Border { CornerRadius = new CornerRadius(15, 15, 0, 0), Background = B("#B3F6EEE4"), IsHitTestVisible = false }, 37, 197, 734, 43);
             string[] logHeads = { "时间", "级别", "实例", "事件内容" };
             double[] logOffsets = { 24, 196, 290, 404 };
             for (int i = 0; i < 4; i++) At(logsPage, T(logHeads[i], 13, "#7A6F64", FontWeights.SemiBold), 36 + logOffsets[i], 209);
             At(logsPage, new Rectangle { Fill = B("#EFE7DC") }, 37, 240, 734, 1);
             At(logsPage, new Rectangle { Fill = B("#EFE7DC") }, 37, 640, 734, 1);
             logRows = At(logsPage, new Canvas(), 36, 241, 736, 399);
-            logPrev = At(logsPage, Action("上一页", "Btn", null, 12), 60, 650, 76, 30);
-            AutomationProperties.SetAutomationId(logPrev, "LogPrevious");
+            // 分页：上一页、数字页码（首页、末页、当前页 ±1，中间省略）、下一页；页码在 RenderLogs 中重建。
+            logPager = At(logsPage, new StackPanel { Orientation = Orientation.Horizontal }, 57, 652);
+            logPrev = PagerButton("", "上一页", "LogPrevious");
             logPrev.Click += delegate { logPageIndex--; RenderLogs(); };
-            logPageLabel = At(logsPage, T("第 1 / 1 页", 12, Muted, FontWeights.Normal), 146, 657, 100);
-            logPageLabel.TextAlignment = TextAlignment.Center;
-            logNext = At(logsPage, Action("下一页", "Btn", null, 12), 256, 650, 76, 30);
-            AutomationProperties.SetAutomationId(logNext, "LogNext");
+            logNext = PagerButton("", "下一页", "LogNext");
             logNext.Click += delegate { logPageIndex++; RenderLogs(); };
-            logSummary = At(logsPage, T("", 12, Muted, FontWeights.Normal), 448, 658, 300);
+            logSummary = At(logsPage, T("", 13, "#8A8178", FontWeights.Normal), 400, 659, 352);
             logSummary.TextAlignment = TextAlignment.Right;
 
             // 系统设置：六个分类，修改先进入草稿，保存后写入启动器自己的 settings.json（SPEC 系统设置 [Windows]）。
@@ -315,18 +355,22 @@ namespace ClaudeLauncher {
             if (settings.LoadError != null) { Diagnostics.Write("settings_load_error", settings.LoadError); AddLog("设置文件无法读取，已按默认设置运行：" + settings.LoadError); }
             ApplySettings();
             timer.Tick += async delegate { await Refresh(); };
+            // 用量只在主动查看实例页时读取一次：激活窗口、切到实例页、在实例页点击（SPEC 本地界面用量 [Windows]）。
+            window.Activated += async delegate { await ReadUsage(); };
+            pages[0].PreviewMouseLeftButtonUp += async delegate { await ReadUsage(); };
             window.Loaded += async delegate {
                 await Refresh(); timer.Start();
+                await ReadUsage();
                 // SPEC 网络边界：已保存开启时，每次打开启动器检查一次；只在有新版时提示，失败只记日志。
                 if (!closed && settings.AllowUpdates) await CheckUpdate(false);
             };
-            window.Closed += delegate { closed = true; timer.Stop(); processWatch.Dispose(); Diagnostics.Write("window_closed", "正常关闭启动器"); };
+            window.Closed += delegate { closed = true; timer.Stop(); processWatch.Dispose(); SyncPopupWatches(); Diagnostics.Write("window_closed", "正常关闭启动器"); };
             window.Closing += delegate(object sender, System.ComponentModel.CancelEventArgs e) {
                 if (deleting) { e.Cancel = true; Message("请先完成或取消当前删除操作。", true); return; }
                 // 正式运行（Show 建立托盘后）：开启“关闭窗口后继续运行”时只隐藏；关闭该设置时关闭窗口即退出启动器（走统一的退出流程）。不退出 Claude。
                 if (tray == null || exiting) return;
                 e.Cancel = true;
-                if (!settings.CloseToBackground) { window.Dispatcher.BeginInvoke(new Action(() => ExitLauncher())); return; }
+                if (!settings.CloseToBackground) { window.Dispatcher.BeginInvoke(new Action(() => ExitLauncher(false))); return; }
                 window.Hide();
                 if (!trayHintShown && tray.Visible) {
                     trayHintShown = true;
@@ -346,7 +390,7 @@ namespace ClaudeLauncher {
         // 安装程序用此消息请求启动器退出（WM_CLOSE 现在只是隐藏到通知区域）。
         public static readonly int ExitMessage = Native.RegisterWindowMessage("ClaudeMultiLauncher.Exit");
         IntPtr ExitHook(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled) {
-            if (msg == ExitMessage) { handled = true; if (!deleting) ExitLauncher(); }
+            if (msg == ExitMessage) { handled = true; if (!deleting) ExitLauncher(true); }
             return IntPtr.Zero;
         }
         void CreateTray() {
@@ -395,7 +439,7 @@ namespace ClaudeLauncher {
             menu.Items.Add(check);
             var exit = new System.Windows.Forms.ToolStripMenuItem("退出启动器");
             exit.ToolTipText = "只退出启动器，不退出任何 Claude。";
-            exit.Click += delegate { ExitLauncher(); };
+            exit.Click += delegate { ExitLauncher(false); };
             menu.Items.Add(exit);
         }
         // 托盘中的账号项：与主界面卡片同一份可见性与可用状态（编号、标签、是否可点）。
@@ -408,8 +452,14 @@ namespace ClaudeLauncher {
             }
             return result;
         }
-        void ExitLauncher() {
+        // force：安装程序请求退出或更新交接，不因未保存设置阻拦。
+        void ExitLauncher(bool force) {
             if (deleting) { ShowMain(); Message("请先完成或取消当前删除操作。", true); return; }
+            if (!force && SettingsDirty) {
+                ShowMain();
+                int choice = Ask("设置尚未保存", "保存后退出，或放弃这次更改。Claude 实例会继续运行。", new[] { "取消", "放弃更改并退出", "保存并退出" }, 0, 2);
+                if (choice == 0 || (choice == 2 && !SaveSettings())) return;
+            }
             exiting = true;
             if (tray != null) { tray.Visible = false; tray.Dispose(); tray = null; }
             window.Close();
@@ -439,20 +489,21 @@ namespace ClaudeLauncher {
             var badge = At(canvas, new Grid(), 22, 39, 44, 44);
             badge.Children.Add(new Ellipse { Fill = B(palette[0]), Stroke = B("#40" + palette[1].Substring(1)), StrokeThickness = 1 });
             badge.Children.Add(new TextBlock { Text = n.ToString(), FontSize = 20, FontWeight = FontWeights.Medium, Foreground = B(palette[1]), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center });
-            card.Title = At(canvas, T(DisplayName(n), 18, Ink, FontWeights.SemiBold), 84, 16, 300);
-            card.Dot = At(canvas, new Ellipse { Fill = B("#B9B1A7") }, 86, 51, 9, 9);
-            card.Status = At(canvas, T("读取状态…", 13, Muted, FontWeights.Normal), 102, 44, 150);
-            var chips = At(canvas, new StackPanel { Orientation = Orientation.Horizontal }, 84, 80);
-            card.Folder = Chip(chips, n == 1 ? "默认目录" : IOPath.GetFileName(Core.Folder(n, Core.Root)).Replace("Claude-", ""));
-            card.Code = Chip(chips, Core.CodeState(n, new Instance[0], null));
+            // SPEC 实例卡片：只显示名称（上）与运行状态（左下）；目录与 Code 配置状态在悬停提示中。
+            card.Title = At(canvas, T(DisplayName(n), 18, Ink, FontWeights.SemiBold), 84, 26, 300);
+            card.Dot = At(canvas, new Ellipse { Fill = B("#B9B1A7") }, 86, 81, 9, 9);
+            card.Status = At(canvas, T("读取状态…", 13, Muted, FontWeights.Normal), 102, 74, 280);
             string[][] quota = { new[] { "", "5小时限额" }, new[] { "", "周限额" } };
             for (int row = 0; row < 2; row++) {
                 double y = 18 + row * 46;
                 At(canvas, Glyph(quota[row][0], 16, Muted), 406, y + 1);
                 At(canvas, T(quota[row][1], 14, Ink, FontWeights.Medium), 436, y);
                 At(canvas, new Border { CornerRadius = new CornerRadius(3), Background = B("#EEE8E0") }, 436, y + 26, 150, 6);
-                var none = At(canvas, T("未接入", 12, Faint, FontWeights.Normal), 592, y + 19, 44); none.TextAlignment = TextAlignment.Right;
+                card.Bars[row] = At(canvas, new Border { CornerRadius = new CornerRadius(3), Background = B("#C98A5B"), Width = 0 }, 436, y + 26, Double.NaN, 6);
+                card.Values[row] = At(canvas, T("—", 12, Faint, FontWeights.Normal), 592, y + 19, 44); card.Values[row].TextAlignment = TextAlignment.Right;
+                card.Times[row] = At(canvas, T("尚未观察到", 10, Muted, FontWeights.Normal), 520, y + 2, 116); card.Times[row].TextAlignment = TextAlignment.Right;
             }
+            card.Source = At(canvas, T("", 11, Muted, FontWeights.Normal), 436, 100, 200);
             int number = n;
             card.Action = At(canvas, Action("启动", "Btn", null, 17), 646, 36, 86, 52);
             AutomationProperties.SetAutomationId(card.Action, "Profile" + n);
@@ -461,11 +512,6 @@ namespace ClaudeLauncher {
             };
             At(canvas, MoreButton(n), 738, 47, 30, 30);
             return card;
-        }
-        static TextBlock Chip(StackPanel chips, string text) {
-            var label = new TextBlock { Text = text, FontSize = 12, Foreground = B(Muted) };
-            chips.Children.Add(new Border { Child = label, CornerRadius = new CornerRadius(6), Background = B("#FAF6EF"), BorderBrush = B("#E8DFD3"), BorderThickness = new Thickness(1), Padding = new Thickness(8, 3, 8, 3), Margin = new Thickness(0, 0, 8, 0) });
-            return label;
         }
         Row BuildRow(int n) {
             var row = new Row();
@@ -493,116 +539,149 @@ namespace ClaudeLauncher {
             return row;
         }
 
-        // ---- 系统设置（SPEC 系统设置 [Windows]） ----
+        // ---- 系统设置（SPEC 系统设置 [Windows]，布局对应 macOS 1.7.14：顶部分段标签 + 分组卡片行） ----
         readonly Canvas[] settingsSections = new Canvas[6];
         readonly Button[] settingsTabs = new Button[6];
         readonly List<Action> settingsSync = new List<Action>();
         TextBlock settingsFeedback, autoStartStatus;
         int settingsSection;
         bool syncingSettings;
+        // 布局游标：当前分类画布、纵向位置、当前分组卡片。
+        Canvas settingsCanvas; double settingsY; Border settingsGroup;
+        const double SettingsWidth = 696, SettingsRow = 60;
 
         void BuildSettings(Canvas page) {
-            At(page, Panel(16, "#DBFFFDFA"), 36, 140, 736, 556);
-            At(page, new Rectangle { Fill = B("#EDE4D8") }, 206, 141, 1, 554);
-            string[][] tabs = { new[] { "常规设置", "" }, new[] { "启动行为", "" }, new[] { "外观设置", "" }, new[] { "数据与存储", "" }, new[] { "消息通知", "" }, new[] { "关于软件", "" } };
+            At(page, Panel(12, "#BFFFFDFA"), 36, 140, 736, 40);
+            At(page, Panel(16, "#DBFFFDFA"), 36, 192, 736, 504);
+            string[] tabs = { "常规", "启动行为", "外观", "数据与存储", "通知", "关于" };
+            double width = 724.0 / tabs.Length;
             for (int i = 0; i < tabs.Length; i++) {
                 int index = i;
-                var line = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(14, 0, 0, 0) };
-                var glyph = Glyph(tabs[i][1], 13, "#3A332D"); glyph.Width = 28; line.Children.Add(glyph);
-                line.Children.Add(new TextBlock { Text = tabs[i][0], FontSize = 14, VerticalAlignment = VerticalAlignment.Center });
-                settingsTabs[i] = At(page, new Button { Style = (Style)window.FindResource("Nav"), Content = line, Padding = new Thickness(0), Foreground = B("#3A332D") }, 48, 154 + i * 46, 146, 38);
-                AutomationProperties.SetName(settingsTabs[i], tabs[i][0]);
+                settingsTabs[i] = At(page, new Button { Content = tabs[i], FontSize = 13, Padding = new Thickness(0), Tag = new CornerRadius(9) }, 42 + i * width, 144, width, 32);
+                AutomationProperties.SetName(settingsTabs[i], tabs[i]);
                 settingsTabs[i].Click += delegate { ShowSettingsSection(index); };
-                settingsSections[i] = At(page, new Canvas { Visibility = Visibility.Collapsed }, 230, 156, 518, 470);
+                settingsSections[i] = new Canvas { Width = SettingsWidth, HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top };
+                At(page, new ScrollViewer { Content = settingsSections[i], VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Focusable = false, Visibility = Visibility.Collapsed }, 56, 208, SettingsWidth + 18, 428);
             }
             string data = LauncherSettings.DataDirectory;
+            TextBlock unused;
 
-            // 常规设置
-            var c = settingsSections[0]; double y = Heading(c, "常规设置");
-            y = SwitchRow(c, y, "关闭窗口后继续运行", "关闭窗口只隐藏，可从通知区域或再次打开启动器恢复；关闭此项后，关闭窗口即退出启动器。都不会退出 Claude。", () => draft.CloseToBackground, v => draft.CloseToBackground = v);
-            y = SwitchRow(c, y, "显示通知区域图标", "右键图标可查看账号状态、检查更新或退出。关闭后再次打开启动器即可显示窗口。", () => draft.ShowTray, v => draft.ShowTray = v);
-            Note(c, y + 8, "这些设置只影响本启动器，不改变 Claude 的运行、登录或窗口。");
+            SettingsSection(0);
+            SettingsHeader("窗口与启动");
+            ToggleRow("", "关闭窗口后继续运行", "关闭窗口只隐藏，可从通知区域或再次打开启动器恢复；关闭后，关闭窗口即退出启动器。都不会退出 Claude。", () => draft.CloseToBackground, v => draft.CloseToBackground = v);
+            ToggleRow("", "显示通知区域图标", "右键图标可查看账号状态、检查更新或退出。关闭后再次打开启动器即可显示窗口。", () => draft.ShowTray, v => draft.ShowTray = v);
+            SettingsNote("这些设置只影响本启动器，不改变 Claude 的运行、登录或窗口。");
 
-            // 启动行为
-            c = settingsSections[1]; y = Heading(c, "启动行为");
-            ActionRow(c, 0, y, "管理开机启动…", ManageAutoStart);
-            autoStartStatus = At(c, new TextBlock { FontSize = 12, Foreground = B(Muted), TextWrapping = TextWrapping.Wrap }, 0, y + 42, 518);
-            y += 82;
-            y = SwitchRow(c, y, "恢复启动器上次页面", "只恢复本启动器的页面，不自动启动或激活任何 Claude。", () => draft.RememberPage, v => draft.RememberPage = v);
-            y = ChoiceRow(c, y, "未恢复时的启动页面", new[] { "实例管理", "账号管理", "日志记录", "系统设置" }, LauncherSettings.Pages.Cast<object>().ToArray(), () => draft.StartPage, v => draft.StartPage = (string)v, () => !draft.RememberPage);
-            y = ChoiceRow(c, y, "本地进程状态刷新间隔", new[] { "1 秒", "3 秒", "5 秒" }, LauncherSettings.Intervals.Cast<object>().ToArray(), () => draft.RefreshInterval, v => draft.RefreshInterval = (int)v, null);
-            SwitchRow(c, y, "点击账号时恢复最小化窗口", "只处理经过核对的目标 PID 窗口；关闭后最小化的窗口需从任务栏打开。", () => draft.RestoreMinimized, v => draft.RestoreMinimized = v);
+            SettingsSection(1);
+            SettingsHeader("启动与刷新");
+            ButtonRow("", "开机时启动", AutoStartStatus(), "管理开机启动…", ManageAutoStart, out autoStartStatus);
+            ToggleRow("", "恢复启动器上次页面", "只恢复本启动器的页面，不自动启动或激活任何 Claude。", () => draft.RememberPage, v => draft.RememberPage = v);
+            ChoiceRow("", "未恢复时的启动页面", new[] { "实例管理", "账号管理", "日志记录", "系统设置" }, LauncherSettings.Pages.Cast<object>().ToArray(), () => draft.StartPage, v => draft.StartPage = (string)v, () => !draft.RememberPage);
+            ChoiceRow("", "本地进程状态刷新间隔", new[] { "1 秒", "3 秒", "5 秒" }, LauncherSettings.Intervals.Cast<object>().ToArray(), () => draft.RefreshInterval, v => draft.RefreshInterval = (int)v, null);
+            ToggleRow("", "点击账号时恢复最小化窗口", "只处理经过核对的目标 PID 窗口；关闭后最小化的窗口需从任务栏打开。", () => draft.RestoreMinimized, v => draft.RestoreMinimized = v);
 
-            // 外观设置
-            c = settingsSections[2]; y = Heading(c, "外观设置");
-            y = SwitchRow(c, y, "显示水墨插画", "关闭后保留浅色纸张背景和原有文字布局。", () => draft.ShowArtwork, v => draft.ShowArtwork = v);
-            Note(c, y + 8, "本地界面用量：Windows 版尚未接入，需先完成调查并取得授权，因此暂不提供开关。\n\n界面语言：简体中文\n主题：浅色水墨\n\n这两项为当前版本的固定样式。Claude 自身的外观、浏览器和登录方式由官方客户端管理。");
+            SettingsSection(2);
+            SettingsHeader("显示");
+            ToggleRow("", "显示水墨插画", "关闭后保留浅色纸张背景和原有文字布局。", () => draft.ShowArtwork, v => draft.ShowArtwork = v);
+            ToggleRow("", "显示本地界面用量", "只读 Claude Code 已显示的用量按钮，不点击、不查询；关闭后清除观察记录。", () => draft.ShowUsage, v => draft.ShowUsage = v);
+            SettingsHeader("样式");
+            ValueRow("", "界面语言", "简体中文");
+            ValueRow("", "主题", "浅色水墨");
+            SettingsNote("语言与主题为当前版本的固定样式；Claude 自身的外观、浏览器和登录方式由官方客户端管理。");
 
-            // 数据与存储
-            c = settingsSections[3]; y = Heading(c, "数据与存储");
-            Note(c, y, "启动器数据目录（设置、日志、登录保护与删除状态）\n" + Diagnostics.Redact(data) + "\n账号目录固定，不迁移、不合并。");
-            y += 76;
-            ActionRow(c, 0, y, "在资源管理器中显示", () => OpenFolder(data));
-            ActionRow(c, 264, y, "复制数据目录路径", () => {
+            SettingsSection(3);
+            SettingsHeader("启动器数据");
+            ButtonRow("", "设置、日志、别名与登录保护", Diagnostics.Redact(data), "在资源管理器中显示", () => OpenFolder(data), out unused);
+            ButtonRow("", "复制数据目录路径", "账号目录固定，不迁移、不合并。", "复制路径", () => {
                 try { Clipboard.SetText(data); settingsFeedback.Text = "启动器数据目录路径已复制"; } catch (Exception error) { Alert("无法复制路径", error.Message); }
-            });
-            ActionRow(c, 0, y + 44, "导出已保存的设置…", ExportSettings);
-            ActionRow(c, 264, y + 44, "打开本地诊断日志", () => {
+            }, out unused);
+            ButtonRow("", "导出已保存的设置", "不含账号、别名、项目或凭据；导出位置由你选择。", "导出…", ExportSettings, out unused);
+            SettingsHeader("日志");
+            ChoiceRow("", "启动器日志保留上限", new[] { "100 条", "500 条", "1000 条" }, LauncherSettings.LogLimits.Cast<object>().ToArray(), () => draft.LogLimit, v => draft.LogLimit = (int)v, null);
+            ButtonRow("", "本地诊断日志", "启动、进程与异常记录，不含账号信息。", "打开", () => {
                 try { Diagnostics.OpenFolder(); } catch (Exception error) { Diagnostics.Error("open_logs_error", error); Alert("无法打开日志目录", error.Message); }
-            });
-            y = ChoiceRow(c, y + 100, "本次运行日志保留上限", new[] { "100 条", "500 条", "1000 条" }, LauncherSettings.LogLimits.Cast<object>().ToArray(), () => draft.LogLimit, v => draft.LogLimit = (int)v, null);
-            Note(c, y + 4, "日志记录页只留在内存，退出即清空；导出位置由你选择。导出的设置不含账号、别名、项目或凭据。恢复默认只重置启动器偏好，保留登录保护、开机启动项和任何 Claude 数据。");
+            }, out unused);
+            SettingsNote("日志记录保存在数据目录的 launcher-log.json，重启和更新后保留，超出上限删除最旧记录。恢复默认只重置启动器偏好，保留日志、别名、登录保护、开机启动项和任何 Claude 数据。");
 
-            // 消息通知
-            c = settingsSections[4]; y = Heading(c, "消息通知");
-            y = SwitchRow(c, y, "显示窗口内提示", "在启动器底部临时显示警告和错误；不推送、不上传、不读取 Claude 消息。", () => draft.LocalNotifications, v => draft.LocalNotifications = v);
-            y = SwitchRow(c, y, "警告时播放提示音", "仅在窗口内提示开启时生效，使用系统提示音。", () => draft.NotificationSound, v => draft.NotificationSound = v);
-            ActionRow(c, 0, y + 6, "测试已保存的通知设置", () => {
-                settingsFeedback.Text = Notify("本地通知测试：设置已生效，没有发送网络请求。") ? "已按当前设置显示提示" : "窗口内提示已关闭；开启后可测试";
-            });
-            Note(c, y + 56, "安全确认和错误弹窗始终保留，不受通知开关影响。");
+            SettingsSection(4);
+            SettingsHeader("窗口内提示");
+            ToggleRow("", "显示窗口内提示", "在启动器底部临时显示警告和错误；不推送、不上传、不读取 Claude 消息。", () => draft.LocalNotifications, v => draft.LocalNotifications = v);
+            ToggleRow("", "警告时播放提示音", "仅在窗口内提示开启时生效，使用系统提示音。", () => draft.NotificationSound, v => draft.NotificationSound = v);
+            ButtonRow("", "测试已保存的通知设置", "按已保存的设置显示一次提示。", "测试", () => {
+                settingsFeedback.Text = Notify("本地通知测试：设置已生效，没有发送网络请求。") ? "已按保存的设置显示提示" : "窗口内提示已关闭；开启并保存后可测试";
+            }, out unused);
+            SettingsNote("安全确认和错误弹窗始终保留，不受通知开关影响。");
 
-            // 关于软件
-            c = settingsSections[5]; y = Heading(c, "Claude 多开启动器 " + Updates.DisplayVersion);
-            Note(c, y, "非官方本地管理工具，与 Anthropic 无关联。\n不向 Claude / Anthropic 发请求，不读取凭据，不修改官方应用。");
-            y = SwitchRow(c, y + 54, "允许检查 GitHub 更新", "默认关闭。开启后每次打开启动器检查一次，也可手动检查；只访问本项目 GitHub 下载地址。", () => draft.AllowUpdates, v => draft.AllowUpdates = v);
-            update = ActionRow(c, 0, y + 6, "检查启动器更新…", async () => await CheckUpdate(true));
-            ActionRow(c, 0, y + 50, "查看本地使用帮助", ShowHelp);
-            ActionRow(c, 0, y + 94, "复制基础诊断信息", CopyDiagnostics);
-            Note(c, y + 144, "诊断仅包含版本、Windows 版本和联网开关，不包含账号、路径、日志或凭据。");
+            SettingsSection(5);
+            SettingsHeader("版本与更新");
+            ValueRow("", "Claude 多开启动器", Updates.DisplayVersion);
+            ToggleRow("", "允许检查 GitHub 更新", "默认关闭。保存开启后每次打开启动器检查一次，也可手动检查；只访问本项目 GitHub 下载地址。", () => draft.AllowUpdates, v => draft.AllowUpdates = v);
+            update = ButtonRow("", "检查启动器更新", "非官方本地工具，与 Anthropic 无关联；不向 Claude 或 Anthropic 发请求。", "检查更新…", async () => await CheckUpdate(true), out unused);
+            SettingsHeader("帮助与诊断");
+            ButtonRow("", "本地使用帮助", null, "查看", ShowHelp, out unused);
+            ButtonRow("", "基础诊断信息", "仅包含版本、Windows 版本和联网开关，不包含账号、路径、日志或凭据。", "复制", CopyDiagnostics, out unused);
+            SettingsNote("不会自动联网检查。不读取凭据，不修改官方应用。");
+            SettingsSection(-1);
 
-            // 底部：反馈、恢复默认（更改即时保存，无保存／撤销按钮）
-            settingsFeedback = At(page, new TextBlock { Text = "更改即时保存并生效", FontSize = 12, Foreground = B(Muted), TextTrimming = TextTrimming.CharacterEllipsis }, 230, 656, 390);
+            // 底部：反馈、恢复默认、撤销、保存
+            settingsFeedback = At(page, new TextBlock { Text = "更改后点击保存设置", FontSize = 12, Foreground = B(Muted), TextTrimming = TextTrimming.CharacterEllipsis }, 58, 656, 350);
             AutomationProperties.SetAutomationId(settingsFeedback, "SettingsFeedback");
-            var reset = At(page, Action("恢复默认…", "Btn", null, 14), 646, 646, 110, 38);
-            AutomationProperties.SetAutomationId(reset, "ResetSettings");
+            var reset = At(page, Action("恢复默认…", "Btn", null, 13), 424, 648, 104, 34);
             reset.Click += delegate {
-                if (Ask("恢复启动器默认设置？", "立即保存并生效。不会移除账号、登录保护、开机启动项或任何 Claude 数据。", new[] { "取消", "恢复默认" }, 0, 1) == 1) ResetSettings();
+                if (Ask("恢复启动器默认设置？", "将默认值填入草稿，点击保存后生效。不会移除账号、日志、别名、登录保护、开机启动项或任何 Claude 数据。", new[] { "取消", "恢复到草稿" }, 0, 1) == 1) ResetSettingsDraft();
             };
+            var undo = At(page, Action("撤销更改", "Btn", null, 13), 536, 648, 104, 34);
+            AutomationProperties.SetAutomationId(undo, "UndoSettings");
+            undo.Click += delegate { DiscardSettings(); };
+            saveSettings = At(page, Action("保存设置", "Primary", null, 13), 648, 648, 108, 34);
+            AutomationProperties.SetAutomationId(saveSettings, "SaveSettings");
+            saveSettings.Click += delegate { SaveSettings(); };
             ShowSettingsSection(0);
             SyncSettings();
         }
-        double Heading(Canvas c, string text) {
-            At(c, T(text, 17, Ink, FontWeights.SemiBold), 0, 0, 518);
-            return 44;
+        // 结束上一分类（定高以便滚动）并开始下一分类；-1 只结束。
+        void SettingsSection(int index) {
+            if (settingsCanvas != null) settingsCanvas.Height = settingsY;
+            settingsCanvas = index < 0 ? null : settingsSections[index];
+            settingsY = 0; settingsGroup = null;
         }
-        void Note(Canvas c, double y, string text) {
-            At(c, new TextBlock { Text = text, FontSize = 12, Foreground = B(Muted), TextWrapping = TextWrapping.Wrap, LineHeight = 19 }, 0, y, 518);
+        // 小标题 + 白色圆角分组卡片；随后每行使卡片增高 60。
+        void SettingsHeader(string title) {
+            if (settingsY > 0) settingsY += 16;
+            At(settingsCanvas, T(title, 13, Ink, FontWeights.SemiBold), 2, settingsY, 400);
+            settingsY += 26;
+            settingsGroup = At(settingsCanvas, new Border { Background = Brushes.White, BorderBrush = B("#EDE4D8"), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(12) }, 0, settingsY, SettingsWidth, 0);
         }
-        // 开关行：整行可点（标题 + 说明 + 开关）；更改即时保存。
-        double SwitchRow(Canvas c, double y, string title, string detail, Func<bool> get, Action<bool> set) {
-            var text = new StackPanel { Width = 450, HorizontalAlignment = HorizontalAlignment.Left };
-            text.Children.Add(new TextBlock { Text = title, FontSize = 14, FontWeight = FontWeights.SemiBold, Foreground = B(Ink) });
-            text.Children.Add(new TextBlock { Text = detail, FontSize = 12, Foreground = B(Muted), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 3, 0, 0) });
-            var box = At(c, new CheckBox { Style = (Style)window.FindResource("Switch"), Content = text }, 0, y, 518);
+        // 一行的图标、标题与说明（说明最多两行，悬停显示全文）；返回行顶部，控件由调用方放在右侧。
+        double SettingsRowBase(string icon, string title, string detail, out TextBlock detailLabel) {
+            double y = settingsY;
+            if (settingsGroup.Height > 0) At(settingsCanvas, new Rectangle { Fill = B("#F1EAE1") }, 48, y, SettingsWidth - 64, 1);
+            At(settingsCanvas, Glyph(icon, 16, Brown), 18, y + 21).IsHitTestVisible = false;
+            detailLabel = null;
+            double top = 20;
+            if (detail != null) {
+                detailLabel = new TextBlock { Text = detail, FontSize = 12, Foreground = B("#8A8178"), TextWrapping = TextWrapping.Wrap, TextTrimming = TextTrimming.CharacterEllipsis, MaxHeight = 32, ToolTip = detail.Length > 0 ? detail : null };
+                detailLabel.Measure(new Size(420, Double.PositiveInfinity));
+                top = detailLabel.DesiredSize.Height > 18 ? 6 : 11;
+                At(settingsCanvas, detailLabel, 48, y + top + 20, 420);
+            }
+            At(settingsCanvas, T(title, 14, Ink, FontWeights.Medium), 48, y + top, 420);
+            settingsGroup.Height += SettingsRow; settingsY += SettingsRow;
+            return y;
+        }
+        // 开关行：只改草稿。
+        void ToggleRow(string icon, string title, string detail, Func<bool> get, Action<bool> set) {
+            TextBlock unused;
+            double y = SettingsRowBase(icon, title, detail, out unused);
+            var box = At(settingsCanvas, new CheckBox { Style = (Style)window.FindResource("Switch") }, SettingsWidth - 16 - 42, y + 18, 42, 24);
             AutomationProperties.SetName(box, title);
             box.Click += delegate { set(box.IsChecked == true); DraftChanged(); };
             settingsSync.Add(() => box.IsChecked = get());
-            return y + 72;
         }
-        double ChoiceRow(Canvas c, double y, string title, string[] labels, object[] values, Func<object> get, Action<object> set, Func<bool> enabled) {
-            At(c, T(title, 14, Ink, FontWeights.SemiBold), 0, y + 6, 260);
-            var combo = At(c, new ComboBox { ItemsSource = labels, FontSize = 13 }, 290, y, 228, 32);
+        void ChoiceRow(string icon, string title, string[] labels, object[] values, Func<object> get, Action<object> set, Func<bool> enabled) {
+            TextBlock unused;
+            double y = SettingsRowBase(icon, title, null, out unused);
+            var combo = At(settingsCanvas, new ComboBox { Style = (Style)window.FindResource("Pick"), ItemsSource = labels, FontSize = 13, Padding = new Thickness(12, 0, 30, 0) }, SettingsWidth - 16 - 190, y + 14, 190, 32);
             AutomationProperties.SetName(combo, title);
             combo.SelectionChanged += delegate {
                 if (syncingSettings || combo.SelectedIndex < 0) return;
@@ -612,39 +691,64 @@ namespace ClaudeLauncher {
                 combo.SelectedIndex = Math.Max(0, Array.IndexOf(values, get()));
                 combo.IsEnabled = enabled == null || enabled();
             });
-            return y + 48;
         }
-        Button ActionRow(Canvas c, double x, double y, string text, Action handler) {
-            var button = At(c, Action(text, "Btn", null, 13), x, y, 250, 34);
+        Button ButtonRow(string icon, string title, string detail, string text, Action handler, out TextBlock detailLabel) {
+            double y = SettingsRowBase(icon, title, detail, out detailLabel);
+            var probe = new TextBlock { Text = text, FontSize = 13, FontWeight = FontWeights.Medium };
+            probe.Measure(new Size(Double.PositiveInfinity, Double.PositiveInfinity));
+            double width = Math.Max(96, Math.Ceiling(probe.DesiredSize.Width) + 36);
+            var button = At(settingsCanvas, Action(text, "Btn", null, 13), SettingsWidth - 16 - width, y + 14, width, 32);
+            AutomationProperties.SetName(button, title + "：" + text);
             button.Click += delegate { handler(); };
             return button;
+        }
+        void ValueRow(string icon, string title, string value) {
+            TextBlock unused;
+            double y = SettingsRowBase(icon, title, null, out unused);
+            var label = At(settingsCanvas, T(value, 13, Muted, FontWeights.Normal), SettingsWidth - 16 - 240, y + 20, 240);
+            label.TextAlignment = TextAlignment.Right;
+        }
+        // 带信息图标的提示框。
+        void SettingsNote(string text) {
+            settingsY += 14;
+            var grid = new Grid { Margin = new Thickness(16, 10, 16, 10) };
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(26) });
+            grid.ColumnDefinitions.Add(new ColumnDefinition());
+            var glyph = Glyph("", 14, "#8A8178"); glyph.VerticalAlignment = VerticalAlignment.Top; glyph.Margin = new Thickness(0, 2, 0, 0); grid.Children.Add(glyph);
+            var label = new TextBlock { Text = text, FontSize = 12, Foreground = B(Muted), TextWrapping = TextWrapping.Wrap, LineHeight = 18 };
+            Grid.SetColumn(label, 1); grid.Children.Add(label);
+            var note = new Border { Background = B("#CCF5EEE6"), CornerRadius = new CornerRadius(10), Child = grid, Width = SettingsWidth };
+            note.Measure(new Size(SettingsWidth, Double.PositiveInfinity));
+            At(settingsCanvas, note, 0, settingsY);
+            settingsY += note.DesiredSize.Height;
         }
         void ShowSettingsSection(int index) {
             settingsSection = index;
             for (int i = 0; i < settingsSections.Length; i++) {
                 bool on = i == index;
-                settingsSections[i].Visibility = on ? Visibility.Visible : Visibility.Collapsed;
-                settingsTabs[i].Background = on ? B("#EDDDC9") : Brushes.Transparent;
-                settingsTabs[i].Foreground = B(on ? "#9A6447" : "#3A332D");
-                foreach (TextBlock label in ((StackPanel)settingsTabs[i].Content).Children) { label.Foreground = settingsTabs[i].Foreground; label.FontWeight = on ? FontWeights.SemiBold : FontWeights.Normal; }
+                ((ScrollViewer)settingsSections[i].Parent).Visibility = on ? Visibility.Visible : Visibility.Collapsed;
+                settingsTabs[i].Style = (Style)window.FindResource(on ? "Primary" : "Icon");
+                settingsTabs[i].FontWeight = on ? FontWeights.SemiBold : FontWeights.Medium;
             }
             if (index == 1) autoStartStatus.Text = AutoStartStatus();
         }
-        // 控件从编辑副本重新取值。
+        // 控件从草稿重新取值；草稿跨分类保留。
         void SyncSettings() {
             syncingSettings = true;
             try { foreach (Action sync in settingsSync) sync(); } finally { syncingSettings = false; }
+            saveSettings.IsEnabled = SettingsDirty;
         }
-        // 每次更改即时保存；被拒绝或写入失败时控件回到已保存值。
         void DraftChanged() {
-            if (!SaveSettings()) { draft = settings.Clone(); SyncSettings(); }
+            SyncSettings();
+            settingsFeedback.Text = SettingsDirty ? "有未保存的更改" : "与已保存设置一致";
         }
-        internal void ResetSettings() { draft = new LauncherSettings(); DraftChanged(); }
+        internal void DiscardSettings() { draft = settings.Clone(); SyncSettings(); settingsFeedback.Text = "已撤销未保存更改"; }
+        internal void ResetSettingsDraft() { draft = new LauncherSettings(); SyncSettings(); settingsFeedback.Text = "默认值已填入，请保存或撤销"; }
         internal bool SaveSettings() {
             LauncherSettings next = draft.Clone();
-            if (updating && next.AllowUpdates != settings.AllowUpdates) { Alert("更新正在进行", "请等待当前更新结束后再改变联网选项。"); return false; }
+            if (updating && next.AllowUpdates != settings.AllowUpdates) { Alert("更新正在进行", "请等待当前更新结束后再改变联网选项。其余更改仍保留在草稿中。"); return false; }
             try { next.Save(settingsPath); }
-            catch (Exception error) { Diagnostics.Error("settings_save_error", error); Alert("保存设置失败", error.Message + "\n运行设置保持原样。"); return false; }
+            catch (Exception error) { Diagnostics.Error("settings_save_error", error); Alert("保存设置失败", error.Message + "\n运行设置保持原样，草稿已保留。"); return false; }
             settings = next; draft = next.Clone();
             ApplySettings(); SyncSettings();
             settingsFeedback.Text = "设置已保存并生效，仅作用于本地启动器";
@@ -657,8 +761,9 @@ namespace ClaudeLauncher {
             timer.Interval = TimeSpan.FromSeconds(settings.RefreshInterval);
             if (tray != null) tray.Visible = settings.ShowTray;
             foreach (UIElement element in artwork) element.Visibility = settings.ShowArtwork ? Visibility.Visible : Visibility.Collapsed;
+            if (!settings.ShowUsage) ClearUsage();
             if (!settings.LocalNotifications) { toastTimer.Stop(); toast.Visibility = Visibility.Collapsed; }
-            if (logs.Count > settings.LogLimit) { logs.RemoveRange(settings.LogLimit, logs.Count - settings.LogLimit); RenderLogs(); }
+            if (logs.Count > settings.LogLimit) { logs.RemoveRange(settings.LogLimit, logs.Count - settings.LogLimit); SaveLogs(); RenderLogs(); }
             if (settings.RememberPage) RememberPage();
             else try { if (File.Exists(lastPagePath)) File.Delete(lastPagePath); } catch (Exception error) { Diagnostics.Error("last_page_clear_error", error); }
         }
@@ -696,7 +801,7 @@ namespace ClaudeLauncher {
             catch (Exception error) { Alert("导出失败", error.Message); }
         }
         void ShowHelp() {
-            Alert("本地使用帮助", "实例管理：手动启动或打开指定账号；“···”菜单可显示或复制目录、管理登录保护、删除账号（移到回收站）。\n账号管理：查看本机账号空间与运行状态。\n日志记录：本次运行的提示，可导出或清空，仅保留在内存。\n系统设置：切换或选择即保存生效；恢复默认确认后立即保存，不处理账号数据。\n\n启动器不查询 Claude 服务、不读取凭据，不控制官方客户端自身正常联网。联网更新默认关闭，开启后只访问本项目 GitHub。");
+            Alert("本地使用帮助", "实例管理：手动启动或打开指定账号；“···”菜单可显示或复制目录、管理登录保护、删除账号（移到回收站）。\n账号管理：查看本机账号空间与运行状态。\n日志记录：本次运行的提示，可导出或清空，仅保留在内存。\n系统设置：编辑后保存；撤销恢复已保存值；恢复默认只填入草稿，不处理账号数据。\n\n启动器不查询 Claude 服务、不读取凭据，不控制官方客户端自身正常联网。联网更新默认关闭，开启后只访问本项目 GitHub。");
         }
         internal string DiagnosticsText() {
             return "Claude MultiLauncher " + Updates.DisplayVersion + " (" + Updates.Version + ")\nWindows " + Environment.OSVersion.Version +
@@ -744,7 +849,12 @@ namespace ClaudeLauncher {
             DateTime now = DateTime.Now;
             logs.Insert(0, new LogEntry { At = now, Time = now.ToString("yyyy-MM-dd HH:mm:ss"), Level = level, Instance = match.Success ? "Claude " + Int32.Parse(match.Groups[1].Value) : "系统", Text = text });
             if (logs.Count > settings.LogLimit) logs.RemoveRange(settings.LogLimit, logs.Count - settings.LogLimit);
+            SaveLogs();
             RenderLogs();
+        }
+        // 只写启动器自己的日志文件；失败不弹窗、不再写日志（避免递归），内存记录保留。
+        void SaveLogs() {
+            try { LogStore.Save(logPath, logs); } catch (Exception) { }
         }
         // SPEC 账号与日志交互：时间、实例、级别、全文搜索组合筛选；结果保持新到旧。
         internal static List<LogEntry> FilterLogs(IEnumerable<LogEntry> entries, string query, string instance, string level, DateTime? since) {
@@ -754,7 +864,10 @@ namespace ClaudeLauncher {
         }
         List<LogEntry> FilteredLogs() {
             if (logTime == null) return logs.ToList();
-            DateTime? since = logTime.SelectedIndex == 1 ? DateTime.Now.AddMinutes(-5) : logTime.SelectedIndex == 2 ? DateTime.Now.AddHours(-1) : (DateTime?)null;
+            // 最近 7 天／24 小时／1 小时／5 分钟／本次运行／全部时间。
+            TimeSpan[] spans = { TimeSpan.FromDays(7), TimeSpan.FromHours(24), TimeSpan.FromHours(1), TimeSpan.FromMinutes(5) };
+            int period = logTime.SelectedIndex;
+            DateTime? since = period >= 0 && period < spans.Length ? DateTime.Now - spans[period] : period == 4 ? startedAt : (DateTime?)null;
             string instance = logInstance.SelectedIndex <= 0 ? null : (string)logInstance.SelectedItem;
             string level = logLevel.SelectedIndex <= 0 ? null : (string)logLevel.SelectedItem;
             return FilterLogs(logs, logSearch.Text, instance, level, since);
@@ -766,7 +879,7 @@ namespace ClaudeLauncher {
             int pages = Math.Max(1, (shown.Count + 9) / 10);
             logPageIndex = Math.Max(0, Math.Min(logPageIndex, pages - 1));
             if (shown.Count == 0) {
-                var empty = T(logs.Count == 0 ? "暂无日志" : "没有符合条件的日志，可调整筛选或搜索", 13, "#8A7F74", FontWeights.Normal); empty.TextAlignment = TextAlignment.Center;
+                var empty = T(logs.Count == 0 ? "暂无日志" : "没有匹配的日志，可清除搜索或切换筛选条件", 13, "#A59B90", FontWeights.Normal); empty.TextAlignment = TextAlignment.Center;
                 At(logRows, empty, 0, 190, 736);
             }
             var slice = shown.Skip(logPageIndex * 10).Take(10).ToList();
@@ -774,9 +887,9 @@ namespace ClaudeLauncher {
                 LogEntry entry = slice[i]; double y = i * 40;
                 if (i > 0) At(logRows, new Rectangle { Fill = B("#F3ECE3") }, 1, y, 734, 1);
                 At(logRows, T(entry.Time, 13, "#8A7F74", FontWeights.Normal), 24, y + 10, 166);
-                string[] tone = entry.Level == "错误" ? new[] { "#FBE3DF", "#C9604A" } : entry.Level == "警告" ? new[] { "#FBEFD9", "#B7832A" } : new[] { "#E3F3EA", "#3C8A68" };
-                var pill = At(logRows, new Border { CornerRadius = new CornerRadius(6), Background = B(tone[0]) }, 196, y + 9, 44, 22);
-                pill.Child = new TextBlock { Text = entry.Level, FontSize = 11, FontWeight = FontWeights.SemiBold, Foreground = B(tone[1]), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+                string[] tone = entry.Level == "错误" ? new[] { "#FCE3DD", "#C75F47" } : entry.Level == "警告" ? new[] { "#FCEBD2", "#C07A2A" } : new[] { "#DDF0E6", "#3C8A68" };
+                var pill = At(logRows, new Border { CornerRadius = new CornerRadius(6), Background = B(tone[0]), ToolTip = entry.Level }, 196, y + 9, 46, 22);
+                pill.Child = new TextBlock { Text = entry.Level, FontSize = 12, FontWeight = FontWeights.Medium, Foreground = B(tone[1]), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
                 At(logRows, T(entry.Instance, 13, Ink, FontWeights.Normal), 290, y + 10, 100);
                 // 只读可选择的事件内容；截断时悬停显示全文。
                 var text = At(logRows, new TextBox { Text = entry.Text, IsReadOnly = true, BorderThickness = new Thickness(0), Background = Brushes.Transparent, Foreground = B(Ink), FontSize = 13, Padding = new Thickness(0), ToolTip = entry.Text }, 402, y + 9, 314);
@@ -784,8 +897,32 @@ namespace ClaudeLauncher {
             }
             logPrev.IsEnabled = logPageIndex > 0;
             logNext.IsEnabled = logPageIndex < pages - 1;
-            logPageLabel.Text = "第 " + (logPageIndex + 1) + " / " + pages + " 页";
-            logSummary.Text = (shown.Count == logs.Count ? "共 " + logs.Count + " 条" : "筛选出 " + shown.Count + " / " + logs.Count + " 条") + " · 每页 10 条";
+            logPager.Children.Clear();
+            logPager.Children.Add(logPrev);
+            int last = -1;
+            foreach (int i in PageNumbers(pages, logPageIndex)) {
+                if (last >= 0 && i - last > 1) logPager.Children.Add(new TextBlock { Text = "…", Width = 24, FontSize = 13, Foreground = B("#8A8178"), TextAlignment = TextAlignment.Center, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 8, 0) });
+                int target = i;
+                var number = new Button { Content = (i + 1).ToString(), Style = (Style)window.FindResource(i == logPageIndex ? "Primary" : "Btn"), FontSize = 13, Width = 32, Height = 32, Padding = new Thickness(0), Margin = new Thickness(0, 0, 8, 0) };
+                number.Tag = new CornerRadius(8);
+                AutomationProperties.SetName(number, "第 " + (i + 1) + " 页");
+                number.Click += delegate { logPageIndex = target; RenderLogs(); };
+                logPager.Children.Add(number);
+                last = i;
+            }
+            logPager.Children.Add(logNext);
+            logSummary.Text = shown.Count == logs.Count || shown.Count == 0 ? "共 " + logs.Count + " 条日志 · 每页显示 10 条" : "匹配 " + shown.Count + " 条 / 共 " + logs.Count + " 条日志 · 每页显示 10 条";
+        }
+        // 数字页码：首页、末页、当前页前后各一页（从 0 起）。
+        internal static List<int> PageNumbers(int pages, int current) {
+            return Enumerable.Range(0, pages).Where(i => i == 0 || i == pages - 1 || Math.Abs(i - current) <= 1).ToList();
+        }
+        Button PagerButton(string glyph, string name, string id) {
+            var button = new Button { Content = Glyph(glyph, 11, Ink), Style = (Style)window.FindResource("Btn"), Width = 32, Height = 32, Padding = new Thickness(0), Margin = new Thickness(0, 0, 8, 0), ToolTip = name };
+            button.Tag = new CornerRadius(8);
+            ((TextBlock)button.Content).SetBinding(TextBlock.ForegroundProperty, new System.Windows.Data.Binding("Foreground") { Source = button });
+            AutomationProperties.SetName(button, name); AutomationProperties.SetAutomationId(button, id);
+            return button;
         }
         // 导出全部筛选结果（不只是当前页），按时间正序。
         void ExportLogs() {
@@ -804,9 +941,11 @@ namespace ClaudeLauncher {
 
         // ---- 账号页：别名、筛选、选择 ----
         int accountsShown;
+        // 别名优先，其次本地 Claude Code 用户名，最后“账号 NN”；编号始终保留。
         string DisplayName(int n) {
             string alias;
-            return accountNames.TryGetValue(n, out alias) ? alias + " · " + Two(n) : "账号 " + Two(n);
+            if (!accountNames.TryGetValue(n, out alias)) alias = CodeName(n);
+            return alias != null ? alias + " · " + Two(n) : "账号 " + Two(n);
         }
         // 当前可见且选中的账号；隐藏的选择在此清除，避免误操作。
         void UpdateSelection() {
@@ -894,7 +1033,7 @@ namespace ClaudeLauncher {
             return box;
         }
         ComboBox Choice(Canvas canvas, double x, double y, double width, double height, string[] items, string name) {
-            var combo = At(canvas, new ComboBox { ItemsSource = items, SelectedIndex = 0, FontSize = 13, VerticalContentAlignment = VerticalAlignment.Center, Padding = new Thickness(12, 0, 8, 0) }, x, y, width, height);
+            var combo = At(canvas, new ComboBox { Style = (Style)window.FindResource("Pick"), ItemsSource = items, SelectedIndex = 0, FontSize = 13, Padding = new Thickness(14, 0, 30, 0) }, x, y, width, height);
             AutomationProperties.SetName(combo, name);
             return combo;
         }
@@ -916,10 +1055,13 @@ namespace ClaudeLauncher {
                 card.Status.Text = state; card.Status.Foreground = B(broken ? "#C9604A" : Muted);
                 card.Status.ToolTip = errors.ContainsKey(n) ? errors[n] : found.Count > 0 ? "主进程 PID：" + String.Join("、", found.Select(x => x.ProcessId)) : Core.DisplayFolder(n);
                 card.Dot.Fill = B(dot);
+                // 目录与 Code 配置状态移入卡片悬停提示（SPEC 实例卡片）。
                 LaunchRecord record; launched.TryGetValue(n, out record);
-                card.Code.Text = healthy ? Core.CodeState(n, instances, record) : "Code 未确认";
-                ((FrameworkElement)card.Code.Parent).ToolTip = n == 1 ? "01 沿用默认 Code 配置，与普通终端 CLI 共用。" : card.Code.Text == "Code 已指定" ? "本次启动时已指定独立 Code 配置；尚未验证 Code 的实际写入位置。" :
-                    card.Code.Text == "Code 待启动" ? "从启动器启动后才会指定独立 Code 配置。" : "运行中实例的 Code 配置未确认。保存工作后正常退出该 Claude，再从这里启动；不会迁移或删除旧记录。";
+                string code = healthy ? Core.CodeState(n, instances, record) : "Code 未确认";
+                string codeNote = n == 1 ? "01 沿用默认 Code 配置，与普通终端 CLI 共用。" : code == "Code 已指定" ? "本次启动时已指定独立 Code 配置；尚未验证 Code 的实际写入位置。" :
+                    code == "Code 待启动" ? "从启动器启动后才会指定独立 Code 配置。" : "运行中实例的 Code 配置未确认。保存工作后正常退出该 Claude，再从这里启动；不会迁移或删除旧记录。";
+                card.Root.ToolTip = "目录：" + Core.DisplayFolder(n) + "\n" + code + "：" + codeNote;
+                if (visible) { string name = DisplayName(n); card.Title.Text = rows[n].Name.Text = name; rows[n].Name.ToolTip = name; }
                 string title = incomplete ? "重试删除" : isChecking ? "检查中" : starting ? "启动中" : found.Count > 0 ? "打开" : hasData ? "启动" : "创建";
                 card.Action.Content = title;
                 card.Action.Style = (Style)window.FindResource(title == "打开" ? "Primary" : title == "创建" ? "Create" : "Btn");
@@ -934,7 +1076,7 @@ namespace ClaudeLauncher {
                 bool rowBusy = starting || isChecking;
                 // 进程扫描失败时不伪装成确定状态（SPEC 账号与日志交互）。
                 string category = !healthy ? "未知" : broken ? "异常" : rowBusy ? "处理中" : found.Count > 0 ? "运行中" : "未运行";
-                string alias; accountNames.TryGetValue(n, out alias);
+                string alias; if (!accountNames.TryGetValue(n, out alias)) alias = CodeName(n);
                 bool matches = AccountNames.Matches(n, alias, Core.DisplayFolder(n), accountSearch.Text) &&
                     (accountStatus.SelectedIndex <= 0 || StatusFilters[accountStatus.SelectedIndex] == category);
                 row.Root.Visibility = matches ? Visibility.Visible : Visibility.Collapsed;
@@ -954,9 +1096,134 @@ namespace ClaudeLauncher {
             accountsEmpty.Visibility = shown > 0 && !rows.Values.Any(r => r.Root.Visibility == Visibility.Visible) ? Visibility.Visible : Visibility.Collapsed;
             accountsShown = shown;
             UpdateSelection();
+            RenderUsage();
+            SyncPopupWatches();
             if (healthy && loginAccount != 0)
                 Message("账号 " + Two(loginAccount) + " 登录保护中。" + (instances.Any(x => x.Number != loginAccount) ? "检测到其他 Claude！请停止登录，并正常退出其他实例。" : "完成登录并核对身份后，点「结束登录保护」恢复多开。"), false);
         }
+        // ---- 本地界面用量（SPEC 本地界面用量 [Windows]） ----
+        bool CanObserveUsage() {
+            return settings.ShowUsage && !snapshotMode && !closed && healthy && loginAccount == 0 && page == 0 &&
+                window.IsVisible && window.WindowState != WindowState.Minimized && !readingUsage && DateTime.UtcNow - lastUsageRead >= TimeSpan.FromSeconds(1);
+        }
+        // 后台读取每个只有一个已核实主进程的账号；读取前后身份一致才采用。读取中保留旧值。
+        // trigger 非 0：用户手动展开了该 PID 的官方用量弹窗（D3），只读这一个账号，不要求停在实例页；忙碌时排队合并。
+        async Task ReadUsage(int trigger = 0) {
+            if (trigger != 0) {
+                if (!settings.ShowUsage || snapshotMode || closed || !healthy || loginAccount != 0) return;
+                if (readingUsage) { pendingPopups.Add(trigger); return; }
+            } else if (!CanObserveUsage()) return;
+            readingUsage = true; if (trigger == 0) lastUsageRead = DateTime.UtcNow;
+            int generation = usageGeneration;
+            var before = instances.ToList();
+            Dictionary<int, Tuple<UsageRecord, string, DateTime>> results;
+            try {
+                results = await Task.Run(() => {
+                    var read = new Dictionary<int, Tuple<UsageRecord, string, DateTime>>();
+                    for (int n = 1; n <= 10; n++) {
+                        var found = before.Where(x => x.Number == n).ToList();
+                        if (found.Count != 1 || (trigger != 0 && found[0].ProcessId != trigger)) continue;
+                        string identity = UsageInterface.Identity(n, found[0]);
+                        read[n] = Tuple.Create(UsageInterface.ReadProcess(found[0].ProcessId, identity), identity, DateTime.Now);
+                    }
+                    List<Instance> after = null;
+                    try { if (read.Count > 0) after = Core.Scan(); } catch (Exception) { }
+                    foreach (int n in read.Keys.ToList()) {
+                        var found = after == null ? null : after.Where(x => x.Number == n).ToList();
+                        if (found == null || found.Count != 1 || UsageInterface.Identity(n, found[0]) != read[n].Item2)
+                            read[n] = Tuple.Create(new UsageRecord { Status = "账号状态变化，待读取" }, (string)null, read[n].Item3);
+                    }
+                    return read;
+                });
+            } finally { readingUsage = false; }
+            if (closed || generation != usageGeneration || !settings.ShowUsage || loginAccount != 0) return;
+            bool changed = false;
+            foreach (var pair in results) {
+                int n = pair.Key;
+                string current = CurrentUsageIdentity(n);
+                if (pair.Value.Item2 == null || current != pair.Value.Item2) { usage[n] = pair.Value.Item1; continue; }
+                UsageRecord previous, stored, kept;
+                usage.TryGetValue(n, out previous); savedUsage.TryGetValue(n, out stored);
+                kept = previous != null && previous.Status == UsageInterface.Observed ? previous : stored;
+                usage[n] = UsageInterface.Merge(kept, pair.Value.Item1, current, pair.Value.Item3);
+                if (usage[n].Status == UsageInterface.Observed && usage[n] != stored) { savedUsage[n] = usage[n]; changed = true; }
+            }
+            // 身份已变化的保存记录不再恢复。
+            foreach (int n in savedUsage.Keys.ToList()) {
+                string current = CurrentUsageIdentity(n);
+                if (current != null && current != savedUsage[n].Identity) { savedUsage.Remove(n); changed = true; }
+            }
+            if (changed) try { UsageInterface.Save(usagePath, savedUsage.Values); } catch (Exception error) { Diagnostics.Error("usage_save_error", error); }
+            RenderUsage();
+            if (pendingPopups.Count > 0) { int next = pendingPopups.First(); pendingPopups.Remove(next); await ReadUsage(next); }
+        }
+        // D3：为每个只有一个主进程、有可见窗口的账号注册一次展开通知；注册失败不重试；进程变化、登录保护、扫描失败或关闭显示时注销。
+        void SyncPopupWatches() {
+            if (snapshotMode) return;
+            var wanted = new Dictionary<string, int>();
+            if (settings.ShowUsage && healthy && loginAccount == 0 && !closed)
+                foreach (var group in instances.Where(x => x.Number > 0).GroupBy(x => x.Number))
+                    if (group.Count() == 1) wanted[UsageInterface.Identity(group.Key, group.First())] = group.First().ProcessId;
+            foreach (string key in popupWatches.Keys.Where(k => !wanted.ContainsKey(k)).ToList()) {
+                PopupWatch old = popupWatches[key]; popupWatches.Remove(key);
+                if (old != null) Task.Run(() => old.Dispose());
+            }
+            foreach (var pair in wanted) {
+                if (popupWatches.ContainsKey(pair.Key) || Native.WindowFor(pair.Value) == IntPtr.Zero) continue; // 托盘中无窗口：等窗口出现再注册
+                string key = pair.Key; int pid = pair.Value;
+                popupWatches[key] = null;
+                Action opened = () => window.Dispatcher.BeginInvoke(new Action(async () => { await Task.Delay(200); await ReadUsage(pid); }));
+                Task.Run(() => PopupWatch.Start(pid, opened)).ContinueWith(task => {
+                    if (!popupWatches.ContainsKey(key)) { if (task.Result != null) Task.Run(() => task.Result.Dispose()); return; }
+                    popupWatches[key] = task.Result;
+                    if (task.Result == null) AddLog("PID " + pid + " 未提供用量展开通知；仍可在实例页主动读取。");
+                }, TaskScheduler.FromCurrentSynchronizationContext());
+            }
+        }
+        string CurrentUsageIdentity(int n) {
+            var found = instances.Where(x => x.Number == n).ToList();
+            return found.Count == 1 ? UsageInterface.Identity(n, found[0]) : null;
+        }
+        void ClearUsage() {
+            usageGeneration++; usage.Clear(); savedUsage.Clear();
+            try { if (File.Exists(usagePath)) File.Delete(usagePath); } catch (Exception error) { Diagnostics.Error("usage_clear_error", error); }
+            RenderUsage(); SyncPopupWatches();
+        }
+        const string UsageNote = "在实例页激活窗口、切到实例页或点击时，或你在 Claude 中手动展开官方用量弹窗时，读取一次已显示的用量按钮和弹窗。不定时读取、不代点、不调用用量查询，不读官方历史、Cookies 或登录信息。首次读取会让该 Claude 进程开启本机网页辅助功能树，直到它退出。时间是本机观察时间，不是服务器实时额度，两项时间独立。未做组织核对：同一账号内切换组织后，在 Claude 重启前可能仍显示上一组织的数值。";
+        void RenderUsage() {
+            if (cards.Count < 10) return;
+            DateTime now = DateTime.Now;
+            for (int n = 1; n <= 10; n++) {
+                Card card = cards[n];
+                var found = instances.Where(x => x.Number == n).ToList();
+                UsageRecord record; usage.TryGetValue(n, out record);
+                string current = found.Count == 1 && (record != null || savedUsage.ContainsKey(n)) ? UsageInterface.Identity(n, found[0]) : null;
+                if ((record == null || record.Status != UsageInterface.Observed) && savedUsage.ContainsKey(n) && savedUsage[n].Identity == current && (record == null || record.Status.StartsWith("未观察到") || record.Status == "界面读取未完成")) record = savedUsage[n];
+                string status = record != null ? record.Status : "未观察到 Code 用量";
+                if (!snapshotMode && record != null && record.Identity != null && record.Identity != current) status = "账号进程变化，待读取";
+                if (!snapshotMode && found.Count == 0) status = "Claude 未运行";
+                if (found.Count > 1) status = "多个主进程，待核对";
+                if (loginAccount != 0) status = "登录保护中";
+                if (!healthy) status = "进程待核对";
+                if (!settings.ShowUsage) status = "本地用量显示已关闭";
+                bool available = status == UsageInterface.Observed;
+                card.Source.Text = available ? "" : status;
+                card.Source.ToolTip = UsageNote;
+                for (int row = 0; row < 2; row++) {
+                    UsageMetric metric = available ? (row == 0 ? record.FiveHour : record.Weekly) : null;
+                    card.Values[row].Text = metric != null ? Math.Round(metric.Percent).ToString("0") + "%" : "—";
+                    card.Values[row].Foreground = B(metric != null ? Ink : Faint);
+                    card.Bars[row].Width = metric != null ? 150 * metric.Percent / 100 : 0;
+                    card.Times[row].Text = UsageInterface.TimeLabel(metric, now);
+                    string tip = metric != null ? UsageNote + "\n观察时间：" + metric.Observed.ToString("yyyy-MM-dd HH:mm:ss") + "\n官方重置说明：" + (metric.Reset.Length > 0 ? metric.Reset : "未提供") : UsageNote;
+                    card.Values[row].ToolTip = card.Times[row].ToolTip = tip;
+                    AutomationProperties.SetName(card.Values[row], (row == 0 ? "5小时已使用" : "每周已使用") + "，" + card.Values[row].Text + "，观察时间 " + card.Times[row].Text + (available ? "" : "，" + status));
+                }
+            }
+        }
+        // 仅供测试与离屏预览：注入一条合成观察记录，不读取真实 Claude。
+        internal void SetUsage(int number, UsageRecord record) { usage[number] = record; RenderUsage(); }
+
         // 目录修改时间只是元数据，近似“最近使用”，不打开账号文件。
         static string Recent(int number) {
             try {
@@ -1071,31 +1338,7 @@ namespace ClaudeLauncher {
             Instance running = instances.FirstOrDefault(x => x.Number == number);
             if (running != null) { await Activate(number, running); return; }
             if (!create && loginAccount == 0 && !Core.HasData(number)) { Message("账号目录已变化，未创建新目录。请重新点击。", true); return; }
-            if (!await ConfirmEnvironment(number)) return;
-            // 对话框期间状态可能变化：重新扫描并核对后再启动。
-            if (!await ScanNow()) { Alert("实例或保护状态已变化", scanError); return; }
-            failure = Core.OpeningBlocker(number, 0, instances, loginAccount, Busy());
-            if (failure != null || Core.Running(number, instances)) { Alert("状态已变化，未启动", failure ?? "该账号已在运行，请重新点击。"); return; }
-            if (!create && loginAccount == 0 && !Core.HasData(number)) { Message("账号目录已变化，未创建新目录。请重新点击。", true); return; }
             await Launch(number);
-        }
-        // 每次启动新实例前做本机代理检测，用户确认后才启动；不访问外部网络。
-        async Task<bool> ConfirmEnvironment(int number) {
-            checking.Add(number); Render();
-            Message("账号 " + Two(number) + "：正在检测电脑网络环境…", false);
-            List<string> lines = null; bool ok = false;
-            try { ok = await Task.Run(() => ProxyCheck.Report(out lines)); }
-            catch (Exception error) { Diagnostics.Error("proxy_check_error", error); lines = new List<string> { "✗ 检测失败：" + error.Message }; }
-            if (closed) { checking.Remove(number); return false; }
-            int choice = Ask(ok ? "网络环境检测：已检测到代理" : "网络环境检测：未检测到可用代理",
-                string.Join("\n", lines) + "\n\n" + (ok ? "请确认代理节点可用后继续启动。" : "Claude 需要可用的代理才能正常连接。建议先开启代理软件的系统代理或 TUN 模式，再继续启动。")
-                + "\n\n仅读取本机系统代理设置与网卡，不访问外部网络，无法确认出口 IP 所在地区。",
-                ok ? new[] { "确认启动", "取消" } : new[] { "取消", "仍然启动" }, ok ? 1 : 0, 0);
-            // 未检测到可用代理时回车即取消，必须明确点“仍然启动”。
-            bool confirmed = ok ? choice == 0 : choice == 1;
-            checking.Remove(number); Render();
-            if (!confirmed) Message("账号 " + Two(number) + "：已取消启动。", false);
-            return confirmed;
         }
         async Task Launch(int number) {
             pending[number] = DateTime.UtcNow; Render();
@@ -1375,11 +1618,16 @@ namespace ClaudeLauncher {
             if (progress == null || progress.Finished) return;
             progress.Finished = true; progress.Window.Close();
         }
-        // SPEC 网络边界：只在已开启时检查本项目 GitHub Releases；失败时提供“前往 GitHub 下载”。
+        // SPEC 网络边界：只在已保存开启时检查本项目 GitHub Releases；有未保存设置时不开始；失败时提供“前往 GitHub 下载”。
         async Task CheckUpdate(bool manual) {
             if (updating || closed) return;
             if (!settings.AllowUpdates) {
-                if (manual) Alert("未开启检查更新", "请在系统设置中开启“允许检查 GitHub 更新”后再检查。未开启时启动器不会联网。");
+                if (manual) Alert("未开启检查更新", "请在系统设置中开启“检查启动器更新”并点“保存设置”后再检查。未开启时启动器不会联网。");
+                return;
+            }
+            if (SettingsDirty) {
+                if (manual) Alert("有未保存的设置", "请先保存或改回未保存的设置，再检查更新。");
+                else AddLog("有未保存的设置，跳过本次更新检查");
                 return;
             }
             if (manual && (deleting || pending.Count > 0 || checking.Count > 0)) { Message("请先等待当前操作完成。", true); return; }
@@ -1404,7 +1652,7 @@ namespace ClaudeLauncher {
                     if (deleting || pending.Count > 0 || checking.Count > 0) { Message("发现新版本 " + release.version + "，当前操作完成后可在系统设置中更新。", false); return; }
                     if (Ask("发现新版本 " + release.version, "当前版本 " + Updates.DisplayVersion + "。更新会先校验安装包，再关闭启动器、卸载旧版并安装新版，完成后重新打开；Claude 实例和账号数据不受影响。",
                         new[] { "稍后", "立即更新" }, 0, 1) != 1) return;
-                    if (!settings.AllowUpdates) { Message("设置已更改，未开始更新。", true); return; }
+                    if (SettingsDirty || !settings.AllowUpdates) { Message("设置已更改，未开始更新。", true); return; }
                     accepted = true;
                     progress = BuildUpdateProgress(release.version);
                     progress.Window.Owner = window;
@@ -1435,8 +1683,8 @@ namespace ClaudeLauncher {
                     if (closed) { if (setup != null) Updates.Discard(setup); return; }
                     if (setup != null) {
                         if (progress.Cancelled) { Updates.Discard(setup); CloseProgress(progress); Message("已取消更新，未做任何改动。", false); return; }
-                        // 下载期间更新被关闭：安装前取消并清理临时文件，保留当前程序。
-                        if (!settings.AllowUpdates) { Updates.Discard(setup); CloseProgress(progress); Message("设置在下载期间被更改，已取消更新并删除临时文件。", true); return; }
+                        // 下载期间出现未保存设置或更新被关闭：安装前取消并清理临时文件，保留当前程序和草稿。
+                        if (SettingsDirty || !settings.AllowUpdates) { Updates.Discard(setup); CloseProgress(progress); Message("设置在下载期间被更改，已取消更新并删除临时文件。", true); return; }
                         SetUpdateStep(progress, 1);
                         progress.Cancel.IsEnabled = false;
                         progress.Bar.IsIndeterminate = true;
@@ -1451,7 +1699,7 @@ namespace ClaudeLauncher {
                         Diagnostics.Write("update_handoff", "退出启动器，交由安装程序卸载旧版并安装新版");
                         await Task.Delay(TimeSpan.FromSeconds(2));
                         CloseProgress(progress);
-                        ExitLauncher(); return;
+                        ExitLauncher(true); return;
                     }
                 }
                 CloseProgress(progress);
@@ -1512,6 +1760,42 @@ namespace ClaudeLauncher {
  <Style x:Key='Nav' TargetType='Button' BasedOn='{StaticResource Icon}'>
   <Setter Property='HorizontalContentAlignment' Value='Left'/><Setter Property='Padding' Value='20,0,0,0'/>
   <Setter Property='Tag'><Setter.Value><CornerRadius>14</CornerRadius></Setter.Value></Setter>
+ </Style>
+ <Style x:Key='Pick' TargetType='ComboBox'>
+  <Setter Property='Foreground' Value='#2B2622'/><Setter Property='Cursor' Value='Hand'/><Setter Property='FocusVisualStyle' Value='{x:Null}'/>
+  <Setter Property='ItemContainerStyle'><Setter.Value><Style TargetType='ComboBoxItem'>
+   <Setter Property='Padding' Value='10,6'/><Setter Property='Cursor' Value='Hand'/>
+   <Setter Property='Template'><Setter.Value><ControlTemplate TargetType='ComboBoxItem'>
+    <Border x:Name='Row' Background='Transparent' CornerRadius='6' Padding='{TemplateBinding Padding}'><ContentPresenter/></Border>
+    <ControlTemplate.Triggers>
+     <Trigger Property='IsHighlighted' Value='True'><Setter TargetName='Row' Property='Background' Value='#F3E6DA'/></Trigger>
+     <Trigger Property='IsSelected' Value='True'><Setter Property='Foreground' Value='#9A6447'/><Setter Property='FontWeight' Value='SemiBold'/></Trigger>
+    </ControlTemplate.Triggers>
+   </ControlTemplate></Setter.Value></Setter>
+  </Style></Setter.Value></Setter>
+  <Setter Property='Template'><Setter.Value><ControlTemplate TargetType='ComboBox'>
+   <Grid>
+    <ToggleButton Focusable='False' ClickMode='Press' IsChecked='{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}'>
+     <ToggleButton.Template><ControlTemplate TargetType='ToggleButton'>
+      <Border x:Name='Box' Background='#F7FFFDFA' BorderBrush='#E3D9CD' BorderThickness='1' CornerRadius='10'>
+       <TextBlock Text='&#xE70D;' FontFamily='Segoe Fluent Icons, Segoe MDL2 Assets' FontSize='10' Foreground='#6E655C' HorizontalAlignment='Right' VerticalAlignment='Center' Margin='0,0,12,0'/>
+      </Border>
+      <ControlTemplate.Triggers><Trigger Property='IsMouseOver' Value='True'><Setter TargetName='Box' Property='BorderBrush' Value='#D2C3B2'/></Trigger></ControlTemplate.Triggers>
+     </ControlTemplate></ToggleButton.Template>
+    </ToggleButton>
+    <ContentPresenter IsHitTestVisible='False' Content='{TemplateBinding SelectionBoxItem}' Margin='{TemplateBinding Padding}' VerticalAlignment='Center' HorizontalAlignment='Left'/>
+    <Border x:Name='Focus' BorderBrush='#B9825F' BorderThickness='2' CornerRadius='10' IsHitTestVisible='False' Visibility='Collapsed'/>
+    <Popup IsOpen='{TemplateBinding IsDropDownOpen}' Placement='Bottom' AllowsTransparency='True' Focusable='False' PopupAnimation='Fade'>
+     <Border Background='#FFFCF7' BorderBrush='#E3D9CD' BorderThickness='1' CornerRadius='8' Margin='0,4,0,0' Padding='4' MinWidth='{Binding ActualWidth, RelativeSource={RelativeSource TemplatedParent}}'>
+      <ScrollViewer MaxHeight='300' VerticalScrollBarVisibility='Auto'><ItemsPresenter/></ScrollViewer>
+     </Border>
+    </Popup>
+   </Grid>
+   <ControlTemplate.Triggers>
+    <Trigger Property='IsKeyboardFocused' Value='True'><Setter TargetName='Focus' Property='Visibility' Value='Visible'/></Trigger>
+    <Trigger Property='IsEnabled' Value='False'><Setter Property='Opacity' Value='0.5'/></Trigger>
+   </ControlTemplate.Triggers>
+  </ControlTemplate></Setter.Value></Setter>
  </Style>
  <Style x:Key='Switch' TargetType='CheckBox'>
   <Setter Property='Cursor' Value='Hand'/><Setter Property='FocusVisualStyle' Value='{x:Null}'/>

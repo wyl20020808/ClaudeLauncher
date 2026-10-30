@@ -15,7 +15,6 @@ C# 5 / .NET Framework 4.8 WPF（系统自带），无 NuGet 依赖。构建脚�
 | 单实例 | 按用户 SID 命名的 Mutex，重复打开时激活已有窗口 |
 | 存储校验 | `FileAttributes.ReparsePoint`、ACL 所有者、`GetFileInformationByHandle` 链接数（只读属性，不打开内容），存储项内部递归，在后台线程执行 |
 | 界面 | WPF 代码构建，水墨浅色四页（实例管理、账号管理、日志记录、系统设置六分类） |
-| 启动前网络环境检测 | `src/ProxyCheck.cs`：HKCU `Internet Settings` 代理、`NetworkInterface` TUN／VPN 网卡，只探测本机回环端口 |
 | 设置 | `%LOCALAPPDATA%\Claude-MultiLauncher\settings.json`（`src/Settings.cs`）；开机启动为 HKCU Run 的 `ClaudeMultiLauncher` 值 |
 
 目录：`src/` 生产源码（`ClaudeLauncher.cs` 核心逻辑，`LauncherUI.cs` 界面与流程，`Storage.cs` 存储校验与自检），`tests/` 自动检查，`scripts/` 构建、安装包与发布工具，`installer/` Inno Setup 脚本，`assets/` 图标与更新验签公钥，`updates/` 自建更新服务，`docs/` 开发、设计和用户说明。界面插画取自仓库根目录 `resources/ui/*.webp`，构建时转为 JPEG 内嵌，客户电脑不需要 WebP 解码器。
@@ -51,7 +50,7 @@ artifacts\bin\ClaudeLauncher.exe --self-test | Write-Output
 - 系统设置：11 项默认值与 SPEC 一致；单项异常（越界、类型不符、路径当页面名）只回落该项；全部字段往返；导出为 version 1 且不含账号数据；上次页面白名单；开机启动只接受正式安装路径、值比较规则（不读写真实注册表）。
 - 账号别名与搜索：≤24 字、去首尾空白、拒绝控制字符；往返；无效条目跳过；损坏／未知版本报错且保留原文件；越界编号拒绝；别名、“账号 NN”、编号、目录均可匹配。
 - 账号页与日志页（LauncherTests）：按编号与别名搜索、状态筛选、全选当前结果、部分选中中间态、隐藏选择清除、复制路径只含可见选择；别名写入启动器自己的文件、卡片与表格同步、无效别名不改动、留空恢复默认、不进入设置导出；日志分页（10 条、上／下一页启停）、搜索回到第一页、级别／实例／时间筛选、空结果说明、导出为全部筛选结果且按时间正序、内容只读可选并有全文提示。
-- 界面（LauncherTests，合成设置 + 临时路径）：六个分类按钮、假选项已移除；保存／撤销按钮已移除，开关与选项即时写入文件；恢复上次页面时默认页面禁用；日志上限即时截断内存日志、插画隐藏、窗口内提示关闭；恢复默认立即保存并生效；更新检查在未开启时不创建请求；诊断只含版本、系统版本与联网开关。
+- 界面（LauncherTests，合成设置 + 临时路径）：六个分类按钮、假选项已移除；开关改变草稿、切换分类保留草稿、撤销不写文件；恢复上次页面时默认页面禁用；保存后日志上限截断内存日志、插画隐藏、窗口内提示关闭；恢复默认只填草稿；更新检查在未开启或有未保存设置时不创建请求；诊断只含版本、系统版本与联网开关。
 
 1.2.0 兼容的 `--apply-update` 原地替换改动后，另运行 `scripts/test-install.ps1`。
 
@@ -63,20 +62,20 @@ artifacts\bin\ClaudeLauncher.exe --self-test | Write-Output
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup.ps1
 ```
 
-先执行 `build.ps1`（含自动检查与自检），再调用 Inno Setup 6（`ISCC.exe`，可用 `winget install JRSoftware.InnoSetup --scope user` 安装）生成 `artifacts/setup/ClaudeLauncherSetup-1.7.0.exe`（SPEC 文件名）。要求 Windows 10.0.19041 及以上（与清单 `minimumOS` 一致）。产物不提交到 Git。
+先执行 `build.ps1`（含自动检查与自检），再调用 Inno Setup 6（`ISCC.exe`，可用 `winget install JRSoftware.InnoSetup --scope user` 安装）生成 `artifacts/setup/ClaudeLauncherSetup-<版本>.exe`（SPEC 文件名）。要求 Windows 10.0.19041 及以上（与清单 `minimumOS` 一致）。产物不提交到 Git。
 
 - 按当前用户安装到 `%LOCALAPPDATA%\Programs\Claude 多开启动器`，不需要管理员权限；创建开始菜单快捷方式，桌面快捷方式可选；“应用和功能”中可卸载。
 - 先卸载再安装（SPEC）：用固定 AppId 查当前用户的卸载项；已安装时提示“检测到已安装 x.y.z，将先卸载再安装新版”。随后按 PID 核对、对旧安装目录中运行的启动器窗口发送正常关闭（WM_CLOSE，不结束进程，不涉及 Claude），等待退出；再静默运行旧版卸载程序，等卸载项和旧卸载程序都消失后才安装新版。启动器无法正常关闭（如删除未完成）或旧版卸载失败、超时，都中止安装并提示原因。
 - 卸载只删除安装的 `ClaudeLauncher.exe`、卸载程序以及自建更新在安装目录内留下的 `.previous-*`、`.new-*`、`.failed-*` 文件。**不删除任何账号数据目录**（`%APPDATA%\Claude-*`、`%LOCALAPPDATA%\Claude-Data`、商店版 `Packages\Claude_*`），也不删除启动器日志、登录保护和删除状态目录 `%LOCALAPPDATA%\Claude-MultiLauncher`。
 - 升级覆盖安装时，Inno Setup 只会请求关闭占用本程序文件的进程（启动器本身），不涉及 Claude。
-- 版本号 1.7.3（程序集 1.7.3.0，见 `src/Updates.cs`）；与 macOS 各自递增，不要求一致。
+- 版本号 1.8.3（程序集 1.8.3.0，见 `src/Updates.cs`）；与 macOS 各自递增，不要求一致。
 - 安装向导为简体中文：`installer/ChineseSimplified.isl` 取自 Inno Setup 官方源码 `Files/Languages/ChineseSimplified.isl`（6.5.0+；6.7.3 安装包未自带）。
 - **代码签名：未签名。** 本机没有代码签名证书，安装程序和 `ClaudeLauncher.exe` 都没有 Authenticode 签名。客户首次运行会看到 SmartScreen“Windows 已保护你的电脑”，需点“更多信息 → 仍要运行”；部分杀毒软件可能更谨慎。需要正式证书（OV/EV）后在打包时对 exe 和 setup.exe 签名，此项待用户决定。
 - 应用内更新运行 Setup 的参数 `/SILENT /SUPPRESSMSGBOXES /NORESTART /RELAUNCH=1`：只显示中文进度窗口（“正在卸载旧版… / 正在安装”），不显示向导页和确认框；`/RELAUNCH=1` 仅在静默模式下让 Setup 装好后重新打开启动器。1.7.1 及更早版本用 `/VERYSILENT`，不显示任何窗口。
 
 ## 应用内更新（SPEC 更新与安装）
 
-- 开关（feature/windows-update-boundary 起）：`allowUpdates` 默认关闭，保存在 `%LOCALAPPDATA%\Claude-MultiLauncher\settings.json`；系统设置“关于软件 → 允许检查 GitHub 更新”切换即保存生效。未开启时设置页“检查更新”与托盘“检查更新…”都不联网，只提示开启；更新进行中不能改此开关；下载期间被关闭则安装前取消并删除临时文件。
+- 开关（feature/windows-update-boundary 起）：`allowUpdates` 默认关闭，保存在 `%LOCALAPPDATA%\Claude-MultiLauncher\settings.json`；系统设置“关于 → 允许检查 GitHub 更新”切换后需点“保存设置”。未开启时设置页“检查更新”与托盘“检查更新…”都不联网，只提示开启；有未保存设置时不开始；下载期间设置被改则安装前取消并删除临时文件。
 - 时机：开启后每次打开启动器检查一次（只在有新版时提示，失败只记日志）+ 手动检查；没有定时或后台重复检查，已删除 8 秒／24 小时自动检查及 `last-update-check`。
 - 来源：只用 `https://github.com/wyl20020808/ClaudeLauncher/releases/latest/download/latest-windows.json` 与同 Release 的 Setup；失败时显示原因并提供“前往 GitHub 下载”（打开 Releases 页面）。自建服务与“取较高版本”已从客户端移除（发布脚本过渡期仍为旧客户端同步自建服务）。
 - 清单：`platform=windows`、`version` x.y.z、`file=ClaudeLauncherSetup-<版本>.exe`、`size`（1 KB～50 MB）、小写 `sha256`、`minimumOS`、`signature`；签名原文为 platform、version、file、size、sha256 各一行（`\n` 结尾），RSA-3072 + SHA-256（PKCS#1 v1.5），公钥 `assets/update-public-key.xml`（与 macOS 同一把）。清单上限 16 KB。
@@ -88,11 +87,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup.ps1
 
 ## 发布（发布机）
 
-两种方式：只发布 Windows 时直接运行 `scripts/publish-release.ps1`（标签 `windows-v<版本>`，从当前最新 Release 带入已签名的 macOS 清单与 DMG，验签核对后一并放进新 Release，自建服务的 macOS 清单不动）；两端同时发布时运行 `scripts/publish-release.ps1 -MacSize <字节> -MacSha256 <哈希>`（标签 `v<版本>`）：构建 Setup → 从草稿 Release `v<版本>` 下载 macOS DMG 并核对 macOS 给出的 size/sha256 → 内存中解密 DPAPI 私钥，签名 `latest-windows.json`、`latest-macos.json`（首行 `macos`、`ClaudeLauncher-<版本>.dmg`、`minimumOS=12.0`）和 1.2.0 兼容 `latest.json`，并本地验签 → 安装包复制到 `updates/public/` → Setup 与两份清单上传到草稿 → 原子切换自建服务清单 → 草稿转正式 → 从自建服务与 GitHub 各下载一次清单和安装包验签核对。正式发布后的任何失败都会恢复自建清单并把 Release 改回草稿。`-DryRun` 只构建、签名和本地校验，不上传（可用测试密钥）。私钥不落盘、不输出。服务端白名单与维护步骤见 `updates/维护说明.md`。
+两种方式：只发布 Windows 时直接运行 `scripts/publish-release.ps1`（标签 `windows-v<版本>`，从当前最新 Release 带入已签名的 macOS 清单与 DMG，验签核对后一并放进新 Release，自建服务的 macOS 清单不动）；两端同时发布时运行 `scripts/publish-release.ps1 -MacSize <字节> -MacSha256 <哈希>`（标签 `v<版本>`）：构建 Setup → 从草稿 Release `v<版本>` 下载 macOS DMG 并核对 macOS 给出的 size/sha256 → 内存中解密 DPAPI 私钥，签名 `latest-windows.json`、`latest-macos.json`（首行 `macos`、`ClaudeLauncher-<版本>.dmg`、`minimumOS=12.0`）和 1.2.0 兼容 `latest.json`，并本地验签 → 安装包复制到 `updates/public/` → Setup 与两份清单上传到草稿 → 原子切换自建服务清单 → 草稿转正式 → 从自建服务与 GitHub 各下载一次清单和安装包验签核对。上传后先经 GitHub API 下载草稿附件逐字节核对（不符则停在草稿、原 Latest 与自建服务不变），转正式前记下上一版 Latest；只有内容确认不符才回滚（恢复自建清单、改回草稿并显式恢复上一版 Latest），latest/download 最多等 10 分钟，仅缓存未更新或自建服务暂时不可达时保留发布并以状态 2 退出。`-DryRun` 只构建、签名和本地校验，不上传（可用测试密钥）。私钥不落盘、不输出。服务端白名单与维护步骤见 `updates/维护说明.md`。
 
 ## 常驻图标（通知区域）
 
-- 启动器运行期间托盘常驻（可在“常规设置”关闭图标）；关闭主窗口只隐藏（首次弹一次提示），程序和图标继续运行；“关闭窗口后继续运行”关闭时，关闭窗口即退出启动器。左键单击或双击显示主窗口，右键弹出菜单。
+- 启动器运行期间托盘常驻（可在设置“常规”中关闭图标）；关闭主窗口只隐藏（首次弹一次提示），程序和图标继续运行；“关闭窗口后继续运行”关闭时，关闭窗口即退出启动器。左键单击或双击显示主窗口，右键弹出菜单。
 - 菜单：显示启动器窗口 / 本机账号（“账号 NN · 运行中/未运行”，进行中时显示检查中、启动中、删除未完成；点击与卡片主按钮走同一流程：PID 核对、登录保护、存储检查）/ 检查更新… / 退出启动器（只退出启动器，不退出任何 Claude；删除进行中时不允许）。
 - 每次打开菜单同步重新扫描进程；扫描失败时账号项禁用并显示原因。菜单不显示任何账号内容。
 - 安装程序请求退出时发送专用消息 `ClaudeMultiLauncher.Exit`（WM_CLOSE 只会隐藏）；再次打开启动器时用命名事件让已运行实例显示窗口。
@@ -129,7 +128,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup.ps1
 1. **01 数据目录**：MSIX 版为 `%LOCALAPPDATA%\Claude-Data\claude_pzs8sxrjxfjjc`，旧安装可能是 `%APPDATA%\Claude`。02～10 的基础目录为 `%APPDATA%`，沿用已有数据。商店版可能把目录虚拟化到 `Packages\…\LocalCache\Roaming\`，识别、校验、显示和删除都同时覆盖这两处。（SPEC 已确认）
 2. **托盘中没有可见窗口的实例**：仅当该账号恰好一个已核实主进程且无可见窗口时，用**该 PID 自身的可执行文件**、同一 `--user-data-dir` 再启动一次，由 Claude 单实例锁转交给已有进程显示窗口。5 秒后重新扫描，若同账号出现第二个主进程则报错，不结束任何进程。（SPEC 已确认）
 3. **新目录权限**：不修改 ACL，继承 `%APPDATA%` 的默认权限（本人、SYSTEM、Administrators），不等同于 macOS 的 0700。（SPEC 已确认）
-4. **所有者校验**：以管理员身份创建的文件，所有者是 Administrators 组，会被拒绝（失败即停止）。（SPEC 已确认）
+4. **所有者校验**：接受当前用户或启动器令牌默认所有者（提权／关闭 UAC 时为 Administrators 组）；其他所有者拒绝（失败即停止）。（SPEC 已确认）
 5. **进程范围**：只扫描当前登录会话中的进程。（SPEC 已确认）
 6. **额外功能**：本地诊断日志（设置页“本地诊断日志 → 打开”）；1.2.0 兼容的 `--apply-update`。
 10. **更新签名者比对**：程序与 Setup 尚无 Authenticode 签名，当前无法执行“同一证书”检查，只依赖清单 RSA 签名与 SHA-256；签名后自动生效。
@@ -141,6 +140,22 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup.ps1
 
 ## 验证记录
 
+### 设置页分段布局（2026-10-29，feature/windows-settings-layout，对应 macOS 1.7.14）
+
+- 自检（已执行）：`build.ps1 -Preview` 通过，LauncherTests 310 项、`--self-test` 210 项（草稿／保存／撤销／恢复默认等原有设置检查全部沿用并通过，标签名改为短名）。六个分类离屏图已人工查看：首轮发现内容垂直居中、无滚动条时横向偏移、开机启动说明换行压到分隔线、最后一个标签贴边，均已修正。
+- GUI（**未验证**）：桌面中的标签切换、滚动、开关与下拉的键盘操作、高 DPI 显示。
+
+### 账号默认用户名与实例卡片精简（2026-10-29，feature/windows-account-names，对应 macOS 1.7.13）
+
+- 位置核对（已执行，只读元数据，未读内容）：本机只有 01 的 `%USERPROFILE%\.claude.json`（当前用户所有、非链接）；02～10 的 `ClaudeCodeConfig\.claude.json` 都不存在，03 的 `ClaudeCodeConfig` 为空目录。02～10 的位置按 macOS 规则推定，**未实测**。
+- 自检（已执行）：`build.ps1 -Preview` 通过，LauncherTests 310 项、`--self-test` 210 项。新增：合成文件读取与去空白、控制字符／超长／非字符串／坏 JSON／缺失／目录回落、修改戳变化、候选路径；界面中默认名显示、别名优先与清除后回落、文件变化重读、缺失回落、按用户名搜索、不进入诊断和导出、卡片不再显示目录与 Code 标签、悬停提示包含两者。测试与离屏预览均不读取真实 `.claude.json`。
+- GUI（**未验证**）：真实启动器中 01 是否显示本机 Code 用户名、02～10 在使用 Claude Code 后的显示、卡片悬停提示。
+
+### 日志持久化与日志页改版（2026-10-29，feature/windows-log-persist，对应 macOS 1.7.11）
+
+- 自检（已执行）：`build.ps1 -Preview` 通过，LauncherTests 302 项、`--self-test` 198 项。新增：日志文件与 macOS 同格式往返、坏记录与整体损坏处理、数字页码规则；界面中 6 个时间选项与 7 天默认、页码导航、汇总文字、写入文件、重启后恢复、“本次运行”只含新进程记录。日志页与设置页离屏图已人工查看；预览与测试的日志文件写在临时目录并清理。
+- GUI（**未验证**）：桌面中的下拉弹出与键盘操作、真实重启／软件更新后日志保留、清空确认、导出对话框。
+
 ### 账号页与日志页交互（2026-10-29，feature/windows-accounts-logs）
 
 - 自检（已执行）：`build.ps1 -Preview` 通过，LauncherTests 295 项（新增 26 项账号／日志检查）、`--self-test` 189 项（新增 10 项别名检查）。账号页与日志页离屏图已人工查看，搜索框、筛选、复选框、铅笔按钮、分页无遮挡。
@@ -149,13 +164,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup.ps1
 ### 系统设置六分类（2026-10-29，feature/windows-settings）
 
 - 自检（已执行）：`build.ps1 -Preview` 通过，LauncherTests 269 项（新增 23 项设置界面检查）、`--self-test` 179 项（新增 10 项设置模型检查）。系统设置六个分类的离屏图已人工查看，开关、下拉、按钮无遮挡；首轮发现开关文字缩进 14 px，已修正。
-- GUI（**未验证**）：桌面窗口中的实际点击与键盘操作；关闭窗口退出／隐藏、托盘图标显隐；开机启动的确认与真实注册表写入（本轮未在真实 HKCU 中写入）及登录后自动打开；恢复上次页面跨重启；最小化窗口不恢复；提示音；导出文件对话框；复制到剪贴板。
+- GUI（**未验证**）：桌面窗口中的实际点击与键盘操作；关闭窗口退出／隐藏、托盘图标显隐、退出前未保存提示；开机启动的确认与真实注册表写入（本轮未在真实 HKCU 中写入）及登录后自动打开；恢复上次页面跨重启；最小化窗口不恢复；提示音；导出文件对话框；复制到剪贴板。
 
 ### 网络边界（2026-10-29，feature/windows-update-boundary）
 
 - 自检（已执行）：`build.ps1 -Preview` 通过，LauncherTests 246 项、`--self-test` 169 项（删去取较高版本 6 项，新增 URL 白名单、离线拒绝与设置文件检查）、离屏预览四页与两种更新状态。设置页离屏图已人工查看，新开关默认关闭、无遮挡。
 - 真实网络只读复核（已执行，构建产物代码经反射调用内部下载函数，不写日志、不落盘）：GitHub `latest-windows.json` 与 `ClaudeLauncherSetup-1.7.3.exe` 的实际跳转链（latest → 标签路径 → 附件主机）均通过白名单，清单验签通过，Setup 2794723 字节、SHA-256 一致；非白名单首次地址在请求前拒绝。
-- GUI（**未验证**）：桌面窗口中切换开关即时保存、重开后保持、启动时自动检查的实际提示、未开启时手动／托盘检查的提示、下载与安装流程。
+- GUI（**未验证**）：桌面窗口中切换开关并保存、重开后保持、启动时自动检查的实际提示、未开启时手动／托盘检查的提示、有未保存设置时的拦截、下载与安装流程。
 
 ### 自检与自动检查（2026-10-28，feature/windows-sync，已执行）
 

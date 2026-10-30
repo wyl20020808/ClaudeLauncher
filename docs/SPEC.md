@@ -19,13 +19,13 @@
 
 不再提供自动恢复 Claude 实例、改默认浏览器、迁移账号目录或未存在的批量启动间隔。默认页面只在「恢复上次页面」关闭时可选。设置保存不修改运行中 Claude 的配置。
 
-**[Windows]**（2026-10-29，feature/windows-settings）同一六分类与即时保存规则，WPF 原生控件（开关为带切换状态的复选框，选项为下拉框）：
+**[Windows]**（2026-10-29，feature/windows-settings）同一六分类与草稿规则，WPF 原生控件（开关为带切换状态的复选框，选项为下拉框）。布局对应 macOS 1.7.14（feature/windows-settings-layout）：顶部分段标签（常规／启动行为／外观／数据与存储／通知／关于）切换分类；各分类按小标题分组为白色圆角卡片，每行 60 px，左侧图标、标题与说明，右侧开关／下拉／按钮／只读值；分组后可有带信息图标的提示框；内容超出时在面板内纵向滚动。草稿、保存、撤销、恢复默认及退出前提示不变。
 
-- 存储：`%LOCALAPPDATA%\Claude-MultiLauncher\settings.json`，`{"version":1,"closeToBackground":true,"showTray":true,"rememberPage":false,"startPage":"instances","refreshInterval":3,"restoreMinimized":true,"showArtwork":true,"logLimit":500,"localNotifications":true,"notificationSound":false,"allowUpdates":false}`。逐项按类型与可选值校验，单项异常只回落该项；文件缺失、损坏或版本不是 1 时全部用默认。同目录临时文件写完后替换；保存失败保留原文件，弹出提示，控件回到已保存值。`startPage` 存页面名（`instances`／`accounts`／`logs`／`settings`，项目页接入后加 `projects`），不存序号。上次页面只在开启「恢复上次页面」时写入同目录 `last-page`。
+- 存储：`%LOCALAPPDATA%\Claude-MultiLauncher\settings.json`，`{"version":1,"closeToBackground":true,"showTray":true,"rememberPage":false,"startPage":"instances","refreshInterval":3,"restoreMinimized":true,"showArtwork":true,"showUsage":true,"logLimit":500,"localNotifications":true,"notificationSound":false,"allowUpdates":false}`。逐项按类型与可选值校验，单项异常只回落该项；文件缺失、损坏或版本不是 1 时全部用默认。同目录临时文件写完后替换；保存失败保留原文件与草稿。`startPage` 存页面名（`instances`／`accounts`／`logs`／`settings`，项目页接入后加 `projects`），不存序号。上次页面只在开启「恢复上次页面」时写入同目录 `last-page`。
 - 常规：关闭窗口继续运行（开：隐藏窗口，托盘或再次打开启动器可恢复；关：关闭窗口即退出启动器，Claude 继续运行）；通知区域图标（关闭后托盘菜单不可用，再次打开启动器即可显示窗口）。
-- 启动行为：开机启动写 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 的 `ClaudeMultiLauncher` 值（带引号的程序路径），单独确认、立即生效；只在程序位于 `%LOCALAPPDATA%\Programs\Claude 多开启动器\ClaudeLauncher.exe` 时允许开启，开发副本拒绝；关闭只删除本值且仅当它指向本启动器。卸载程序不处理该值（升级时 Setup 会先运行旧卸载程序，处理它会丢失用户选择），卸载前请先关闭开机启动。**[Windows 差异]** 本地进程刷新间隔默认 3 秒（实测一次 WMI 扫描约 280 ms，1 秒间隔开销过大），可选 1／3／5 秒。点击账号时恢复最小化窗口：关闭时若目标窗口已最小化，不还原、不切换，只提示从任务栏打开。
-- 外观：显示水墨插画（侧栏山水、主区背景、账号卡片插画）。「显示本地界面用量」在本地界面用量实现前不提供开关，只显示说明；语言／主题为固定说明。
-- 数据与存储：在资源管理器中显示、复制启动器数据目录；导出已保存设置为 `{"version":1,"settings":{…}}`（不含账号、别名、项目、凭据、登录保护、上次页面）；内存日志上限 100／500／1000（默认 500），保存后立即截断。
+- 启动行为：开机启动写 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 的 `ClaudeMultiLauncher` 值（带引号的程序路径），单独确认、立即生效、不进草稿；只在程序位于 `%LOCALAPPDATA%\Programs\Claude 多开启动器\ClaudeLauncher.exe` 时允许开启，开发副本拒绝；关闭只删除本值且仅当它指向本启动器。卸载程序不处理该值（升级时 Setup 会先运行旧卸载程序，处理它会丢失用户选择），卸载前请先关闭开机启动。**[Windows 差异]** 本地进程刷新间隔默认 3 秒（实测一次 WMI 扫描约 280 ms，1 秒间隔开销过大），可选 1／3／5 秒。点击账号时恢复最小化窗口：关闭时若目标窗口已最小化，不还原、不切换，只提示从任务栏打开。
+- 外观：显示水墨插画（侧栏山水、主区背景、账号卡片插画）；显示本地界面用量（默认开，`showUsage`，行为见「本地界面用量」[Windows]）。语言／主题为固定说明。
+- 数据与存储：在资源管理器中显示、复制启动器数据目录；导出已保存设置为 `{"version":1,"settings":{…}}`（不含账号、别名、项目、凭据、登录保护、上次页面）；启动器日志上限 100／500／1000（默认 500），保存后立即截断内存与日志文件。
 - 消息通知：窗口内提示为主区底部的临时提示条（约 5 秒），用于警告与错误；提示音用系统“感叹号”声音，仅在窗口内提示开启时生效；测试按钮按已保存设置显示。安全确认与错误弹窗不受影响。
 - 关于软件：版本、离线帮助、复制基础诊断（仅启动器版本、Windows 版本、联网更新开关、Claude/Anthropic 请求禁止）、更新开关与检查按钮。
 
@@ -46,9 +46,12 @@
 **[Windows]**（2026-10-29，feature/windows-accounts-logs）同一规则，WPF 原生控件：
 
 - 别名保存在 `%LOCALAPPDATA%\Claude-MultiLauncher\account-names.json`（`{"version":1,"names":{"2":"工作"}}`，键为 1～10，原子替换写入；损坏或版本不符时不显示别名、也不覆盖原文件，提示用户）。卡片与账号表显示“别名 · NN”，无别名显示“账号 NN”，圆形编号始终保留。托盘菜单仍只显示编号与状态。别名不进入设置导出。
-- 搜索匹配别名、“账号 NN”、编号（含不补零形式）、目录路径，不区分大小写。状态筛选：全部／运行中／未运行／处理中（检查或启动中）／异常（失败、删除未完成）；进程扫描失败时状态显示“未知”，只在“全部”中出现。统计卡按全部账号计算。
+- 默认名称（对应 macOS 1.7.13，feature/windows-account-names）：无别名时显示本地 Claude Code 用户名“用户名 · NN”。01 读 `%USERPROFILE%\.claude.json`（与终端 CLI 共用，可能不同于桌面端登录）；02～10 读 `<数据目录>\ClaudeCodeConfig\.claude.json`，`%APPDATA%` 与 MSIX 虚拟化目录两处候选按顺序取第一个存在的文件。只取 `oauthAccount.displayName`，按别名规则校验；文件须为当前用户所有的普通文件（非重解析点、非目录、≤32 MB），否则视为没有。只缓存在内存，按“修改时间 + 大小”变化重读；不保存、不写日志、不导出、不出现在诊断或托盘中。纯本地读取，不联网、不启动 CLI。取不到显示“账号 NN”。**[Windows 差异，未实测]** 2026-10-29 只读元数据核对：本机只有 01 的 `%USERPROFILE%\.claude.json`；02～10 尚无 `ClaudeCodeConfig\.claude.json`（03 的 `ClaudeCodeConfig` 为空目录），因此 02～10 的位置沿用 macOS 规则推定，需在用启动器启动的账号中使用 Claude Code 后再核对。
+- 实例卡片只显示名称（上）和运行状态（左下）；目录与 Code 配置状态移入卡片悬停提示。限额区仍为“未接入”占位，直到本地界面用量获授权实现。
+- 搜索匹配别名、默认用户名、“账号 NN”、编号（含不补零形式）、目录路径，不区分大小写。状态筛选：全部／运行中／未运行／处理中（检查或启动中）／异常（失败、删除未完成）；进程扫描失败时状态显示“未知”，只在“全部”中出现。统计卡按全部账号计算。
 - 表头复选框：全选当前结果，部分选中时显示中间态；“复制选中路径”把当前可见且选中的账号目录逐行复制到剪贴板。筛选或账号消失时清除不可见的选择。
-- 日志：时间（本次运行／最近 5 分钟／最近 1 小时）、实例（全部／系统／Claude 1～10）、级别（全部／信息／警告／错误）、全文搜索（时间、级别、实例、内容，不区分大小写）组合筛选；每页 10 条，上一页／下一页按结果启停，显示“第 x / y 页”；事件内容为只读可选择文本，截断时悬停显示全文。空结果区分“暂无日志”与“没有符合条件的日志”。导出为 UTF-8 文本，写出全部筛选结果（按时间正序）；清空需确认。
+- 日志（2026-10-29 起按 macOS 1.7.11 改为持久化，feature/windows-log-persist）：保存在 `%LOCALAPPDATA%\Claude-MultiLauncher\launcher-log.json`，格式与 macOS 相同（JSON 数组，每条 `{"date":<Unix 秒>,"level":"信息|警告|错误","instance":"系统|Claude N","text":"…"}`，最新在前）；同目录临时文件写完后替换，继承该目录的当前用户权限（同「账号与目录」[Windows 差异]）。启动时读取，类型、级别或实例不符的记录丢弃；超过日志上限删除最旧记录并写回。清空需确认，只清空此文件与内存。写入失败不弹窗、不再写日志（避免递归），只保留内存记录。
+- 日志页：时间（最近 7 天（默认）／最近 24 小时／最近 1 小时／最近 5 分钟／本次运行／全部时间）、实例（全部／系统／Claude 1～10）、级别（全部／信息／警告／错误）、全文搜索（时间、级别、实例、内容，不区分大小写）组合筛选；筛选框为白色圆角下拉（时间框带日历图标）；表头带浅色底；级别为信息／警告／错误色块。每页 10 条，左下为“上一页、数字页码（首页、末页、当前页前后各一页，中间以 … 省略）、下一页”，按结果启停；右侧“共 N 条日志 · 每页显示 10 条”，筛选后为“匹配 X 条 / 共 N 条日志 · 每页显示 10 条”。事件内容为只读可选择文本，截断时悬停显示全文。空结果区分“暂无日志”与“没有匹配的日志，可清除搜索或切换筛选条件”。导出为 UTF-8 文本，写出全部筛选结果（按时间正序）。
 
 ### 网络边界
 
@@ -130,7 +133,7 @@ macOS（`src/main.m`）和 Windows（`windows/`）各自原生实现，共同遵
 只检查元数据，从不读取内容。目录及各级上级不得为链接或非目录；以下存储项不得为链接、非本人所有、普通文件硬链接：
 `Cookies`、`Cookies-journal`、`Network`、`Local Storage`、`Session Storage`、`IndexedDB`、`Partitions`、`Local State`、`Preferences`、`config.json`、`Cache`、`Code Cache`、`Service Worker`、`ClaudeCodeConfig`。
 
-Windows 对应：重解析点（符号链接、junction）等同链接；硬链接数通过文件信息查询。所有者按 ACL 所有者 SID 判断，以管理员身份创建的文件属于 Administrators 组，会被拒绝。
+Windows 对应：重解析点（符号链接、junction）等同链接；硬链接数通过文件信息查询。所有者按 ACL 所有者 SID 判断：接受当前用户，或启动器自身令牌的默认所有者（启动器以管理员运行或关闭 UAC 时为 Administrators 组，与其自建目录一致）；其他所有者拒绝。
 
 ## 项目清单
 
@@ -213,7 +216,7 @@ Windows 对应：重解析点（符号链接、junction）等同链接；硬链�
 
 ## 本地界面用量（macOS）
 
-- macOS 1.7.9 起，只读官方 Claude Code 已显示的用量控件。Windows 未接入。`UsageHistory.m` 留作历史实现，不再编译或调用；不再读取 `plan-usage-history.json` 或访问 Claude Safe Storage，也不回退到旧历史。仅为缓存归属定向读取已获授权的非登录 `lastActiveOrg` 字段并生成 SHA-256 指纹，不读取登录字段、不解密。
+- macOS 1.7.9 起，只读官方 Claude Code 已显示的用量控件。Windows 见本节末尾 [Windows]。`UsageHistory.m` 留作历史实现，不再编译或调用；不再读取 `plan-usage-history.json` 或访问 Claude Safe Storage，也不回退到旧历史。仅为缓存归属定向读取已获授权的非登录 `lastActiveOrg` 字段并生成 SHA-256 指纹，不读取登录字段、不解密。
 - 先用官方主进程可执行路径、内核启动参数及固定账号目录定位 PID，排除 Helper、GPU、renderer、CLI 和未管理进程。同账号多个主进程、路径异常或进程扫描失败时不显示数值。读取前后重核 PID、进程启动时间、目录身份和组织选择指纹；读取后再扫描进程，异步返回时复核。Cookies／journal／wal／shm 元数据变化仅触发组织字段重新核对，普通 Cookie 写入不会清空观察记录。固定查询只选官方域名、根路径、未过期的 lastActiveOrg；schema 24 / v10、只读 immutable、不复制、不建锁或日志，拒绝 WAL、活动日志、歧义及读取期间的变化。只保留指纹，既不保存原值也不访问钥匙串。元数据未变时复用指纹最多 60 秒；它不证明服务器身份或尚未落盘的组织切换。
 - 只通过系统辅助功能复制现有 AX 属性，不执行动作、不激活 Claude、不启用调试。当已验证官方主进程的 `AXManualAccessibility` 明确为 false 时，可按 Electron 官方文档将它设为 true，仅启用该进程的本机网页辅助功能树；这是唯一允许设置的用量相关 AX 属性，不是系统权限授权，也不导航或刷新页面。不能将此初始化步骤描述为“只复制属性”。需要用户已经授予启动器的辅助功能权限；没有权限就显示“需辅助功能权限”，不自动弹出授权或改 TCC。固定签名身份不变。
 - 限定官方 `https://claude.ai/epitaxy` Code 首页及 `https://claude.ai/epitaxy/…` 对话页面，拒绝嵌套浏览器页面。仅解析用量弹出按钮和相邻、带官方用量设置链接的面板；读取五小时及“每周 · 所有模型”，不将上下文 token 百分比或模型专属周限额混入。文本正文、输入框内容不读取。多个用量页面、重复或矛盾指标、遍历预算耗尽、未知格式均不采用新的不确定结果。
@@ -225,6 +228,18 @@ Windows 对应：重解析点（符号链接、junction）等同链接；硬链�
 - 每次读取最多 16000 次属性访问、1.5 秒预算；只处理 40 层内的用量布局，更深分支跳过（不是用量候选），重复结构节点去重；普通节点只批量读取角色与子节点，单次系统 IPC 超时 0.1 秒；首次启用网页辅助功能树后，可在本次主动查看的总计 2.5 秒预算内等待并重读准备好的结构，不设置后台定时器；超时／读取中页面变化不采用新结果。只注册用量展开通知，不注册布局／值变化等广泛通知；不调用任何官方查询 IPC 或认证提供器。
 - `--usage-interface-check` 只输出账号编号、读取状态、两项是否观察到及耗时；不输出百分比、页面会话标识或正文。从终端执行时权限归属可能与 GUI 启动不同，不据此自动修改授权。GUI、合成自检和离屏渲染分开报告。旧 `--usage-history-check` 已移除。限制与研究证据见 [用量调查](USAGE-RESEARCH.md)。
 
+**[Windows]**（2026-10-29，feature/windows-usage 随 1.8.1 发布；用户授权 D1 只读界面调查与 D3 手动展开时记录，D2 组织指纹不做；D3 于 feature/windows-usage-popup 实现）调查与实测见 [Windows 用量调查](USAGE-RESEARCH-WINDOWS.md)。
+
+- 读取方式：Windows UI 自动化（UIA）只读。从 `Core.Scan` 核实的官方主进程（每账号恰好一个）的最大可见顶层窗口进入，只批量读取控件类型与“是否支持展开”；只对 Document 读取地址、对支持展开的 Button 读取名称；只有经过官方用量设置链接核实的弹窗面板内才读取文字、链接与进度值。不调用 Invoke／Expand／SetFocus 等任何模式方法，不设置属性，不激活窗口，不读取面板以外的文本、编辑框、列表或链接内容（这些分支不进入）。首次连接会使 Chromium 为该进程启用网页辅助功能树并保持到进程退出（实测首轮只有原生外壳，约 2.5 秒后可读）；这是 UIA 客户端连接的固有效果，与 macOS 的 `AXManualAccessibility` 性质相同，不改系统设置、不加启动参数。
+- 页面：只接受 `https://claude.ai/epitaxy` 与 `https://claude.ai/epitaxy/<会话>` 的 Document（无端口、用户信息、查询和片段），不进入嵌套 Document；会话标识不保存不输出。按钮格式同 macOS：`用量：5 小时限额的 N%…`、`Usage: N% of (the) 5-hour limit…`、`用量：每周 · 所有模型：N%…`（实测 Windows 4.29 为后者，层级为 Pane×9 → Document → Group×21 → Button）。百分比 0～100，其余为重置说明。多个用量按钮、未知格式、预算耗尽、读取中出错不采用。
+- 按钮在弹窗关闭时只给一项（实测 Windows 4.29 在五小时窗口进行中也可能只显示每周）；另一项保留同一身份下的上次观察值和原时间，不推算。
+- 面板（D3，2026-10-29 实测）：展开后 Code 页内出现 Window「用量」，含链接 `https://claude.ai/settings/usage` 与「使用限额」分组：Text「5 小时限额」、Text「HH:MM 重置」、ProgressBar「5 小时限额」（RangeValue 0～100），每周同理（「每周 · 所有模型」）。规则同 macOS：只解析含该链接（12 层内）的 Window；指标名只认「5 小时限额」「5-hour limit」「每周 · 所有模型」「Weekly · all models」，模型专属周限额与上下文不采用；进度值 0～100；同一指标重复、面板多于一个、面板缺少与按钮同项的指标或数值与按钮不一致时整次不采用（“界面数据待核对”）。没有用量按钮时不采用面板。
+- 归属（无组织指纹）：身份 = 账号编号 + PID + 进程启动时间（UTC ticks）+ 账号目录（01 为默认）。读取前后各扫描一次进程，身份不一致则丢弃本次结果；任一项变化即清除缓存与保存记录。限制：同一账号目录内切换组织后，进程重启前旧值可能被当作新组织的值；卡片悬停说明此限制。
+- 触发：同 macOS 1.7.10——启动器显示／激活且停在实例页、切换到实例页、在实例页点击时读取一次；1 秒内合并。没有定时器，进程刷新定时器不触发读取。同 macOS 1.7.11（D3）：对每个只有一个主进程且有可见窗口的账号，在该进程窗口上注册 UIA 的 ExpandCollapseState 属性变化通知（只此一种）；只有官方 Code 页中名称可解析的用量按钮变为展开、且该 Claude 窗口在前台时，200 ms 后为该账号读取一次（不要求启动器窗口可见）；关闭、其他按钮及同一次展开的重复通知不采集，读取忙碌时按 PID 排队合并。注册失败不重试；进程退出／变化、登录保护、扫描失败或关闭显示时注销。登录保护中、扫描失败、窗口隐藏或最小化时不读取。托盘中无可见窗口的实例显示“未观察到窗口”，不为读取而唤出。
+- 预算：后台线程执行，每账号首轮 1.5 秒；首轮未见 Code 页面时同一次查看内最多等到 2.5 秒重读；遍历 40 层、16000 个节点上限；超时的线程结果丢弃，前一次读取未结束时不开始新读取。
+- 显示与保存：卡片右侧两行「5小时限额」「周限额」，百分比与观察时间（HH:mm:ss，跨日 MM-dd HH:mm），悬停显示完整时间与官方重置说明；未读到显示“—／尚未观察到”和状态说明。读取中保留旧值。观察记录（两项百分比、重置说明、观察时间和身份）写入 `%LOCALAPPDATA%\Claude-MultiLauncher\usage-observations.json`（原子写入，version 1），不存页面、会话、正文或凭据；重启后逐项校验，身份与当前进程一致才恢复。关闭「显示本地界面用量」立即停止读取、清空缓存并删除该文件。
+- `ClaudeLauncher.exe --usage-interface-check` 只输出账号编号、状态、两项是否观察到及耗时，不输出百分比、页面或正文。自检只用合成节点树，不访问真实 Claude。
+
 ## 更新与安装
 
 > **Windows 已实现（1.7.0 起，2026-10-29 按「网络边界」收紧）**：`latest-windows.json` 验签、仅 GitHub 来源、集中 URL 白名单、只升不降、`minimumOS` 判断、下载后大小/SHA-256 核对（不符删除）、静默运行 Setup 并由 Setup 重新打开启动器；检查时机与开关见「网络边界」[Windows]。发布脚本 `windows/scripts/publish-release.ps1`（过渡期仍同步自建服务）。
@@ -233,7 +248,7 @@ Windows 对应：重解析点（符号链接、junction）等同链接；硬链�
 > - **[Windows 差异]** 回滚：Setup 先卸载旧版再安装，新版安装失败时旧版已卸载，无法自动回滚到旧版（账号数据不受影响，可重新运行 Setup 或从 GitHub 下载）。旧版卸载失败、启动器无法正常关闭时则中止并保留旧版。
 > - **[Windows 差异]** `minimumOS` 每段允许 1～5 位数字（Windows 版本号第三段为构建号，如 `19041`）。macOS 端解析 `latest-macos.json` 时可保持 1～3 位。
 > - 兼容 1.2.0：发布脚本额外签发旧格式 `latest.json`（签名原文 version、file、size、sha256），指向同版本的单个 `ClaudeLauncher-x.x.x.0.exe`，1.2.0 客户端用 `--apply-update` 原地替换；新程序保留该入口。旧清单只放自建服务。
-> - 发布流程与上文的差别：macOS DMG 由 macOS 端先上传到草稿 Release，发布脚本下载并核对 macOS 给出的 size/sha256，再上传 Setup 与两份清单，切换自建服务清单后把草稿转为正式；正式发布后的任何失败都会恢复自建清单并把 Release 改回草稿。
+> - 发布流程与上文的差别：macOS DMG 由 macOS 端先上传到草稿 Release，发布脚本下载并核对 macOS 给出的 size/sha256，再上传 Setup 与两份清单，切换自建服务清单后把草稿转为正式；上传后先经 GitHub API 下载草稿附件逐字节核对（不符则停在草稿、原 Latest 与自建服务不变），转正式前记下上一版 Latest；只有内容确认不符才回滚（恢复自建清单、改回草稿并显式恢复上一版 Latest），latest/download 最多等 10 分钟，仅缓存未更新或自建服务暂时不可达时保留发布并以状态 2 退出。
 
 两端共用一套发布与校验流程。来源有两个，内容相同、校验相同：放在哪里不影响安全，安全只靠签名。
 
@@ -280,6 +295,12 @@ Windows 对应：重解析点（符号链接、junction）等同链接；硬链�
 ### 发布流程（发布机）
 
 一个脚本完成：构建两端安装包 → 计算 SHA-256 → 用私钥签名两份清单 → 上传自建服务 → `gh release create v<版本>` 上传两份清单与两个安装包 → 两个来源各下载一次并验签核对。任何一步失败都不发布半成品。
+
+复核加固（macOS `publish-macos.sh` 与 Windows `publish-release.ps1` 一致，Windows 于 feature/windows-publish-hardening 对齐）：
+- 上传后先经 GitHub API 下载草稿附件，核对附件清单与逐字节内容（不经 latest/download 缓存）；不符则停在草稿，原 Latest 不变（Windows 另保证此时尚未切换自建服务清单）。
+- 转正式前记下上一版 Latest。只有内容确认不符才回滚：改回草稿，并显式把上一版设回 Latest（Windows 同时恢复自建清单），避免 GitHub 自动选中更早版本导致 latest/download 失效。
+- latest/download 最多等 10 分钟；仅缓存未更新（Windows 另含自建服务暂时不可达）时保留发布、提示稍后复核并以状态 2 退出。
+- `--dry-run`／`-DryRun` 只构建、签名、本地校验与带入核对，不创建 Release；Windows 允许测试密钥，同名 Release 已存在时只警告。
 
 **每个正式 Release 都必须同时包含两端当前的清单与安装包。** GitHub 回退地址 `releases/latest/download/` 只指向最新的一个 Release；若只放一个平台的文件，另一平台回退时会 404。
 

@@ -258,6 +258,7 @@ namespace ClaudeLauncher {
             return found;
         }
         public static bool IsMinimized(IntPtr window) { return window != IntPtr.Zero && IsIconic(window); }
+        public static int ForegroundProcess() { uint process; GetWindowThreadProcessId(GetForegroundWindow(), out process); return (int)process; }
         public static bool Focus(IntPtr window) {
             if (window == IntPtr.Zero) return false;
             ShowWindow(window, IsIconic(window) ? 9 : 5);
@@ -276,6 +277,7 @@ namespace ClaudeLauncher {
             AppDomain.CurrentDomain.ProcessExit += delegate { Diagnostics.Write("process_exit", "exitCode=" + Environment.ExitCode); };
             if (args.Length == 1 && args[0] == "--apply-update") return Updates.Install();
             if (args.Length == 1 && args[0] == "--self-test") return SelfTest.Entry();
+            if (args.Length == 1 && args[0] == "--usage-interface-check") return UsageInterface.Check();
             string sid = WindowsIdentity.GetCurrent().User.Value;
             using (var mutex = new Mutex(false, @"Local\ClaudeProfileLauncher-" + sid)) {
                 bool owns;

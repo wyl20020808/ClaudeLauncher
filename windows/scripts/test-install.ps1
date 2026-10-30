@@ -9,9 +9,9 @@ $key = Join-Path $fixture 'test-public.xml'
 $framework = Join-Path $env:WINDIR 'Microsoft.NET/Framework64/v4.0.30319'
 $compiler = Join-Path $framework 'csc.exe'
 $arguments = @('/nologo','/target:exe','/main:InstallHarness','/reference:System.dll','/reference:System.Core.dll','/reference:System.Management.dll','/reference:System.Xaml.dll','/reference:System.Web.Extensions.dll','/reference:System.Drawing.dll','/reference:System.Windows.Forms.dll')
-foreach ($name in @('WindowsBase.dll','PresentationCore.dll','PresentationFramework.dll')) { $arguments += '/reference:' + (Join-Path $framework ('WPF/' + $name)) }
+foreach ($name in @('WindowsBase.dll','PresentationCore.dll','PresentationFramework.dll','UIAutomationClient.dll','UIAutomationTypes.dll')) { $arguments += '/reference:' + (Join-Path $framework ('WPF/' + $name)) }
 $arguments += '/resource:' + $key + ',ClaudeLauncher.UpdateKey'
-$sources = @('src/ClaudeLauncher.cs','src/ProfileDeletion.cs','src/Updates.cs','src/Settings.cs','src/Diagnostics.cs','src/Storage.cs','src/LauncherUI.cs','src/ProxyCheck.cs','tests/InstallHarness.cs') | ForEach-Object { Join-Path $projectRoot $_ }
+$sources = @('src/ClaudeLauncher.cs','src/ProfileDeletion.cs','src/Updates.cs','src/Settings.cs','src/Usage.cs','src/Diagnostics.cs','src/Storage.cs','src/LauncherUI.cs','tests/InstallHarness.cs') | ForEach-Object { Join-Path $projectRoot $_ }
 foreach ($kind in @('old','new')) {
     $folder = Join-Path $fixture $kind
     [IO.Directory]::CreateDirectory($folder) | Out-Null

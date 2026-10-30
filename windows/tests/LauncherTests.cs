@@ -73,7 +73,6 @@ public static class LauncherTests {
         DeletionTests.Run(Check);
         TestLaunches();
         UpdateTests.Run(Check);
-        TestProxyCheck();
         using (var watch = new ProcessWatch()) {
             var info = new System.Diagnostics.ProcessStartInfo(System.Reflection.Assembly.GetExecutingAssembly().Location, "--exit-test-probe") { UseShellExecute=false, CreateNoWindow=true };
             using (var child = System.Diagnostics.Process.Start(info)) {
@@ -117,12 +116,13 @@ public static class LauncherTests {
         Check(trayItems.All(t => System.Text.RegularExpressions.Regex.IsMatch(t.Item2, "^账号 [0-9]{2} · (运行中|未运行|检查中|启动中|删除未完成)$")), "Tray items must show only number and state");
         TestSettingsPage(ui, settingsFile, state);
         TestAccountsPage(ui, settingsFile, state);
-        TestLogsPage(ui, state);
+        TestLogsPage(ui, settingsFile, state);
+        TestUsageCards(ui, settingsFile, state);
         Directory.Delete(settingsDir, true);
         Console.WriteLine("PASS: " + checks + " assertions; WPF layout loaded without showing windows.");
         return 0;
     }
-    // SPEC 系统设置 [Windows]：六分类、更改即时保存生效、恢复默认立即保存、更新入口受开关约束。
+    // SPEC 系统设置 [Windows]：六分类、草稿跨分类保留、撤销、保存生效、恢复默认只填草稿、更新入口受开关和未保存设置约束。
     static void TestSettingsPage(LauncherUI ui, string settingsFile, List<Instance> state) {
         var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
         var all = Children(ui.Snapshot(3, state)).ToArray();
@@ -130,43 +130,49 @@ public static class LauncherTests {
         Func<string, ComboBox> choice = name => all.OfType<ComboBox>().Single(b => AutomationProperties.GetName(b) == name);
         Func<string, Button> button = id => all.OfType<Button>().Single(b => AutomationProperties.GetAutomationId(b) == id || AutomationProperties.GetName(b) == id);
         Action<System.Windows.Controls.Primitives.ButtonBase> click = b => typeof(System.Windows.Controls.Primitives.ButtonBase).GetMethod("OnClick", flags).Invoke(b, null);
+        Func<bool> dirty = () => button("SaveSettings").IsEnabled;
         Func<System.Threading.Tasks.Task> check = () => (System.Threading.Tasks.Task)typeof(LauncherUI).GetMethod("CheckUpdate", flags).Invoke(ui, new object[] { false });
 
-        foreach (string tab in new[] { "常规设置", "启动行为", "外观设置", "数据与存储", "消息通知", "关于软件" }) Check(all.OfType<Button>().Count(b => AutomationProperties.GetName(b) == tab) == 1, "Settings tab missing: " + tab);
+        foreach (string tab in new[] { "常规", "启动行为", "外观", "数据与存储", "通知", "关于" }) Check(all.OfType<Button>().Count(b => AutomationProperties.GetName(b) == tab) == 1, "Settings tab missing: " + tab);
         Check(!all.OfType<FrameworkElement>().Any(e => e is TextBlock && new[] { "默认浏览器", "启动间隔", "默认打开方式" }.Contains(((TextBlock)e).Text)), "Fake settings must be removed");
-        Check(!all.OfType<Button>().Any(b => new[] { "SaveSettings", "UndoSettings" }.Contains(AutomationProperties.GetAutomationId(b))), "Save and undo buttons must be removed");
-        Check(toggle("显示水墨插画").IsChecked == true && toggle("允许检查 GitHub 更新").IsChecked == false && !File.Exists(settingsFile), "Settings must start from saved defaults");
+        Check(!dirty() && toggle("显示水墨插画").IsChecked == true && toggle("允许检查 GitHub 更新").IsChecked == false, "Settings must start from saved defaults");
         click(toggle("显示水墨插画"));
-        Check(toggle("显示水墨插画").IsChecked == false && !LauncherSettings.Load(settingsFile).ShowArtwork, "Toggle must save immediately");
-        click(toggle("显示水墨插画"));
-        Check(LauncherSettings.Load(settingsFile).ShowArtwork, "Toggle back must save immediately");
+        Check(dirty() && toggle("显示水墨插画").IsChecked == false, "Toggle must change the draft");
+        click(button("关于"));
+        Check(dirty() && toggle("显示水墨插画").IsChecked == false, "Draft must survive switching categories");
+        click(button("UndoSettings"));
+        Check(!dirty() && toggle("显示水墨插画").IsChecked == true && !File.Exists(settingsFile), "Undo must restore saved values without writing");
         Check(choice("未恢复时的启动页面").IsEnabled, "Start page selectable when not restoring");
         click(toggle("恢复启动器上次页面"));
-        Check(!choice("未恢复时的启动页面").IsEnabled && LauncherSettings.Load(settingsFile).RememberPage, "Start page disabled while restoring last page");
-        click(toggle("恢复启动器上次页面"));
+        Check(!choice("未恢复时的启动页面").IsEnabled, "Start page disabled while restoring last page");
+        click(button("UndoSettings"));
 
         var addLog = typeof(LauncherUI).GetMethod("AddLog", flags);
         for (int i = 0; i < 600; i++) addLog.Invoke(ui, new object[] { "合成日志 " + i });
         var logs = (System.Collections.IList)typeof(LauncherUI).GetField("logs", flags).GetValue(ui);
         Check(logs.Count == 500, "Default log limit must be 500");
-        choice("本次运行日志保留上限").SelectedIndex = 0;
+        choice("启动器日志保留上限").SelectedIndex = 0;
         click(toggle("显示水墨插画")); click(toggle("显示窗口内提示"));
+        click(button("SaveSettings"));
         var saved = LauncherSettings.Load(settingsFile);
-        Check(saved.LogLimit == 100 && !saved.ShowArtwork && !saved.LocalNotifications && saved.LoadError == null, "Each change must be written");
+        Check(!dirty() && saved.LogLimit == 100 && !saved.ShowArtwork && !saved.LocalNotifications && saved.LoadError == null, "Save must write the draft");
         Check(logs.Count == 100, "Saved log limit must trim memory logs");
         var artwork = (List<UIElement>)typeof(LauncherUI).GetField("artwork", flags).GetValue(ui);
         Check(artwork.Count > 0 && artwork.All(e => e.Visibility == Visibility.Collapsed), "Artwork must follow the saved setting");
         Check(!ui.Notify("测试"), "Notifications off must not show the toast");
-        ui.ResetSettings();
-        Check(LauncherSettings.Load(settingsFile).SameAs(new LauncherSettings()) && artwork.All(e => e.Visibility == Visibility.Visible) && ui.Notify("测试"), "Reset must save and apply defaults");
+        ui.ResetSettingsDraft();
+        Check(dirty() && LauncherSettings.Load(settingsFile).LogLimit == 100, "Reset must only fill the draft");
+        click(button("SaveSettings"));
+        Check(LauncherSettings.Load(settingsFile).SameAs(new LauncherSettings()) && artwork.All(e => e.Visibility == Visibility.Visible) && ui.Notify("测试"), "Saving defaults must apply them");
 
-        // 更新入口：未开启时不发请求；开启即保存。
+        // 更新入口：未开启或有未保存设置时不发请求。
         int before = Updates.Requests;
         check().Wait();
-        Check(Updates.Requests == before, "Update check must not run while disabled");
-        click(toggle("允许检查 GitHub 更新"));
-        Check(LauncherSettings.Load(settingsFile).AllowUpdates, "Updates switch must save immediately");
-        click(toggle("允许检查 GitHub 更新"));
+        click(toggle("允许检查 GitHub 更新")); click(button("SaveSettings"));
+        click(toggle("显示水墨插画"));
+        check().Wait();
+        Check(Updates.Requests == before, "Update check must not run while disabled or with unsaved settings");
+        click(button("UndoSettings")); click(toggle("允许检查 GitHub 更新")); click(button("SaveSettings"));
         Check(!LauncherSettings.Load(settingsFile).AllowUpdates, "Updates must be off again");
         string diagnostics = ui.DiagnosticsText();
         Check(diagnostics.Contains(Updates.DisplayVersion) && diagnostics.Contains("GitHub updates disabled") && !diagnostics.Contains(":\\"), "Diagnostics must contain only version, OS and network switch");
@@ -215,8 +221,57 @@ public static class LauncherTests {
         Check(ui.SetAlias(2, "a\nb") != null && ui.SetAlias(2, new string('长', 25)) != null && AccountNames.Load(Path.Combine(Path.GetDirectoryName(settingsFile), "account-names.json"))[2] == "工作", "Invalid alias must be rejected without changes");
         Check(ui.SetAlias(2, "   ") == null && all.OfType<TextBlock>().Count(t => t.Text == "账号 02") == 2, "Empty alias restores default name");
         Check(!new LauncherSettings().ExportJson().Contains("工作"), "Aliases must not be exported with settings");
+
+        // 默认用户名（合成 .claude.json，不读真实文件）：无别名时显示“用户名 · NN”，别名优先，文件变化后重读，缺失回落“账号 NN”。
+        string nameFile = Path.Combine(Path.GetDirectoryName(settingsFile), "code-02.claude.json");
+        File.WriteAllText(nameFile, "{\"oauthAccount\":{\"displayName\":\"Eric\",\"emailAddress\":\"x@example.invalid\"}}");
+        ui.CodeNameFiles = n => n == 2 ? new[] { nameFile } : new string[0];
+        var renderAccounts = typeof(LauncherUI).GetMethod("Render", flags);
+        renderAccounts.Invoke(ui, null);
+        Check(all.OfType<TextBlock>().Count(t => t.Text == "Eric · 02") == 2 && all.OfType<TextBlock>().Count(t => t.Text == "账号 01") == 2, "Default name from local Claude Code profile");
+        search.Text = "eric";
+        Check(shown(2) && !shown(1), "Search must match the default user name");
+        search.Text = "";
+        Check(ui.SetAlias(2, "工作") == null && all.OfType<TextBlock>().Count(t => t.Text == "工作 · 02") == 2, "Alias overrides the default name");
+        Check(ui.SetAlias(2, "") == null && all.OfType<TextBlock>().Count(t => t.Text == "Eric · 02") == 2, "Clearing alias falls back to the default name");
+        File.WriteAllText(nameFile, "{\"oauthAccount\":{\"displayName\":\"Eric Wang\"}}");
+        renderAccounts.Invoke(ui, null);
+        Check(all.OfType<TextBlock>().Count(t => t.Text == "Eric Wang · 02") == 2, "Changed file must be re-read");
+        File.Delete(nameFile);
+        renderAccounts.Invoke(ui, null);
+        Check(all.OfType<TextBlock>().Count(t => t.Text == "账号 02") == 2 && !ui.DiagnosticsText().Contains("Eric") && !new LauncherSettings().ExportJson().Contains("Eric"), "Missing file falls back; name never exported or in diagnostics");
+        ui.CodeNameFiles = n => new string[0];
+
+        // 实例卡片只显示名称与状态；目录与 Code 状态在悬停提示中。
+        var cardTexts = Children(ui.Snapshot(0, state)).OfType<TextBlock>().Select(t => t.Text).ToList();
+        Check(!cardTexts.Any(t => t.StartsWith("Code ") || t == "默认目录" || t == "Second"), "Cards must not show folder or Code chips");
+        var cards = (System.Collections.IDictionary)typeof(LauncherUI).GetField("cards", flags).GetValue(ui);
+        string tip = ((Border)cards[2].GetType().GetField("Root").GetValue(cards[2])).ToolTip as string;
+        Check(tip != null && tip.Contains("目录：") && tip.Contains("Code "), "Card tooltip must carry folder and Code status");
     }
-    static void TestLogsPage(LauncherUI ui, List<Instance> state) {
+    // SPEC 本地界面用量 [Windows]：卡片显示合成观察记录；关闭显示后清空并删除记录文件。不读取真实 Claude。
+    static void TestUsageCards(LauncherUI ui, string settingsFile, List<Instance> state) {
+        var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+        var page = ui.Snapshot(0, state);
+        Func<IEnumerable<string>> texts = () => Children(page).OfType<TextBlock>().Select(t => t.Text).ToList();
+        Check(!texts().Contains("未接入") && texts().Count(t => t == "尚未观察到") >= 4, "Usage rows must show not-yet-observed instead of placeholder");
+        DateTime at = DateTime.Now.AddMinutes(-1);
+        ui.SetUsage(2, new UsageRecord { Status = UsageInterface.Observed, Weekly = new UsageMetric { Percent = 11, Reset = "周三19:00 重置", Observed = at } });
+        Check(texts().Contains("11%") && texts().Contains(at.ToString("HH:mm:ss")), "Weekly observation must render on the card");
+        var cards = (System.Collections.IDictionary)typeof(LauncherUI).GetField("cards", flags).GetValue(ui);
+        var values = (TextBlock[])cards[2].GetType().GetField("Values").GetValue(cards[2]);
+        Check(values[0].Text == "—" && (values[1].ToolTip as string).Contains("周三19:00 重置") && (values[1].ToolTip as string).Contains("组织"), "Tooltip must carry reset text and the organization limit");
+        string usageFile = Path.Combine(Path.GetDirectoryName(settingsFile), "usage-observations.json");
+        File.WriteAllText(usageFile, "{}");
+        var all = Children(ui.Snapshot(3, state)).ToArray();
+        var toggle = all.OfType<CheckBox>().Single(b => AutomationProperties.GetName(b) == "显示本地界面用量");
+        Check(toggle.IsChecked == true, "Usage display defaults on");
+        typeof(System.Windows.Controls.Primitives.ButtonBase).GetMethod("OnClick", flags).Invoke(toggle, null);
+        typeof(LauncherUI).GetMethod("SaveSettings", flags).Invoke(ui, null);
+        page = ui.Snapshot(0, state);
+        Check(!File.Exists(usageFile) && !texts().Contains("11%") && texts().Contains("本地用量显示已关闭"), "Turning usage off must clear values and delete observations");
+    }
+    static void TestLogsPage(LauncherUI ui, string settingsFile, List<Instance> state) {
         var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
         var logs = (List<LogEntry>)typeof(LauncherUI).GetField("logs", flags).GetValue(ui);
         var addLog = typeof(LauncherUI).GetMethod("AddLog", flags);
@@ -245,28 +300,37 @@ public static class LauncherTests {
         Check(visibleEntries() == 1, "Level filter");
         choice("日志级别筛选").SelectedIndex = 0; choice("日志实例筛选").SelectedIndex = 3;
         Check(visibleEntries() == 1, "Instance filter (Claude 2)");
-        choice("日志实例筛选").SelectedIndex = 1; choice("日志时间范围").SelectedIndex = 1;
+        choice("日志实例筛选").SelectedIndex = 1;
+        Check(choice("日志时间范围").Items.Cast<string>().SequenceEqual(new[] { "最近 7 天", "最近 24 小时", "最近 1 小时", "最近 5 分钟", "本次运行", "全部时间" }) && choice("日志时间范围").SelectedIndex == 0, "Time filter options and 7-day default");
+        choice("日志时间范围").SelectedIndex = 3;
         Check(LauncherUI.FilterLogs(logs, "", "系统", null, DateTime.Now.AddMinutes(-5)).Count == 14 && visibleEntries() == 10, "Time filter excludes entries older than 5 minutes");
         search.Text = "不存在的内容";
-        Check(visibleEntries() == 0 && rows.Children.OfType<TextBlock>().Any(t => t.Text.StartsWith("没有符合条件")), "Empty filtered result explains itself");
-        search.Text = ""; choice("日志实例筛选").SelectedIndex = 0; choice("日志时间范围").SelectedIndex = 0;
+        Check(visibleEntries() == 0 && rows.Children.OfType<TextBlock>().Any(t => t.Text.StartsWith("没有匹配的日志")), "Empty filtered result explains itself");
+        search.Text = ""; choice("日志实例筛选").SelectedIndex = 0; choice("日志时间范围").SelectedIndex = 5;
+        var pager = (StackPanel)typeof(LauncherUI).GetField("logPager", flags).GetValue(ui);
+        var pageButtons = pager.Children.OfType<Button>().Where(b => AutomationProperties.GetName(b).StartsWith("第 ")).ToList();
+        Check(pageButtons.Count == 2 && pager.Children[0] == prev && pager.Children[pager.Children.Count - 1] == next, "Numbered pager: previous, 1, 2, next");
+        click(pageButtons[1]);
+        Check(visibleEntries() == 6 && prev.IsEnabled, "Page number navigates");
+        var summary = (TextBlock)typeof(LauncherUI).GetField("logSummary", flags).GetValue(ui);
+        Check(summary.Text == "共 16 条日志 · 每页显示 10 条", "Summary text: " + summary.Text);
+        choice("日志时间范围").SelectedIndex = 0;
         string exported = LauncherUI.LogText(LauncherUI.FilterLogs(logs, "信息", null, null, null));
         string[] lines = exported.Split(new[] { "\r\n" }, StringSplitOptions.RemoveEmptyEntries);
         Check(lines.Length == 15 && lines[0].EndsWith("普通信息 0") && lines[14].EndsWith("普通信息 14"), "Export writes all filtered entries oldest first");
         Check(rows.Children.OfType<TextBox>().All(t => t.IsReadOnly && t.ToolTip is string), "Log text is read-only, selectable and has a full-text tooltip");
-    }
-    static void TestProxyCheck() {
-        Check(ProxyCheck.Findings(0, "127.0.0.1:7890", null, null).Count == 0, "Disabled proxy must not count");
-        var f = ProxyCheck.Findings(1, "127.0.0.1:7890", null, null);
-        Check(f.Count == 1 && f[0].Host == "127.0.0.1" && f[0].Port == 7890, "Single proxy server not parsed");
-        f = ProxyCheck.Findings(1, "http=127.0.0.1:7890;https=http://127.0.0.1:7890;socks=[::1]:7891;ftp=bad;x=1.2.3.4:0", null, null);
-        Check(f.Count == 3 && f[1].Kind == "HTTPS" && f[1].Host == "127.0.0.1" && f[2].Kind == "SOCKS" && f[2].Host == "[::1]", "Per-protocol proxy server not parsed");
-        f = ProxyCheck.Findings(0, null, " http://127.0.0.1:1/pac ", new[] { "Meta" });
-        Check(f.Count == 2 && f[0].Kind == "PAC" && f[0].Detail == "http://127.0.0.1:1/pac" && f[1].Kind == "TUN", "PAC and tunnel findings missing");
-        Check(ProxyCheck.LooksLikeTunnel("Meta", "Wintun Userspace Tunnel") && ProxyCheck.LooksLikeTunnel("以太网 2", "TAP-Windows Adapter V9") && !ProxyCheck.LooksLikeTunnel("以太网", "Intel(R) Ethernet Connection"), "Tunnel adapter detection");
-        Check(ProxyCheck.LoopbackAddress("127.0.0.2").ToString() == "127.0.0.2" && ProxyCheck.LoopbackAddress("[::1]").ToString() == "::1" && ProxyCheck.LoopbackAddress("localhost").ToString() == "127.0.0.1", "Configured loopback address must be probed as written");
-        Check(ProxyCheck.LoopbackAddress("10.0.0.2") == null && ProxyCheck.LoopbackAddress("127.example") == null && ProxyCheck.LoopbackAddress("") == null, "Non-loopback hosts must not be probed");
-        Check(ProxyCheck.IsLoopback("LocalHost") && ProxyCheck.IsLoopback("127.0.0.1") && ProxyCheck.IsLoopback("[::1]") && !ProxyCheck.IsLoopback("10.0.0.2"), "Loopback detection");
+
+        // 持久化：写入启动器自己的日志文件（临时目录），重启后恢复；“本次运行”只含新进程的记录。
+        string logFile = Path.Combine(Path.GetDirectoryName(settingsFile), "launcher-log.json");
+        var saved = LogStore.Load(logFile);
+        Check(saved.Count == logs.Count && saved[0].Text == logs[0].Text, "Logs must be written to launcher-log.json");
+        System.Threading.Thread.Sleep(20);
+        var restarted = new LauncherUI(new LauncherSettings(), settingsFile);
+        var restored = (List<LogEntry>)typeof(LauncherUI).GetField("logs", flags).GetValue(restarted);
+        Check(restored.Count == saved.Count + 1 && restored.Any(e => e.Text == "账号 02 启动失败"), "Logs must survive a restart");
+        ((ComboBox)typeof(LauncherUI).GetField("logTime", flags).GetValue(restarted)).SelectedIndex = 4;
+        var thisRun = (List<LogEntry>)typeof(LauncherUI).GetMethod("FilteredLogs", flags).Invoke(restarted, null);
+        Check(thisRun.Count == 1 && thisRun[0].Text == "启动器已完成初始化", "“本次运行” must only show entries since this launch");
     }
     static void TestLaunches() {
         string fixture = Path.Combine(Path.GetTempPath(), "claude-launch-test-" + Guid.NewGuid().ToString("N"), "客户 测试 & O'Neil");

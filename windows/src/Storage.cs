@@ -52,8 +52,12 @@ namespace ClaudeLauncher {
         }
         public static void Validate(int number, string roaming, string local) { Validate(number, roaming, local, true); }
         // recursive=false 只复查目录链与顶层存储项，用于后台递归检查完成后、启动前的快速复核。
+        // 本进程新建文件的所有者：当前用户，或令牌默认所有者（已提权或关闭 UAC 的管理员为 Administrators 组）。
+        public static bool OwnedByMe(SecurityIdentifier owner) {
+            var me = WindowsIdentity.GetCurrent();
+            return owner != null && (owner.Equals(me.User) || owner.Equals(me.Owner));
+        }
         public static void Validate(int number, string roaming, string local, bool recursive) {
-            var user = WindowsIdentity.GetCurrent().User;
             foreach (string folder in ProfileDeletion.Candidates(number, roaming, local)) {
                 for (string entry = folder; entry != null; entry = Path.GetDirectoryName(entry)) {
                     FileAttributes? attributes = Attributes(entry);
@@ -62,11 +66,11 @@ namespace ClaudeLauncher {
                     if ((attributes.Value & FileAttributes.Directory) == 0) throw new IOException("账号目录路径不是文件夹，已停止：" + entry);
                 }
                 if (Attributes(folder) == null) continue;
-                foreach (string name in Items) Check(Path.Combine(folder, name), user, recursive);
+                foreach (string name in Items) Check(Path.Combine(folder, name), recursive);
             }
         }
         // 逐项检查存储项及其内部：不跟随链接，检查期间消失的条目跳过，其余异常一律停止。
-        static void Check(string root, SecurityIdentifier user, bool recursive) {
+        static void Check(string root, bool recursive) {
             var pending = new Stack<string>(); pending.Push(Extended(root));
             while (pending.Count > 0) {
                 string path = pending.Pop(), shown = Display(path);
@@ -80,7 +84,7 @@ namespace ClaudeLauncher {
                     owner = (SecurityIdentifier)security.GetOwner(typeof(SecurityIdentifier));
                 } catch (FileNotFoundException) { continue; } catch (DirectoryNotFoundException) { continue; }
                 catch (UnauthorizedAccessException) { throw new IOException("无法读取存储项所有者，已停止：" + shown); }
-                if (!user.Equals(owner)) throw new IOException("存储项不属于当前用户，已停止：" + shown);
+                if (!OwnedByMe(owner)) throw new IOException("存储项不属于当前用户，已停止：" + shown);
                 if (!directory && LinkCount(path) > 1) throw new IOException("存储项是硬链接，已停止：" + shown);
                 if (!directory || !recursive) continue;
                 try { foreach (string entry in Directory.EnumerateFileSystemEntries(path)) pending.Push(entry); }
@@ -111,6 +115,8 @@ namespace ClaudeLauncher {
             const string app = @"""C:\Program Files\WindowsApps\Claude_4.29.0.0_x64__pzs8sxrjxfjjc\app\claude.exe""";
             try {
                 Directory.CreateDirectory(root);
+                var me = WindowsIdentity.GetCurrent();
+                Check(Storage.OwnedByMe(me.User) && Storage.OwnedByMe(me.Owner) && !Storage.OwnedByMe(new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null)) && !Storage.OwnedByMe(null), "所有者判断错误");
                 UpdateChecks(root);
                 // 账号与 Code 配置映射
                 var folders = Enumerable.Range(1, 10).Select(n => Core.Folder(n, roaming)).ToArray();
@@ -366,6 +372,96 @@ namespace ClaudeLauncher {
             }
             Check(AccountNames.Matches(2, "工作", @"C:\x\Claude-Second", "工作") && AccountNames.Matches(2, null, "", "账号 02") && AccountNames.Matches(2, null, "", "2") &&
                 AccountNames.Matches(3, null, @"C:\x\Claude-Profile-03", "profile-03") && AccountNames.Matches(3, null, "", "  ") && !AccountNames.Matches(3, "家", @"C:\x\Claude-Profile-03", "工作"), "账号搜索匹配错误");
+            // 默认用户名：只取 oauthAccount.displayName（合成文件，不读真实 .claude.json）；校验与别名相同；坏文件、缺失、目录、类型不符均为空。
+            string nameFile = Path.Combine(root, "settings", ".claude.json");
+            File.WriteAllText(nameFile, "{\"oauthAccount\":{\"displayName\":\"  Eric \",\"emailAddress\":\"x@example.invalid\"},\"other\":1}");
+            Check(CodeUserName.Read(nameFile) == "Eric", "本地用户名应读取并去除空白");
+            string firstStamp = CodeUserName.Stamp(nameFile);
+            foreach (string bad in new[] { "{\"oauthAccount\":{\"displayName\":\"a\\nb\"}}", "not json", "{\"oauthAccount\":{\"displayName\":5}}", "{\"oauthAccount\":\"x\"}", "{}", "[]",
+                "{\"oauthAccount\":{\"displayName\":\"" + new string('长', 25) + "\"}}", "{\"oauthAccount\":{\"displayName\":\"   \"}}" }) {
+                File.WriteAllText(nameFile, bad);
+                Check(CodeUserName.Read(nameFile) == null, "无效用户名文件必须回落：" + bad);
+            }
+            Check(CodeUserName.Stamp(nameFile) != firstStamp, "文件变化时修改戳应变化");
+            Check(CodeUserName.Read(Path.Combine(root, "missing.json")) == null && CodeUserName.Stamp(Path.Combine(root, "missing.json")) == null && CodeUserName.Read(root) == null && CodeUserName.Stamp(root) == null, "缺失文件或目录必须回落");
+            string[] firstCandidates = CodeUserName.Candidates(1, @"C:\Users\x", @"C:\Users\x\AppData\Roaming", @"C:\Users\x\AppData\Local");
+            string[] secondCandidates = CodeUserName.Candidates(2, @"C:\Users\x", @"C:\Users\x\AppData\Roaming", @"C:\Users\x\AppData\Local");
+            Check(firstCandidates.SequenceEqual(new[] { @"C:\Users\x\.claude.json" }) &&
+                secondCandidates.SequenceEqual(new[] { @"C:\Users\x\AppData\Roaming\Claude-Second\ClaudeCodeConfig\.claude.json", @"C:\Users\x\AppData\Local\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\Claude-Second\ClaudeCodeConfig\.claude.json" }), "用户名候选路径错误");
+            // 日志文件：与 macOS 同格式往返、最新在前；整体损坏为空；单条类型／级别／实例不符丢弃；数字页码规则。
+            string logFile = Path.Combine(root, "settings", "launcher-log.json");
+            Check(LogStore.Load(logFile).Count == 0, "缺少日志文件应为空");
+            var stamp = new DateTime(2026, 10, 29, 12, 0, 0, DateTimeKind.Local);
+            LogStore.Save(logFile, new[] { new LogEntry { At = stamp.AddMinutes(1), Level = "错误", Instance = "Claude 2", Text = "账号 02 启动失败" }, new LogEntry { At = stamp, Level = "信息", Instance = "系统", Text = "初始化" } });
+            var loaded = LogStore.Load(logFile);
+            Check(loaded.Count == 2 && loaded[0].Text == "账号 02 启动失败" && loaded[0].Instance == "Claude 2" && loaded[0].At == stamp.AddMinutes(1) && loaded[0].Time == "2026-10-29 12:01:00" && loaded[1].Level == "信息", "日志文件往返错误");
+            Check(File.ReadAllText(logFile).StartsWith("[{\"date\":"), "日志文件格式应与 macOS 一致（JSON 数组）");
+            File.WriteAllText(logFile, "[{\"date\":1,\"level\":\"信息\",\"instance\":\"系统\",\"text\":\"好\"},{\"date\":\"1\",\"level\":\"信息\",\"instance\":\"系统\",\"text\":\"x\"},{\"date\":1,\"level\":\"调试\",\"instance\":\"系统\",\"text\":\"x\"},{\"date\":1,\"level\":\"信息\",\"instance\":\"Claude 11\",\"text\":\"x\"},{\"date\":1,\"level\":\"信息\",\"instance\":\"系统\"},{\"date\":-5,\"level\":\"信息\",\"instance\":\"系统\",\"text\":\"x\"},5,null]");
+            Check(LogStore.Load(logFile).Count == 1, "格式不符的日志记录必须丢弃");
+            foreach (string broken in new[] { "{", "{}", "null", "\"x\"" }) { File.WriteAllText(logFile, broken); Check(LogStore.Load(logFile).Count == 0, "损坏日志文件应读为空：" + broken); }
+            Check(LauncherUI.PageNumbers(1, 0).SequenceEqual(new[] { 0 }) && LauncherUI.PageNumbers(10, 0).SequenceEqual(new[] { 0, 1, 9 }) && LauncherUI.PageNumbers(10, 5).SequenceEqual(new[] { 0, 4, 5, 6, 9 }) && LauncherUI.PageNumbers(3, 1).SequenceEqual(new[] { 0, 1, 2 }), "数字页码规则错误");
+            // 本地界面用量：只用合成节点树，不访问真实 Claude。
+            var fh = UsageInterface.ButtonMetric("用量：5 小时限额的 52%周四01:10 重置");
+            Check(fh != null && fh.Item1 == "fh" && fh.Item2 == 52 && fh.Item3 == "周四01:10 重置", "五小时按钮解析错误");
+            var sd = UsageInterface.ButtonMetric("用量：每周 · 所有模型：11%周三19:00 重置");
+            Check(sd != null && sd.Item1 == "sd" && sd.Item2 == 11, "周按钮解析错误");
+            Check(UsageInterface.ButtonMetric("Usage: 7.5% of the 5-hour limit Resets 3pm").Item2 == 7.5, "英文五小时按钮解析错误");
+            Check(UsageInterface.ButtonMetric("用量：5 小时限额的 101%") == null && UsageInterface.ButtonMetric("上下文 52%") == null && UsageInterface.ButtonMetric("用量：每周 · Opus：5%") == null && UsageInterface.ButtonMetric(null) == null, "无效百分比、上下文与模型专属周限额必须排除");
+            Check(UsageInterface.CodeUrl("https://claude.ai/epitaxy") && UsageInterface.CodeUrl("https://claude.ai/epitaxy/local_x") &&
+                !UsageInterface.CodeUrl("https://claude.ai/epitaxyx") && !UsageInterface.CodeUrl("https://claude.ai/epitaxy/") && !UsageInterface.CodeUrl("https://evil.test/epitaxy") &&
+                !UsageInterface.CodeUrl("https://claude.ai:8443/epitaxy") && !UsageInterface.CodeUrl("https://claude.ai/epitaxy?x=1") && !UsageInterface.CodeUrl("https://claude.ai/epitaxy#a") &&
+                !UsageInterface.CodeUrl("http://claude.ai/epitaxy") && !UsageInterface.CodeUrl("https://u@claude.ai/epitaxy") && !UsageInterface.CodeUrl("https://claude.ai/chat/x"), "Code 页面地址校验错误");
+            Func<UsageNode[], UsageNode> group = children => new UsageNode { Children = children.ToList() };
+            Func<string, UsageNode[], UsageNode> page = (url, children) => new UsageNode { Type = "Document", Url = url, Children = children.ToList() };
+            Func<string, UsageNode> button = name => new UsageNode { Type = "Button", Name = name, Expandable = true };
+            const string code = "https://claude.ai/epitaxy/local_synthetic";
+            var shell = new UsageNode { Type = "Pane", Children = { new UsageNode { Type = "Document" }, group(new[] { page(code, new[] { group(new[] { button("用量：每周 · 所有模型：11%周三19:00 重置") }) }) }) } };
+            UsageRecord read = UsageInterface.ReadSynthetic(shell, 5);
+            Check(read.Status == UsageInterface.Observed && read.Weekly.Percent == 11 && read.FiveHour == null, "合成树应读到周值");
+            Check(UsageInterface.ReadSynthetic(page("https://evil.test/epitaxy/x", new[] { button("用量：5 小时限额的 52%") }), 5).FiveHour == null, "非官方页面必须拒绝");
+            Check(UsageInterface.ReadSynthetic(group(new[] { button("用量：5 小时限额的 52%") }), 5).Status == "未观察到 Code 用量页面", "Code 页面以外的按钮不得采用");
+            Check(UsageInterface.ReadSynthetic(page(code, new[] { new UsageNode { Type = "Text", Name = "用量：5 小时限额的 52%" }, new UsageNode { Type = "Button", Name = "用量：5 小时限额的 52%" } }), 5).Status == "未观察到 Code 用量控件", "正文或不可展开按钮不得提供额度");
+            Check(UsageInterface.ReadSynthetic(page(code, new[] { new UsageNode { Type = "Text", Children = { button("用量：5 小时限额的 52%") } } }), 5).FiveHour == null, "正文分支不得进入");
+            Check(UsageInterface.ReadSynthetic(page(code, new[] { page(code, new[] { button("用量：5 小时限额的 52%") }) }), 5).FiveHour == null, "嵌套网页不得进入");
+            Check(UsageInterface.ReadSynthetic(page(code, new[] { button("用量：5 小时限额的 52%"), button("用量：5 小时限额的 53%") }), 5).Status == "多个用量界面，待核对", "多个用量按钮不得采用");
+            // 弹窗面板（D3，按 Windows 4.29 实测结构）：链接核实后读取两项；与按钮不一致、重复、缺链接、模型专属周限额均不采用。
+            Func<string, double, UsageNode> bar = (name, value) => new UsageNode { Type = "ProgressBar", Name = name, Range = value };
+            Func<string, UsageNode> text = value => new UsageNode { Type = "Text", Name = value };
+            Func<string, UsageNode[], UsageNode> popup = (link, rows) => new UsageNode { Type = "Window", Name = "用量", Children = { group(new[] { text("用量"), new UsageNode { Type = "Hyperlink", Name = "查看全部：设置中的用量", Url = link }, group(rows) }) } };
+            UsageNode[] limits = { group(new[] { text("5 小时限额"), text("15:20 重置") }), bar("5 小时限额", 71), group(new[] { text("每周 · 所有模型"), text("周二19:00 重置") }), bar("每周 · 所有模型", 11) };
+            UsageNode weekButton = button("用量：每周 · 所有模型：11%周二19:00 重置");
+            read = UsageInterface.ReadSynthetic(page(code, new[] { group(new[] { weekButton, popup("https://claude.ai/settings/usage", limits) }) }), 5);
+            Check(read.Status == UsageInterface.Observed && read.FiveHour.Percent == 71 && read.FiveHour.Reset == "15:20 重置" && read.Weekly.Percent == 11 && read.Weekly.Reset == "周二19:00 重置", "面板应读到五小时与每周");
+            Check(UsageInterface.ReadSynthetic(page(code, new[] { button("用量：每周 · 所有模型：12%周二19:00 重置"), popup("https://claude.ai/settings/usage", limits) }), 5).Status == "界面数据待核对", "面板与按钮不一致必须拒绝");
+            Check(UsageInterface.ReadSynthetic(page(code, new[] { weekButton, popup("https://evil.test/settings/usage", limits) }), 5).FiveHour == null, "没有官方用量链接的弹窗不得读取");
+            Check(UsageInterface.ReadSynthetic(page(code, new[] { weekButton, popup("https://claude.ai/settings/usage", limits.Concat(new[] { bar("5 小时限额", 70) }).ToArray()) }), 5).Status == "界面数据待核对", "重复指标必须拒绝");
+            Check(UsageInterface.ReadSynthetic(page(code, new[] { weekButton, popup("https://claude.ai/settings/usage", limits), popup("https://claude.ai/settings/usage", limits) }), 5).Status == "界面数据待核对", "多个面板必须拒绝");
+            read = UsageInterface.ReadSynthetic(page(code, new[] { weekButton, popup("https://claude.ai/settings/usage", new[] { bar("每周 · Opus", 40), bar("每周 · 所有模型", 11), bar("上下文", 52) }) }), 5);
+            Check(read.Status == UsageInterface.Observed && read.Weekly.Percent == 11 && read.FiveHour == null, "模型专属周限额与上下文不得采用");
+            Check(UsageInterface.ReadSynthetic(page(code, new[] { popup("https://claude.ai/settings/usage", limits) }), 5).Status == "未观察到 Code 用量控件", "没有用量按钮时不采用面板");
+            Check(UsageInterface.ReadSynthetic(page(code, new[] { weekButton, popup("https://claude.ai/settings/usage", new[] { bar("5 小时限额", 101), bar("每周 · 所有模型", 11) }) }), 5).Status == "界面数据待核对", "越界进度值必须拒绝");
+            var watch = new PopupWatch();
+            Check(watch.Accept(new[] { 1, 2 }, true) && !watch.Accept(new[] { 1, 2 }, true) && !watch.Accept(new[] { 1, 2 }, false) && watch.Accept(new[] { 1, 2 }, true) && !watch.Accept(new[] { 9 }, false), "同一次展开只采集一次，关闭后重新允许，关闭本身不采集");
+            UsageNode deep = button("用量：5 小时限额的 52%"); for (int i = 0; i < 45; i++) deep = group(new[] { deep });
+            Check(UsageInterface.ReadSynthetic(page(code, new[] { deep }), 5).FiveHour == null, "超过 40 层不采用");
+            Check(UsageInterface.ReadSynthetic(page(code, new[] { button("用量：5 小时限额的 52%") }), -1).Status == "界面读取未完成", "预算耗尽不采用");
+            // 合并：只给一项时另一项沿用同一身份的旧值与原时间；身份变化不沿用；暂不可读保留旧值。
+            DateTime t1 = new DateTime(2026, 10, 29, 9, 0, 0), t2 = t1.AddMinutes(30);
+            var first = UsageInterface.Merge(null, new UsageRecord { Status = UsageInterface.Observed, FiveHour = new UsageMetric { Percent = 40, Reset = "3:20 重置" } }, "2|10|5|1|x", t1);
+            var second = UsageInterface.Merge(first, new UsageRecord { Status = UsageInterface.Observed, Weekly = new UsageMetric { Percent = 9 } }, "2|10|5|1|x", t2);
+            Check(second.FiveHour.Percent == 40 && second.FiveHour.Observed == t1 && second.Weekly.Observed == t2, "合并应保留另一项与原时间");
+            Check(UsageInterface.Merge(first, new UsageRecord { Status = UsageInterface.Observed, Weekly = new UsageMetric { Percent = 9 } }, "2|11|5|1|x", t2).FiveHour == null, "身份变化不得沿用旧值");
+            Check(UsageInterface.Merge(second, new UsageRecord { Status = "界面读取未完成" }, "2|10|5|1|x", t2) == second && UsageInterface.Merge(second, new UsageRecord { Status = "多个用量界面，待核对" }, "2|10|5|1|x", t2).Status != UsageInterface.Observed, "暂不可读保留旧值，不确定结果不沿用");
+            Check(UsageInterface.TimeLabel(second.FiveHour, t2) == "09:00:00" && UsageInterface.TimeLabel(second.FiveHour, t1.AddDays(1)) == "10-29 09:00" && UsageInterface.TimeLabel(null, t2) == "尚未观察到", "观察时间格式错误");
+            string usageFile = Path.Combine(root, "settings", "usage-observations.json");
+            Check(UsageInterface.Load(usageFile, t2).Count == 0, "缺少观察记录应为空");
+            UsageInterface.Save(usageFile, new[] { second, new UsageRecord { Status = "界面读取未完成" } });
+            var restored = UsageInterface.Load(usageFile, t2.AddMinutes(1));
+            Check(restored.Count == 1 && restored[2].Identity == "2|10|5|1|x" && restored[2].FiveHour.Percent == 40 && restored[2].FiveHour.Observed == t1 && restored[2].Weekly.Reset == "", "观察记录往返错误");
+            Check(!File.ReadAllText(usageFile).Contains("epitaxy") && UsageInterface.Load(usageFile, t1.AddMinutes(-1)).Count == 0, "不得保存页面；未来时间必须拒绝");
+            File.WriteAllText(usageFile, "{\"version\":1,\"records\":[{\"identity\":\"3|1|1|0|x\",\"fh\":{\"percent\":5,\"reset\":\"\",\"observed\":1000}},{\"identity\":\"3|2|1|0|x\",\"fh\":{\"percent\":6,\"reset\":\"\",\"observed\":1000}},{\"identity\":\"11|1|1|0|x\",\"fh\":{\"percent\":5,\"reset\":\"\",\"observed\":1000}},{\"identity\":\"4|1|1|0|x\",\"fh\":{\"percent\":105,\"reset\":\"\",\"observed\":1000}}]}");
+            Check(UsageInterface.Load(usageFile, t2).Count == 0, "重复账号、越界编号与百分比必须丢弃");
+            foreach (string broken in new[] { "{", "null", "{\"version\":2,\"records\":[]}" }) { File.WriteAllText(usageFile, broken); Check(UsageInterface.Load(usageFile, t2).Count == 0, "损坏观察记录应为空：" + broken); }
             // 开机启动：只接受正式安装路径；值比较不区分大小写、需带引号的完整路径。（不读写真实注册表）
             string installed = @"C:\Users\x\AppData\Local\Programs\Claude 多开启动器\ClaudeLauncher.exe";
             Check(AutoStart.IsInstalledCopy(installed.ToUpperInvariant(), installed) && !AutoStart.IsInstalledCopy(@"D:\ClaudeLauncher\windows\artifacts\bin\ClaudeLauncher.exe", installed), "正式安装路径判断错误");

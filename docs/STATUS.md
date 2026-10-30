@@ -45,6 +45,95 @@
 - macOS 自检：`scripts/build.sh`（含 `--self-test`）、`--ui-self-test` 通过，设置页离屏截图已查看。
 - Claude 退出后界面用量保留：账号无主进程时卡片显示该账号最后保存的观察值与原时间，标“Claude 未运行 · 上次记录”，不再变成“尚未观察到”。`--ui-self-test` 新增断言通过。Windows 尚无界面用量，不涉及。
 - 未验证：Windows 未在本机编译或运行 LauncherTests（本机无 .NET 工具链）；两端 GUI 实际点击未验证。
+## Windows 1.8.3 已发布（2026-10-29，windows-v1.8.3）
+
+- 内容：客户机关闭 UAC（普通命令行为 High Mandatory Level），启动器与 Claude 新建文件所有者为 BUILTIN\Administrators，01、02 均报“存储项不属于当前用户”。所有者校验改为接受当前用户或启动器令牌默认所有者（`d1fda96`），SPEC 同步；发布说明 [RELEASE-windows-1.8.3.md](RELEASE-windows-1.8.3.md)。用户确认“发布 1.8.3”后：版本改为 1.8.3（`ccb8cd2`），build 通过（LauncherTests 315、自检 245），`-DryRun` 通过，推送 dev 并把 main 快进到 `ccb8cd2`。
+- 标签 windows-v1.8.3，目标 `ccb8cd2`，已转正式并为 Latest（上一版 Latest 为 windows-v1.8.2）。附件：`ClaudeLauncherSetup-1.8.3.exe` 2823828 字节，SHA-256 `2b3149f5e74df72b4091544eeb2f166ea03e912316548172e921a34506b332c9`；`latest-windows.json`；从 windows-v1.8.2 带入的 `ClaudeLauncher-1.7.15.dmg` 与 `latest-macos.json`。
+- 复核：草稿附件经 GitHub API 核对一致；GitHub latest/download 四个文件均为新版本。本机自建更新服务未运行，两份自建清单不可达，脚本按设计保留发布并以状态 2 退出。
+- 未验证：客户机（关闭 UAC）上 01、02 实际启动；1.8.2 → 1.8.3 软件内更新过程。
+
+## Windows 1.8.2 已发布（2026-10-29，windows-v1.8.2）
+
+- 内容：手动展开官方用量弹窗时读取五小时与每周（D3，见下节），发布说明 [RELEASE-windows-1.8.2.md](RELEASE-windows-1.8.2.md)。用户确认“提交发布 1.8.2”后：feature/windows-usage-popup 提交（`3884ec0`）并合并到 dev，版本改为 1.8.2（`08ba175`），build 通过（LauncherTests 315、自检 244），`-DryRun` 通过，推送 dev 并把 main 快进到 `08ba175`。
+- 标签 windows-v1.8.2，目标 `08ba175`，已转正式并为 Latest（上一版 Latest 为 windows-v1.8.1）。附件：`ClaudeLauncherSetup-1.8.2.exe` 2823667 字节，SHA-256 `504189973c721ad78f2ad8679f74080bc98c9e5ab7150231ffe3aafe71770824`；`latest-windows.json`；从 windows-v1.8.1 带入的 `ClaudeLauncher-1.7.15.dmg` 与 `latest-macos.json`。
+- 复核：草稿附件经 GitHub API 核对一致；GitHub latest/download 四个文件均为新版本。本机自建更新服务仍未运行，两份自建清单不可达，脚本按设计保留发布并以状态 2 退出（本地 `updates/public` 已切换到 1.8.2）。
+- 未验证：1.8.1 → 1.8.2 软件内更新的实际过程；安装后启动器界面中的弹窗读取；多账号同时运行。
+
+## Windows 用量：手动展开弹窗时读取（D3）（2026-10-29，已随 Windows 1.8.2 发布）
+
+- 起因：用户反馈 1.8.1 只显示周额度。只读核对：当时官方按钮本身显示「用量：每周 · 所有模型：…」（五小时窗口尚未开始，之后实测改为「用量：5 小时限额的 …」），而 Windows 版不读弹窗面板。用户授权 D3。
+- 面板结构实测（用户手动展开）：Code 页内 Window「用量」→ 链接 `https://claude.ai/settings/usage` → Text「5 小时限额」「HH:MM 重置」+ ProgressBar「5 小时限额」（0～100），每周同理。展开通知实测：用户每次展开／关闭，按钮都发出 ExpandCollapseState 属性变化（1／0），与轮询对照一致。
+- 实现：`Usage.cs` 面板解析（官方链接核实后才读文字与进度；只认五小时与“每周 · 所有模型”；与按钮同项一致才采用；重复、多面板、越界、无按钮均不采用）与 `PopupWatch`（只注册 ExpandCollapseState 通知；同一次展开只采集一次；Claude 在前台、按钮在官方 Code 页才回调）；`LauncherUI` 按身份注册／注销通知，回调 200 ms 后只读该账号，忙碌时排队。
+- 自检：`--self-test` 244 项（新增 9 项：面板两项、与按钮不一致、非官方链接、重复指标、多面板、模型专属与上下文、无按钮、越界进度、展开去重）；LauncherTests 315 项。
+- 真机（账号 01，用启动器自身代码的测试程序）：用户手动展开弹窗 → 收到通知 → 读取结果「界面已读取；5小时=已观察；每周=已观察」。`--usage-interface-check`（弹窗关闭）读到「5小时=已观察」。
+- 隐私问题记录：调查面板结构时，临时诊断程序跳过了列表与输入框，但本版 Claude 的聊天消息不在列表中，又一次把本会话的几句正文（数字打码）输出到本机会话里；未保存、未发送。正式代码只在官方链接核实后的弹窗内读文字。
+- 未验证：启动器 GUI 中整条流程（安装版正在运行）；多账号同时运行；Claude 不在前台时的展开（按规则不采集）。
+
+## Windows 1.8.1 已发布（2026-10-29，windows-v1.8.1）
+
+- 内容：本地界面用量（见下节），发布说明 [RELEASE-windows-1.8.1.md](RELEASE-windows-1.8.1.md)。用户确认“提交发布”后：feature/windows-usage 提交并合并到 dev，版本改为 1.8.1（`30aba6e`），`-DryRun` 通过，推送 dev 并把 main 快进到 `30aba6e`。
+- 标签 windows-v1.8.1，目标 `30aba6e`，已转正式并为 Latest（上一版 Latest 为 windows-v1.8.0）。附件：`ClaudeLauncherSetup-1.8.1.exe` 2819973 字节，SHA-256 `fc8147d11917fd9a6fa32fe0688cda1cb07580cc90b8218e204a1620da72cfde`；`latest-windows.json`；从 windows-v1.8.0 带入并验签核对的 `ClaudeLauncher-1.7.15.dmg` 与 `latest-macos.json`。
+- 复核：草稿附件经 GitHub API 核对一致；GitHub latest/download 四个文件第一轮即为新版本。本机自建更新服务仍未运行，两份自建清单不可达，脚本按设计保留发布并以状态 2 退出（本地 `updates/public` 已切换到 1.8.1）。
+- 未验证：1.8.0 → 1.8.1 软件内更新的实际过程；安装后启动器界面中的用量读取与显示（见下节未验证项）。
+
+## Windows 本地界面用量（2026-10-29，feature/windows-usage，已随 1.8.1 发布）
+
+- 原因：1.8.0 及以前 Windows 版没有用量代码，设置页只显示“Windows 尚未接入”，卡片显示“未接入”。用户本轮授权 D1（只读 UIA 调查），D2 组织指纹不做，D3 展开事件未授权。
+- D1 实测（账号 01）：首次连接后约 2.5 秒网页树可读；Code 页 Document 的 `ValuePattern` 给出地址；用量按钮为可展开 Button，`Name` 格式与 macOS 相同（实测周格式）。详见 [USAGE-RESEARCH-WINDOWS.md](USAGE-RESEARCH-WINDOWS.md) 顶部结果，含诊断程序输出了几句本会话正文的问题记录。
+- 实现（SPEC「本地界面用量」[Windows]）：新增 `windows/src/Usage.cs`（按钮解析、Code 地址校验、有界遍历、合并、观察记录读写、`--usage-interface-check`），实例卡片两行百分比／进度条／观察时间／状态说明，「外观」新增「显示本地界面用量」开关（默认开）。只在实例页激活窗口、切到实例页或点击时读取一次；无定时器、无事件订阅；不解析展开面板。归属用编号 + PID + 进程启动时间 + 目录，无组织指纹，悬停提示说明限制。
+- 自检：LauncherTests 315 项（新增卡片显示、关闭开关清空并删除记录）；`--self-test` 235 项（新增 25 项：两种中文格式与英文五小时格式、越界／上下文／模型专属排除、地址校验、非官方页／页外按钮／正文／嵌套网页／多按钮／超 40 层／预算耗尽、合并保留原时间与身份变化、记录往返与损坏丢弃）；`test-install.ps1` 3 个场景通过；离屏预览检查实例页与外观设置布局。
+- 真机：`--usage-interface-check` 对账号 01 读到 `界面已读取；5小时=无；每周=已观察`，400～500 ms。
+- 未验证：启动器 GUI 中的实际读取与卡片显示（本机正在运行已安装的 1.8.0，开发版无法同时打开）；五小时格式在 Windows 上的实测（本次五小时窗口未开始）；多账号同时运行；Claude 无响应时的超时路径；英文界面。
+
+## Windows 1.8.0 已发布（2026-10-29，windows-v1.8.0）
+
+- 用户确认后推送 dev、main（快进到 `3b73fa5`），运行加固后的 `publish-release.ps1` 只发布 Windows：标签 windows-v1.8.0，目标 `3b73fa5`，已转正式并为 Latest（上一版 Latest 为 macos-v1.7.15）。
+- 附件：`ClaudeLauncherSetup-1.8.0.exe` 2810784 字节，SHA-256 `51e62f15e0ca3540a042c3e5efd4af702468d29b88e5fb53b80c0f6dab9b5d33`；`latest-windows.json`（1.8.0，共用密钥签名）；从 macos-v1.7.15 原样带入并验签核对的 `ClaudeLauncher-1.7.15.dmg`（1984327 字节）与 `latest-macos.json`，未重签。
+- 复核：草稿附件经 GitHub API 下载逐字节核对通过；GitHub latest/download 四个文件与本地一致；另用 1.8.0 客户端自身的白名单下载路径取得并验签清单、Setup 哈希一致。
+- 自建服务：本地 `updates/public` 已切换到 1.8.0（`latest-windows.json`、兼容 `latest.json` 与安装包就位），但本机更新服务（8080）未运行，公网地址连接被关闭，脚本按设计保留发布并以状态 2 退出。本轮未启动服务；服务恢复后需复核一次。1.7.3 客户端同时查自建与 GitHub 取较高版本，1.7.2 及更早在自建失败时回退 GitHub，因此仍可从 GitHub 获得 1.8.0（未实测）。
+- 未验证：C1～C3 的桌面 GUI；1.7.3 → 1.8.0 软件内更新的实际过程；自建服务恢复后的复核；回滚与缓存超时分支（本次未触发）。
+
+## Windows 1.8.0 发布准备（2026-10-29，dev）
+
+- dev 依次快进到 C1～C5（`392db6b`），再合并 origin/main（macOS 1.7.15，无冲突）。版本改为 1.8.0（程序集 1.8.0.0）：`Updates.cs`、`installer/ClaudeLauncher.iss`、windows/README、使用说明；发布说明 [RELEASE-windows-1.8.0.md](RELEASE-windows-1.8.0.md)。
+- 版本递增暴露 `tests/UpdateTests.cs` 把 1.8.0 写死为“更高版本”，已改为相对当前版本构造。
+- 自检：LauncherTests 310 项、`--self-test` 210 项；`test-install.ps1` 成功／回滚／篡改 3 个场景通过；`publish-release.ps1 -DryRun` 使用正式发布私钥（仅内存解密）31 秒通过：私钥与客户端公钥一致，windows-v1.8.0 尚不存在，从 Latest `macos-v1.7.15` 带入 macOS 清单并验签、DMG 1984327 字节哈希一致，三份清单签名并本地验签。演练 Setup 2810807 字节、SHA-256 `88c45065cb0b2866b6f3bd67513d89f9a7053b740a878da016520ba18b92f8c7`（正式发布会重新构建，以发布记录为准）。
+- 未验证：C1～C3 的桌面 GUI；真实发布路径（草稿 API 核对、转正式、缓存等待、回滚）；客户端 1.7.3 → 1.8.0 软件内更新（1.7.3 仍会先读自建服务，过渡期发布脚本同步自建）。
+- 推送与正式发布结果见上节。
+
+## Windows 发布脚本加固（2026-10-29，feature/windows-publish-hardening，未发布）
+
+- `windows/scripts/publish-release.ps1` 按 `scripts/publish-macos.sh` 加固：上传后经 GitHub API 下载草稿附件核对清单与哈希（不经 latest/download），不符停在草稿，原 Latest 与自建服务不变；转正式前记下上一版 Latest；只有内容确认不符才回滚（恢复自建清单、改回草稿、显式恢复上一版 Latest）；latest/download 最多等 10 分钟，仅缓存未更新或自建服务暂时不可达时保留发布、列出未完成项并以状态 2 退出。`-DryRun` 遇同名 Release 只警告。过渡期仍同步自建服务。
+- 验证：PowerShell 语法解析通过；`-DryRun`（一次性测试密钥，用后删除）38 秒通过：构建 Setup（含自动检查与自检）、从当前 Latest `macos-v1.7.15` 带入 macOS 清单并验签、DMG 1984327 字节哈希一致、三份清单签名与本地验签；测试签名的暂存目录已删除。
+- 未验证：草稿上传、API 核对、转正式、等待缓存、回滚与状态 2 分支均需真实发布才能执行。
+
+## Windows 本地界面用量调查报告（2026-10-29，feature/windows-usage-research，仅文档）
+
+- 按交接 C4 只写调查报告 [USAGE-RESEARCH-WINDOWS.md](USAGE-RESEARCH-WINDOWS.md)，没有写代码。覆盖 Mac 踩过的 a～e（网页辅助功能树默认关闭、多账号按 PID 归属、两种 Code 页面、五小时重置后按钮改显示周额度、读取中不闪空与短超时），以及 Windows 上的 UIA 对应做法和需实测项。
+- 待用户决定：D1 一次只读 UIA 调查；D2 是否需要组织指纹（涉及 DPAPI 保护的 Cookie，需单独授权）；D3 是否记录手动展开事件。
+- 本轮没有用 UIA／MSAA 查询 Claude 窗口，没有读取 Cookies、`Local State` 或任何加密数据，没有启动或操作 Claude，没有联网。
+
+## Windows 设置页分段布局（2026-10-29，feature/windows-settings-layout，基于 feature/windows-account-names，对应 macOS 1.7.14，未发布）
+
+- 系统设置改为顶部分段标签（常规／启动行为／外观／数据与存储／通知／关于）+ 小标题分组的白色圆角卡片行（60 px：图标、标题、说明，右侧开关／下拉／按钮／只读值）+ 信息提示框；内容超出时在面板内滚动。草稿、保存、撤销、恢复默认与退出前提示行为不变；“显示本地界面用量”以只读值“Windows 尚未接入”展示。
+- 自检：`build.ps1 -Preview` 通过，LauncherTests 310 项、`--self-test` 210 项；六个分类离屏图已人工查看，首轮发现的居中、偏移、换行压线、标签贴边已修正。
+- 未验证：GUI 中的标签切换、滚动、键盘操作、高 DPI 显示。
+
+## Windows 账号默认用户名与实例卡片精简（2026-10-29，feature/windows-account-names，基于 feature/windows-log-persist，对应 macOS 1.7.13，未发布）
+
+- 按 AGENTS「账号显示名例外」与 SPEC：无别名时显示本地 Claude Code 用户名“用户名 · NN”，01 读 `%USERPROFILE%\.claude.json`，02～10 读数据目录（`%APPDATA%` 与 MSIX 虚拟化两处候选）下的 `ClaudeCodeConfig\.claude.json`；只取 `oauthAccount.displayName`，按别名规则校验，文件须为当前用户所有的普通文件、≤32 MB；只在内存缓存并按修改时间与大小重读，不保存、不记录、不导出、不进诊断。搜索也匹配该用户名。
+- 位置核对只读元数据：本机只有 01 的文件存在；02～10 无此文件（03 的 `ClaudeCodeConfig` 为空），位置按 macOS 规则推定，未实测。
+- 实例卡片只显示名称（上）和运行状态（左下），目录与 Code 配置状态移到卡片悬停提示；限额区仍为“未接入”占位。
+- 自检：`build.ps1 -Preview` 通过，LauncherTests 310 项、`--self-test` 210 项、离屏预览；测试与预览不读取真实 `.claude.json`。
+- 未验证：真实启动器中的用户名显示（01 及使用 Code 后的 02～10）、卡片悬停提示。
+
+## Windows 日志持久化与日志页改版（2026-10-29，feature/windows-log-persist，对应 macOS 1.7.11，未发布）
+
+- 1.7.10 交接第 1～3 项已于本日推送 dev／main（`37b5573`），Windows 未发布新版本，Release 仍为 windows-v1.7.3。第 4 项（项目管理）未做；第 5、6 项未调查，未读写 Claude 目录、Cookies 或加密数据。
+- 日志写入 `%LOCALAPPDATA%\Claude-MultiLauncher\launcher-log.json`（与 macOS 同格式，最新在前，原子替换），启动时读取，类型／级别／实例不符的记录丢弃；超上限删最旧并写回；清空需确认，只清此文件与内存；写入失败不弹窗、不递归记日志。
+- 日志页：最近 7 天（默认）／24 小时／1 小时／5 分钟／本次运行／全部时间，与实例、级别、全文搜索组合；白色圆角下拉（时间框日历图标）、表头底色、级别色块；左右箭头 + 数字页码（首页、末页、当前 ±1，… 省略）；右侧“共 N 条日志 · 每页显示 10 条”／“匹配 X 条 / 共 N 条…”。新增的下拉样式同时用于账号筛选和设置选项。
+- 自检：`build.ps1 -Preview` 通过，LauncherTests 302 项、`--self-test` 198 项、离屏预览。
+- 未验证：GUI 中的下拉与键盘操作、真实重启／更新后日志保留、清空确认、导出对话框。
 
 ## Windows 账号页与日志页交互（2026-10-29，feature/windows-accounts-logs，基于 feature/windows-settings，未发布）
 
