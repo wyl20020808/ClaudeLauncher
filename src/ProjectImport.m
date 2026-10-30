@@ -1,4 +1,5 @@
 #import "ProjectImport.h"
+#import "Localization.h"
 #import <sys/stat.h>
 #import <fcntl.h>
 #import <unistd.h>
@@ -149,23 +150,23 @@ NSDictionary *DiscoverProjects(NSArray<NSString *> *profiles, ProjectStore *vali
     NSMutableDictionary *candidates = [NSMutableDictionary dictionary]; NSMutableArray *summaries = [NSMutableArray array];
     ScanCounts counts = {0}; NSUInteger created = 0;
     for (NSUInteger i = 0; i < MIN(profiles.count,10); i++) {
-        NSString *label = [NSString stringWithFormat:@"账号 %02lu",(unsigned long)i+1];
+        NSString *label = [NSString stringWithFormat:L(@"账号 %02lu"),(unsigned long)i+1];
         int profile = ProfileDirectory(profiles[i]);
-        if (profile < 0) { if (errno != ENOENT) [summaries addObject:[label stringByAppendingString:@"：目录无法安全访问，未识别"]]; continue; }
+        if (profile < 0) { if (errno != ENOENT) [summaries addObject:[label stringByAppendingString:L(@"：目录无法安全访问，未识别")]]; continue; }
         created++;
-        if (counts.limited) { close(profile); [summaries addObject:[label stringByAppendingString:@"：已达扫描上限，未识别"]]; continue; }
+        if (counts.limited) { close(profile); [summaries addObject:[label stringByAppendingString:L(@"：已达扫描上限，未识别")]]; continue; }
         int root = ChildDirectory(profile,@"claude-code-sessions"); int problem = errno; close(profile);
-        if (root < 0) { [summaries addObject:[label stringByAppendingString:problem == ENOENT ? @"：未找到支持的本地记录，不代表没有项目" : @"：记录目录不可安全访问，未识别"]]; continue; }
+        if (root < 0) { [summaries addObject:[label stringByAppendingString:problem == ENOENT ? L(@"：未找到支持的本地记录，不代表没有项目") : L(@"：记录目录不可安全访问，未识别")]]; continue; }
         ScanCounts previous = counts;
         ScanLevel(root,0,i+1,validator,home,candidates,&counts); close(root);
-        [summaries addObject:[NSString stringWithFormat:@"%@：路径 %lu · 格式跳过 %lu · 读取失败 %lu · 失效/受限 %lu%@",label,
+        [summaries addObject:[NSString stringWithFormat:L(@"%@：路径 %lu · 格式跳过 %lu · 读取失败 %lu · 失效/受限 %lu%@"),label,
             (unsigned long)(counts.matched-previous.matched),(unsigned long)(counts.format-previous.format),
-            (unsigned long)(counts.unreadable-previous.unreadable),(unsigned long)(counts.rejected-previous.rejected),counts.limited ? @" · 达到上限" : @""]];
-        if (counts.rejected > previous.rejected) [summaries addObject:[NSString stringWithFormat:@"  跳过详情：不存在 %lu · 无权限 %lu · 路径受限 %lu · 需手动添加 %lu",
+            (unsigned long)(counts.unreadable-previous.unreadable),(unsigned long)(counts.rejected-previous.rejected),counts.limited ? L(@" · 达到上限") : @""]];
+        if (counts.rejected > previous.rejected) [summaries addObject:[NSString stringWithFormat:L(@"  跳过详情：不存在 %lu · 无权限 %lu · 路径受限 %lu · 需手动添加 %lu"),
             (unsigned long)(counts.missing-previous.missing),(unsigned long)(counts.denied-previous.denied),
             (unsigned long)(counts.protected-previous.protected),(unsigned long)(counts.manual-previous.manual)]];
     }
-    if (!summaries.count) [summaries addObject:@"未找到已创建的账号目录。"];
+    if (!summaries.count) [summaries addObject:L(@"未找到已创建的账号目录。")];
     NSMutableArray *rows = [NSMutableArray array];
     for (NSDictionary *candidate in candidates.allValues) [rows addObject:@{@"path":candidate[@"path"],@"accounts":[[candidate[@"accounts"] allObjects] sortedArrayUsingSelector:@selector(compare:)]}];
     [rows sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) { return [a[@"path"] compare:b[@"path"]]; }];
@@ -270,18 +271,18 @@ static NSData *RegistrationData(NSString *identifier, NSString *path) {
 NSDictionary *RegisterProjectDirectories(NSString *profile, NSArray<NSString *> *paths, ProjectStore *validator,
                                         NSString *home, BOOL apply, NSString *(^guard)(void)) {
     NSUInteger added = 0, skipped = 0, planned = 0; int directory = -1;
-    NSString *failure = guard ? guard() : @"缺少进程安全检查，未登记。";
+    NSString *failure = guard ? guard() : L(@"缺少进程安全检查，未登记。");
     NSMutableArray *selected = [NSMutableArray array]; NSMutableSet *seen = [NSMutableSet set];
-    if (!failure && paths.count > 1000) failure = @"一次最多登记 1000 个目录。";
+    if (!failure && paths.count > 1000) failure = L(@"一次最多登记 1000 个目录。");
     if (!failure) {
         directory = RegistrationDirectory(profile);
-        if (directory < 0) failure = @"目标没有唯一且安全的账号／组织记录目录。请先在该账号正常创建一次本地会话；多位置时不猜测身份。";
-        else if (flock(directory,LOCK_EX|LOCK_NB) != 0) failure = @"另一个登记操作正在使用目标目录，请稍后重试。";
-        else if (!RegistrationPaths(directory,seen)) failure = @"目标记录无法完整、安全地读取目录前缀（格式、权限或扫描上限），未登记。";
+        if (directory < 0) failure = L(@"目标没有唯一且安全的账号／组织记录目录。请先在该账号正常创建一次本地会话；多位置时不猜测身份。");
+        else if (flock(directory,LOCK_EX|LOCK_NB) != 0) failure = L(@"另一个登记操作正在使用目标目录，请稍后重试。");
+        else if (!RegistrationPaths(directory,seen)) failure = L(@"目标记录无法完整、安全地读取目录前缀（格式、权限或扫描上限），未登记。");
     }
     if (!failure) for (NSString *path in paths) {
         NSString *normal = [validator normalizeDirectory:path error:nil];
-        if (!normal || ![normal isEqual:path] || ProjectNeedsManualImport(normal,home)) { failure = @"包含失效、受保护、非真实路径或范围过大的目录，请刷新后重新选择。"; break; }
+        if (!normal || ![normal isEqual:path] || ProjectNeedsManualImport(normal,home)) { failure = L(@"包含失效、受保护、非真实路径或范围过大的目录，请刷新后重新选择。"); break; }
         NSString *identity = Identity(normal);
         if ([seen containsObject:identity]) { skipped++; continue; }
         [seen addObject:identity]; [selected addObject:@{@"path":normal,@"identity":identity}];
@@ -293,10 +294,10 @@ NSDictionary *RegisterProjectDirectories(NSString *profile, NSArray<NSString *> 
         NSString *name = [identifier stringByAppendingString:@".json"];
         NSString *temporary = [@".claude-launcher-project-" stringByAppendingString:NSUUID.UUID.UUIDString];
         NSData *data = RegistrationData(identifier,path);
-        if (!data) { failure = @"无法生成空记录。"; break; }
+        if (!data) { failure = L(@"无法生成空记录。"); break; }
         failure = guard(); if (failure) break;
         int file = openat(directory,temporary.fileSystemRepresentation,O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC,0600);
-        if (file < 0) { failure = @"无法独占创建空记录临时文件。"; break; }
+        if (file < 0) { failure = L(@"无法独占创建空记录临时文件。"); break; }
         const char *bytes = data.bytes; NSUInteger written = 0;
         while (written < data.length) {
             ssize_t n = write(file,bytes+written,data.length-written);
@@ -305,7 +306,7 @@ NSDictionary *RegisterProjectDirectories(NSString *profile, NSArray<NSString *> 
             written += (NSUInteger)n;
         }
         BOOL ready = written == data.length && fsync(file) == 0; close(file);
-        if (!ready) failure = @"空记录写入失败，原有文件未覆盖。";
+        if (!ready) failure = L(@"空记录写入失败，原有文件未覆盖。");
         if (!failure) failure = guard();
         int current = RegistrationDirectory(profile); struct stat held, fresh;
         BOOL same = current >= 0 && fstat(directory,&held) == 0 && fstat(current,&fresh) == 0 &&
@@ -313,9 +314,9 @@ NSDictionary *RegisterProjectDirectories(NSString *profile, NSArray<NSString *> 
         if (current >= 0) close(current);
         NSString *normal = [validator normalizeDirectory:path error:nil];
         if (!failure && (!same || ![normal isEqual:path] || ![Identity(path) isEqual:selection[@"identity"]]))
-            failure = @"目标存储或项目目录在检查期间变化，已停止后续登记。";
+            failure = L(@"目标存储或项目目录在检查期间变化，已停止后续登记。");
         if (!failure && renameatx_np(directory,temporary.fileSystemRepresentation,directory,name.fileSystemRepresentation,RENAME_EXCL) != 0)
-            failure = @"无法原子发布新记录，未覆盖任何同名文件。";
+            failure = L(@"无法原子发布新记录，未覆盖任何同名文件。");
         unlinkat(directory,temporary.fileSystemRepresentation,0);
         if (failure) break;
         added++; fsync(directory);

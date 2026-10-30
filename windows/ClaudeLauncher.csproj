@@ -39,6 +39,13 @@
     <Compile Include="src\Diagnostics.cs" />
     <Compile Include="src\Updates.cs" />
     <Compile Include="src\Settings.cs" />
+    <Compile Include="src\LocalFiles.cs" />
+    <Compile Include="src\UsageTrend.cs" />
+    <Compile Include="src\ConfigSync.cs" />
+    <Compile Include="src\Projects.cs" />
+    <Compile Include="src\Appearance.cs" />
+    <Compile Include="src\DisplayNameReader.cs" />
+    <EmbeddedResource Include="..\resources\i18n\english.strings"><LogicalName>ClaudeLauncher.English</LogicalName></EmbeddedResource>
     <Compile Include="src\Usage.cs" />
     <Compile Include="src\Handoff.cs" />
     <Compile Include="src\ProxyCheck.cs" />

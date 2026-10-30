@@ -117,20 +117,24 @@ arch -x86_64 "build/Claude 启动器.app/Contents/MacOS/ClaudeLauncher" --self-t
 
 规则见 SPEC“更新与安装”。实现要点：
 
-- 来源：构建时 `UPDATE_BASE_URL=https://…` 写入 Info.plist 的 `ClaudeLauncherUpdateBaseURL`（可不设）；之后固定回退 GitHub Releases `latest/download/`。都失败时提示并提供“前往 GitHub 下载”。
-- 公钥：构建时复制 `windows/assets/update-public-key.xml`（RSA-3072，与 Windows 同一把）。私钥只在 Windows 发布机。
+- 来源：只用本项目 GitHub Releases `latest/download/`，固定目标白名单，不支持自定义地址；更新默认关闭，用户主动开启后才允许请求。失败时提示并提供“前往 GitHub 下载”。
+- 公钥：构建时复制共用的 `windows/assets/update-public-key.xml` 和 macOS 独立公钥 `resources/update-public-key-macos.xml`（包内名称 `macos-publisher-key.xml`），均为 RSA-3072；私钥不进入应用包。
 - 校验：清单形状 + RSA-SHA256 签名 → 版本只升不降、系统版本 → 下载包大小与 SHA-256 → 挂载 DMG，核对包标识、版本 → 新应用须满足当前应用的签名要求（同一证书）→ 复制到同目录隐藏的暂存包并再次核对。
-- 替换：`resources/update-helper.sh` 等启动器退出后，旧版改名备份、新版就位并 `codesign --verify`，失败则回滚旧版；新版启动后把备份移到废纸篓。只动这三个应用包。
-- 入口：系统设置“检查更新”、应用菜单“检查更新…”；启动 8 秒后若距上次检查超过 24 小时自动检查一次（失败只记日志）。
+- 替换：`resources/update-helper.sh` 等启动器退出后，旧版改名备份、新版就位并 `codesign --verify`，失败则回滚旧版；`open` 返回失败也恢复并打开旧版，以退出码 6 退出。成功打开新版后，由新版把备份移到废纸篓。只动这三个应用包。
+- 入口：开启更新后，每次打开启动器检查一次（只在有新版时提示，失败只记日志）；支持系统设置和应用菜单的手动“检查更新”。不开定时器，不重复后台检查；未开启时手动检查也不联网。
 - `ClaudeLauncher --check-signer <应用路径>`：开发用，判断该应用能否作为更新被接受。
 - `scripts/dmg.sh` 输出发布机签名清单需要的 `file`、`size`、`sha256`。
-- `ClaudeLauncher --update-test [--github-only]`：开发用。不弹对话框、自动接受更新，打印每个请求、跳转主机和结果，然后走真实下载与替换。只在临时目录的测试副本上运行（可把副本 Info.plist 的版本调低、改 `ClaudeLauncherUpdateBaseURL` 后用同一证书重签），不要对日常应用运行。
+- `ClaudeLauncher --update-test --allow-updates`：开发用，显式授权联网且自动接受更新，打印请求、跳转主机和结果，再走真实下载与替换。来源仍固定为本项目 GitHub Releases；只在另行授权的临时应用副本上运行，不要对日常应用运行。未传 `--allow-updates` 时直接返回 2。本轮离线回归不运行此命令。
 
 ## macOS 1.7.3 发布交接
 
 应用构建与 DMG 签名在 Mac 执行，自动更新清单仍使用 Windows 发布机的原 RSA 私钥；Windows 软件不更新、不构建。具体产物、验签原文、只切换 macOS 清单及失败回滚要求见 [RELEASE-macos-1.7.3.md](RELEASE-macos-1.7.3.md)。签名清单和两端附件齐全且验签通过后才将草稿设为 Latest。
 
 ## macOS 独立发布
+
+更新辅助脚本的离线回归测试：`/bin/zsh scripts/test-update-helper.sh`。脚本在随机临时目录创建签名应用夹具，替换 `open` 与故障场景的 `mv`，覆盖替换失败、签名失败、重新打开失败和正常重开；不操作 `/Applications`，也不真正打开应用。重新打开新版失败的退出码为 6，恢复旧版后仍返回该失败码。
+
+发布附件复核的离线回归测试：`/bin/zsh scripts/test-release-verification.sh`。只加载 `release-verification.sh` 中的函数，用替身 `curl` 和 `revert` 分别模拟三类附件的超时、正确内容、错误内容，共 9 个场景；只有错误内容回滚。实际发布复核下载失败时保留发布、提示“待复核”，返回 2；测试不运行发布流程。
 
 - 密钥：`scripts/release-key.m`（编译为 `build/release-key`，用固定证书签名，标识 `local.claude.profile-launcher.release-key`）。`create` 在登录钥匙串生成 RSA-3072 私钥，**不可导出**（创建后立即尝试导出，若成功则删除并报错）；`public` 输出公钥 XML；`sign` / `verify` 用于清单。私钥不打印、不进仓库或 DMG。注意：“不可导出”必须写在 `SecKeyCreateRandomKey` 的顶层参数，只写在 `kSecPrivateKeyAttrs` 中会被忽略（实测）。
 - 发布：`scripts/publish-macos.sh [--dry-run]`。要求工作区干净、当前提交已推送、`gh` 已登录、钥匙串公钥与 `resources/update-public-key-macos.xml` 一致；版本必须高于 GitHub 上当前的 `latest-macos.json`。流程见脚本头注释与 SPEC。上传后先经 API 核对草稿附件；转为 Latest 后最多等 10 分钟 latest/download 缓存。仅内容不符才回滚（改回草稿并恢复上一版 Latest）；缓存未及时更新时保留发布、以状态 2 退出，稍后手动复核即可。自建服务由 Windows 端定时同步，脚本不操作。
@@ -141,6 +145,9 @@ arch -x86_64 "build/Claude 启动器.app/Contents/MacOS/ClaudeLauncher" --self-t
 - 构建链接的系统框架另含 UniformTypeIdentifiers（导入设置的文件类型）与 Carbon（全局快捷键，不需辅助功能权限）。
 - `src/Handoff.m/.h` 本地交接：只追加的 CLAUDE.md 规则写入、HANDOFF.md 元数据与时间、两段指令文本；`TestHandoff` 合入 `--self-test`（临时目录）。
 - `src/ProxyCheck.m/.h` 启动前本机代理检测（SystemConfiguration.framework，只连回环端口；`KnownProxyApps` 识别代理软件名）；`TestProxyCheck` 合入 `--self-test`，`--proxy-check` 输出本机结果。
+- `src/Localization.m/.h` 界面语言：`L(@"中文")` 在英文模式下查 `resources/i18n/english.strings`（构建时复制进包），未收录则回退原文；`TestLocalization` 合入 `--self-test`，校验词典可载入且格式占位符一致。新增界面文字时用 `L()` 包裹并补词典；内部状态码、日志级别与路径不包裹。离屏英文截图：`CLAUDE_LAUNCHER_SNAPSHOT_ENGLISH=1 ClaudeLauncher --snapshot <png> <页码>`，不改已保存设置。
+- `src/ConfigSync.m/.h` 账号配置同步：`ConfigSyncItems` 只列白名单条目及状态，`ApplyConfigSync` 默认只补缺、覆盖时旧内容进废纸篓；`TestConfigSync` 合入 `--self-test`（临时目录，不触碰真实配置）。
+- `src/UsageTrend.m/.h` 用量趋势：追加／校验 `usageTrend` 点、按重置分段预测剩余时间、轮换建议与图表视图；`TestUsageTrend` 合入 `--self-test`（合成数据）。
 - `src/Settings.m/.h` 管理默认值、类型／范围白名单、本地别名校验、日志组合筛选及更新 URL 白名单；`TestSettings` 合入 `--self-test`。
 - 构建加入系统 ServiceManagement.framework，无第三方依赖。固定证书构建到 `build/local-settings/`，保留已安装应用和其他开发构建。
 - 运行 `build/local-settings/'Claude 启动器.app'/Contents/MacOS/ClaudeLauncher --ui-self-test build/local-settings/checks`：在随机独立偏好 suite 中进行原生控件 target/action 测试，结束清理 suite；只用合成账号／日志，不运行正常启动生命周期、不扫描真实账号、不启动 Claude、不注册登录项，不创建网络会话。

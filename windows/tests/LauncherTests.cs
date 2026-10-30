@@ -19,6 +19,7 @@ public static class LauncherTests {
     }
     [STAThread]
     public static int Main(string[] args) {
+        Diagnostics.DirectoryOverride=Path.Combine(Path.GetTempPath(),"launcher-diagnostics-test-"+Guid.NewGuid().ToString("N"));
         if (args.Contains("--exit-test-probe")) { System.Threading.Thread.Sleep(600); return 17; }
         if (args.Contains("--launcher-test-probe")) {
             Console.WriteLine(Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes("env:" + Environment.GetEnvironmentVariable("CLAUDE_CONFIG_DIR"))));
@@ -124,6 +125,7 @@ public static class LauncherTests {
         Check(ProxyCheck.IsLoopback("[::1]") && ProxyCheck.IsLoopback("localhost"), "IPv6 and localhost");
         Check(ProxyCheck.ProxyApplications(new[] { "v2rayN", "Hiddify", "Claude", "fake-clash" }).Length == 2, "Process names only");
         TestNewFeatures();
+        SyncTests.Run();
         Console.WriteLine("PASS: " + checks + " assertions; WPF layout loaded without showing windows.");
         return 0;
     }

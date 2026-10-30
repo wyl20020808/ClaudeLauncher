@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -271,13 +271,22 @@ namespace ClaudeLauncher {
         public static string ShowSignalName { get { return @"Local\ClaudeProfileLauncher-show-" + WindowsIdentity.GetCurrent().User.Value; } }
         [STAThread]
         public static int Main(string[] args) {
+            if (args.Length == 1 && args[0] == "--self-test") { Diagnostics.Disabled=true; return SelfTest.Entry(); }
             Diagnostics.Write("startup", "os=" + Environment.OSVersion + "; runtime=" + Environment.Version);
             AppDomain.CurrentDomain.UnhandledException += delegate(object sender, UnhandledExceptionEventArgs e) { Diagnostics.Error("unhandled_exception", e.ExceptionObject as Exception); };
             TaskScheduler.UnobservedTaskException += delegate(object sender, UnobservedTaskExceptionEventArgs e) { Diagnostics.Error("unobserved_task", e.Exception); e.SetObserved(); };
             AppDomain.CurrentDomain.ProcessExit += delegate { Diagnostics.Write("process_exit", "exitCode=" + Environment.ExitCode); };
             if (args.Length == 1 && args[0] == "--apply-update") return Updates.Install();
-            if (args.Length == 1 && args[0] == "--self-test") return SelfTest.Entry();
+
             if (args.Length == 1 && args[0] == "--usage-interface-check") return UsageInterface.Check();
+            if(args.Length==3 && args[0]=="--restart-launcher") {
+                int pid; long ticks;
+                if(!Int32.TryParse(args[1],out pid)||!Int64.TryParse(args[2],out ticks)) return 1;
+                try { using(var parent=Process.GetProcessById(pid)) {
+                    if(parent.StartTime.ToUniversalTime().Ticks!=ticks || !String.Equals(parent.MainModule.FileName,System.Reflection.Assembly.GetExecutingAssembly().Location,StringComparison.OrdinalIgnoreCase)) return 1;
+                    if(!parent.WaitForExit(10000)) { MessageBox.Show("原启动器尚未退出，请稍后手动重新打开。","重新打开失败"); return 1; }
+                } } catch(ArgumentException) { } catch(Exception error) { MessageBox.Show(error.Message,"重新打开失败"); return 1; }
+            }
             string sid = WindowsIdentity.GetCurrent().User.Value;
             using (var mutex = new Mutex(false, @"Local\ClaudeProfileLauncher-" + sid)) {
                 bool owns;

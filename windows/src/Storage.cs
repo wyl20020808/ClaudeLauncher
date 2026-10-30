@@ -76,7 +76,10 @@ namespace ClaudeLauncher {
                 string path = pending.Pop(), shown = Display(path);
                 FileAttributes? attributes = Attributes(path);
                 if (attributes == null) continue;
-                if ((attributes.Value & FileAttributes.ReparsePoint) != 0) throw new IOException("存储项含链接或重定向，已停止：" + shown);
+                if ((attributes.Value & FileAttributes.ReparsePoint) != 0) {
+                    if (ConfigSync.SharedLinkAllowed(root, shown)) continue;
+                    throw new IOException("存储项含链接或重定向，已停止：" + shown);
+                }
                 bool directory = (attributes.Value & FileAttributes.Directory) != 0;
                 SecurityIdentifier owner;
                 try {

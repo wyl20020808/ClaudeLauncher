@@ -16,6 +16,7 @@
 # latest/download 最多等 10 分钟；仅缓存未更新或自建服务暂时不可达时保留发布、列出未完成的复核并以状态 2 退出。
 # -DryRun 只构建、签名、本地校验，不上传（允许测试密钥；同名 Release 已存在时只警告）。私钥只在内存中使用，不落盘、不输出。
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'release-verification.ps1')
 Add-Type -AssemblyName System.Security
 Add-Type -AssemblyName System.Web.Extensions
 $projectRoot = Split-Path $PSScriptRoot -Parent
@@ -267,8 +268,9 @@ if ($served -ne $version) {
 } else {
     foreach ($name in @('latest-windows.json', 'latest-macos.json', $setupName, $dmgName)) {
         $download = Join-Path $staging ('check-github-' + $name)
-        try { Fetch ($github + [Uri]::EscapeDataString($name)) $download 5 600 } catch { $pendingChecks += ('GitHub ' + $name + ' unreachable: ' + $_.Exception.Message); continue }
-        if ([ClaudeLauncher.Updates]::Hash($download) -ne [ClaudeLauncher.Updates]::Hash((Join-Path $staging $name))) { Revert ('GitHub latest/download serves a different ' + $name) }
+        $verification = Get-ReleaseVerificationResult -Download { Fetch ($github + [Uri]::EscapeDataString($name)) $download 5 600 } -Verify { [ClaudeLauncher.Updates]::Hash($download) -eq [ClaudeLauncher.Updates]::Hash((Join-Path $staging $name)) }
+        if ($verification.Status -eq 'Pending') { $pendingChecks += ('GitHub ' + $name + ' pending verification: ' + $verification.Reason); continue }
+        if ($verification.Status -eq 'Mismatch') { Revert ('GitHub latest/download serves a different ' + $name) }
         Write-Output ('  GitHub ' + $name + ': OK')
     }
 }

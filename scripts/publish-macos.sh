@@ -8,6 +8,7 @@
 #   用法：scripts/publish-macos.sh [--dry-run]     --dry-run 只构建、签名、本地校验与带入核对，不创建 Release
 set -euo pipefail
 cd "${0:A:h}/.."
+source scripts/release-verification.sh
 REPO=wyl20020808/ClaudeLauncher
 DOWNLOAD="https://github.com/$REPO/releases/latest/download"
 SIGN_IDENTITY="${SIGN_IDENTITY:-ClaudeLauncher Local Signing}"
@@ -102,7 +103,7 @@ if [[ "$SERVED" != "$VERSION" ]]; then
     exit 2
 fi
 cmp -s "$WORK/check-macos.json" "$WORK/latest-macos.json" || revert 'latest-macos.json 与本地签名不一致'
-curl -fsSL "$DOWNLOAD/latest-windows.json" -o "$WORK/check-windows.json" && cmp -s "$WORK/check-windows.json" "$WORK/latest-windows.json" || revert 'latest-windows.json 不一致'
-curl -fsSL "$DOWNLOAD/${DMG:t}" -o "$WORK/check.dmg" && [[ "$(shasum -a 256 "$WORK/check.dmg" | cut -d' ' -f1)" == "$SHA" ]] || revert 'DMG 哈希不一致'
-curl -fsSL "$DOWNLOAD/$WFILE" -o "$WORK/check.exe" && [[ "$(shasum -a 256 "$WORK/check.exe" | cut -d' ' -f1)" == "$WSHA" ]] || revert 'Windows Setup 哈希不一致'
+verify_published_asset "$DOWNLOAD/latest-windows.json" "$WORK/check-windows.json" "$WORK/latest-windows.json" contents latest-windows.json || exit $?
+verify_published_asset "$DOWNLOAD/${DMG:t}" "$WORK/check.dmg" "$SHA" sha256 DMG || exit $?
+verify_published_asset "$DOWNLOAD/$WFILE" "$WORK/check.exe" "$WSHA" sha256 'Windows Setup' || exit $?
 step "已发布：https://github.com/$REPO/releases/tag/$TAG"

@@ -8,20 +8,21 @@ using ClaudeLauncher;
 // 以合成进程状态离屏渲染四个页面与更新进度窗口；不扫描或启动 Claude，不打开桌面窗口。
 public static class UiPreview {
     static void Save(FrameworkElement root, Size size, string path) {
-        root.Measure(size); root.Arrange(new Rect(size)); root.UpdateLayout();
+        Appearance.TranslateTree(root); root.Measure(size); root.Arrange(new Rect(size)); root.UpdateLayout();
         var image = new RenderTargetBitmap((int)size.Width, (int)size.Height, 96, 96, PixelFormats.Pbgra32); image.Render(root);
         var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(image));
         using (var stream = File.Create(path)) encoder.Save(stream);
     }
     [STAThread]
     public static void Main(string[] args) {
+        Diagnostics.Disabled=true;
         new Application();
         // 合成默认设置与临时目录（预览不保存设置；日志文件写入临时目录，结束时删除）。
         string temp = Path.Combine(Path.GetTempPath(), "claude-preview-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(temp);
         string example = Path.Combine(temp, "示例项目"); Directory.CreateDirectory(example); File.WriteAllText(Path.Combine(example, "HANDOFF.md"), "合成预览");
         File.WriteAllText(Path.Combine(temp, "settings.json.projects"), new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(new[] { new LauncherUI.LocalProject { Path = example, LastAccount = 1 } }));
-        var ui = new LauncherUI(new LauncherSettings(), Path.Combine(temp, "settings.json"));
+        var ui = new LauncherUI(new LauncherSettings { Theme=args.Length>1?Int32.Parse(args[1]):1, Language=args.Length>2?Int32.Parse(args[2]):0 }, Path.Combine(temp, "settings.json"));
         var state = new List<Instance> { new Instance { Number = 1, ProcessId = 111 } };
         ui.Snapshot(0, state);
         // 合成用量观察：五小时与周各一项，验证卡片右侧布局。

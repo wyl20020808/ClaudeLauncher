@@ -7,9 +7,9 @@ using System.Security.Principal;
 using Microsoft.Win32.SafeHandles;
 namespace ClaudeLauncher {
     internal static class Handoff {
-        internal const string Rule = "<!-- claude-launcher:handoff -->\n## 交接文档（由 Claude 启动器添加）\n\n本项目可能由多个 Claude 账号轮流继续。请在项目根目录维护 `HANDOFF.md`：\n- 每完成一个阶段、做出重要决定，或预计会话即将结束时，立即更新它；\n- 内容包括：目标、已完成、进行中、下一步（按顺序）、关键文件与命令、已知问题与注意事项；\n- 写到让没有上下文的新会话能直接接手；\n- 新会话开始时，如果存在 `HANDOFF.md`，先阅读再继续。\n<!-- /claude-launcher:handoff -->\n";
-        internal const string WritePrompt = "请把当前工作整理成交接文档，写入项目根目录的 HANDOFF.md（已有则更新）：目标、已完成、进行中、下一步（按顺序）、关键文件与命令、已知问题与注意事项。写到让没有上下文的新会话能直接接手。写完后告诉我。";
-        internal static string ContinuePrompt(string directory) { return string.Format("这是从另一个会话交接过来的工作。项目目录：{0}\n请先阅读项目根目录的 HANDOFF.md，用几句话复述目标和下一步，然后继续完成剩余工作；过程中按 CLAUDE.md 的要求持续更新 HANDOFF.md。", directory); }
+        internal static string Rule { get { return Appearance.Text("<!-- claude-launcher:handoff -->\n## 交接文档（由 Claude 启动器添加）\n\n本项目可能由多个 Claude 账号轮流继续。请在项目根目录维护 `HANDOFF.md`：\n- 每完成一个阶段、做出重要决定，或预计会话即将结束时，立即更新它；\n- 内容包括：目标、已完成、进行中、下一步（按顺序）、关键文件与命令、已知问题与注意事项；\n- 写到让没有上下文的新会话能直接接手；\n- 新会话开始时，如果存在 `HANDOFF.md`，先阅读再继续。\n<!-- /claude-launcher:handoff -->\n"); } }
+        internal static string WritePrompt { get { return Appearance.Text("请把当前工作整理成交接文档，写入项目根目录的 HANDOFF.md（已有则更新）：目标、已完成、进行中、下一步（按顺序）、关键文件与命令、已知问题与注意事项。写到让没有上下文的新会话能直接接手。写完后告诉我。"); } }
+        internal static string ContinuePrompt(string directory) { return string.Format(Appearance.Text("这是从另一个会话交接过来的工作。项目目录：{0}\n请先阅读项目根目录的 HANDOFF.md，用几句话复述目标和下一步，然后继续完成剩余工作；过程中按 CLAUDE.md 的要求持续更新 HANDOFF.md。"), directory); }
         [StructLayout(LayoutKind.Sequential)] struct Info {
             public uint Attributes; public System.Runtime.InteropServices.ComTypes.FILETIME Created, Accessed, Modified;
             public uint Volume, SizeHigh, SizeLow, Links, IndexHigh, IndexLow;

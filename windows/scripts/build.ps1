@@ -13,6 +13,7 @@ foreach ($reference in $references) { $arguments += '/reference:' + $reference }
 $icon = Join-Path $projectRoot 'assets/app.ico'
 if (-not (Test-Path -LiteralPath $icon)) { throw 'Missing assets/app.ico. Run scripts/make-icon.ps1.' }
 $arguments += '/resource:' + $icon + ',ClaudeLauncher.Icon'
+$arguments += '/resource:' + (Join-Path (Split-Path $projectRoot -Parent) 'resources/i18n/english.strings') + ',ClaudeLauncher.English'
 $arguments += '/resource:' + (Join-Path $projectRoot 'assets/update-public-key.xml') + ',ClaudeLauncher.UpdateKey'
 # 界面插画：仓库中的 WebP 在构建时转为 JPEG 内嵌，客户电脑无需 WebP 解码器。
 Add-Type -AssemblyName PresentationCore
@@ -36,11 +37,11 @@ foreach ($name in $widths.Keys) {
     $arguments += '/resource:' + $target + ',ClaudeLauncher.UI.' + $name
 }
 $output = Join-Path $bin 'ClaudeLauncher.exe'
-$sources = @((Join-Path $projectRoot 'src/ClaudeLauncher.cs'), (Join-Path $projectRoot 'src/ProfileDeletion.cs'), (Join-Path $projectRoot 'src/Diagnostics.cs'), (Join-Path $projectRoot 'src/Updates.cs'), (Join-Path $projectRoot 'src/Usage.cs'), (Join-Path $projectRoot 'src/Settings.cs'), (Join-Path $projectRoot 'src/Handoff.cs'), (Join-Path $projectRoot 'src/ProxyCheck.cs'), (Join-Path $projectRoot 'src/Storage.cs'), (Join-Path $projectRoot 'src/LauncherUI.cs'))
+$sources = @((Join-Path $projectRoot 'src/ClaudeLauncher.cs'), (Join-Path $projectRoot 'src/ProfileDeletion.cs'), (Join-Path $projectRoot 'src/Diagnostics.cs'), (Join-Path $projectRoot 'src/Updates.cs'), (Join-Path $projectRoot 'src/Usage.cs'), (Join-Path $projectRoot 'src/Settings.cs'), (Join-Path $projectRoot 'src/LocalFiles.cs'), (Join-Path $projectRoot 'src/UsageTrend.cs'), (Join-Path $projectRoot 'src/ConfigSync.cs'), (Join-Path $projectRoot 'src/Projects.cs'), (Join-Path $projectRoot 'src/Appearance.cs'), (Join-Path $projectRoot 'src/DisplayNameReader.cs'), (Join-Path $projectRoot 'src/Handoff.cs'), (Join-Path $projectRoot 'src/ProxyCheck.cs'), (Join-Path $projectRoot 'src/Storage.cs'), (Join-Path $projectRoot 'src/LauncherUI.cs'))
 & $compiler @arguments /target:winexe ('/win32icon:' + $icon) ('/win32manifest:' + (Join-Path $projectRoot 'src/app.manifest')) ('/out:' + $output) @sources
 if ($LASTEXITCODE -ne 0) { throw 'GUI build failed.' }
 $test = Join-Path $bin 'LauncherTests.exe'
-& $compiler @arguments /target:exe /main:LauncherTests ('/out:' + $test) @sources (Join-Path $projectRoot 'tests/LauncherTests.cs') (Join-Path $projectRoot 'tests/DeletionTests.cs') (Join-Path $projectRoot 'tests/UpdateTests.cs')
+& $compiler @arguments /target:exe /main:LauncherTests ('/out:' + $test) @sources (Join-Path $projectRoot 'tests/LauncherTests.cs') (Join-Path $projectRoot 'tests/SyncTests.cs') (Join-Path $projectRoot 'tests/DeletionTests.cs') (Join-Path $projectRoot 'tests/UpdateTests.cs')
 if ($LASTEXITCODE -ne 0) { throw 'Test build failed.' }
 & $test
 if ($LASTEXITCODE -ne 0) { throw 'Launcher tests failed.' }

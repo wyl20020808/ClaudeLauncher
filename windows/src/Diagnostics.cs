@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
@@ -28,8 +28,11 @@ namespace ClaudeLauncher {
         public void Dispose() { foreach (var process in processes.Values) process.Dispose(); processes.Clear(); }
     }
     public static class Diagnostics {
+        internal static string LastError;
+        internal static bool Disabled;
         static readonly object Gate = new object();
-        public static readonly string DirectoryPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Claude-MultiLauncher", "logs");
+        internal static string DirectoryOverride = null;
+        public static string DirectoryPath { get { return DirectoryOverride ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Claude-MultiLauncher", "logs"); } }
         static readonly string SessionFile = "launcher-" + DateTime.UtcNow.ToString("yyyyMMdd-HHmmss-fff") + "-" + Process.GetCurrentProcess().Id + ".jsonl";
         internal static string CurrentFile { get { return Path.Combine(DirectoryPath, SessionFile); } }
         public static string Redact(string text) {
@@ -37,16 +40,19 @@ namespace ClaudeLauncher {
             return (text ?? "").Replace(user, "%USERPROFILE%");
         }
         public static void Write(string action, string detail) {
+            if(Disabled) return;
             try {
                 lock (Gate) {
-                    Directory.CreateDirectory(DirectoryPath);
-                    foreach (var old in new DirectoryInfo(DirectoryPath).GetFiles("launcher-*.jsonl").OrderByDescending(f => f.LastWriteTimeUtc).Skip(9)) old.Delete();
+                    using (var guard = new LocalFiles(DirectoryPath)) {
+                    foreach (var old in new DirectoryInfo(DirectoryPath).GetFiles("launcher-*.jsonl").OrderByDescending(f => f.LastWriteTimeUtc).Skip(9)) { LocalFiles.Validate(old.FullName, 16 * 1024 * 1024); old.Delete(); }
                     string path = Path.Combine(DirectoryPath, SessionFile);
+                    LocalFiles.Validate(path, 16 * 1024 * 1024);
                     if (File.Exists(path) && new FileInfo(path).Length > 1024 * 1024) File.WriteAllText(path, "", Encoding.UTF8);
                     string line = new JavaScriptSerializer().Serialize(new { utc = DateTime.UtcNow.ToString("o"), pid = Process.GetCurrentProcess().Id, version = Updates.Version, action = action, detail = Redact(detail) });
                     File.AppendAllText(path, line + Environment.NewLine, new UTF8Encoding(false));
+                    }
                 }
-            } catch { /* 日志磁盘不可写时不能令启动器崩溃。 */ }
+            } catch (Exception error) { LastError = error.Message; }
         }
         public static void Error(string action, Exception error) { Write(action, error == null ? "unknown" : error.ToString()); }
         public static void OpenFolder() {

@@ -62,7 +62,7 @@ Name: "{autodesktop}\Claude 多开启动器"; Filename: "{app}\ClaudeLauncher.ex
 [Run]
 Filename: "{app}\ClaudeLauncher.exe"; Description: "{cm:LaunchProgram,Claude 多开启动器}"; Flags: nowait postinstall skipifsilent
 ; 应用内更新的静默安装：完成后重新打开启动器。
-Filename: "{app}\ClaudeLauncher.exe"; Flags: nowait; Check: RelaunchRequested
+
 
 [UninstallDelete]
 ; 自建更新在程序旁留下的备份与中间文件，仅限安装目录内。
@@ -183,4 +183,13 @@ begin
     Sleep(200);
   end;
   Result := '旧版卸载未在 30 秒内完成，已中止安装。请稍后重试。';
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+var ResultCode: Integer;
+begin
+  if (CurStep = ssDone) and RelaunchRequested() then begin
+    if not Exec(ExpandConstant('{app}\ClaudeLauncher.exe'), '', '', SW_SHOWNORMAL, ewNoWait, ResultCode) then
+      MsgBox('安装已完成，但启动器未能重新打开。请从开始菜单启动，或重新运行安装程序。' + #13#10 + ExpandConstant('{app}\ClaudeLauncher.exe'), mbError, MB_OK);
+  end;
 end;

@@ -1,5 +1,9 @@
 ## 当前迁移状态（2026-10-30）
 
+已接入 macOS 1.7.17 的六批 Windows 同步开发；未发布、未替换已安装程序。新增趋势、配置同步、完整项目清单与导入、主题、英文及可靠性修复，详情与未验证项见 [交接回执](../docs/HANDOFF-windows-1.7.17-response.md)。实际发行版仍为 Windows 1.8.3。
+
+`scripts/build.ps1 -Preview` 运行旧有检查、新增 `SyncTests` 与离屏预览；`scripts/test-release-verification.ps1` 仅测试发布复核分类，不联网。符号链接无权限时自动使用拷贝；真实链接、真实 GUI 与原生侧栏写入不属于已验证结果。
+
 设置页保留分段布局，更改即时保存并生效。取消保存／撤销按钮和退出前未保存提醒；恢复默认确认后立即保存。更新期间联网开关修改被拒绝或写入失败时弹窗，控件回到已保存值。下方历史验证中的草稿行为已被本节替代。
 
 # Windows 版
@@ -18,7 +22,7 @@ C# 5 / .NET Framework 4.8 WPF（系统自带），无 NuGet 依赖。构建脚�
 | 启动实例 | `ProcessStartInfo`（`UseShellExecute=false`，设置 `CLAUDE_CONFIG_DIR`），返回新进程 PID |
 | 单实例 | 按用户 SID 命名的 Mutex，重复打开时激活已有窗口 |
 | 存储校验 | `FileAttributes.ReparsePoint`、ACL 所有者、`GetFileInformationByHandle` 链接数（只读属性，不打开内容），存储项内部递归，在后台线程执行 |
-| 界面 | WPF 代码构建，水墨浅色四页（实例管理、账号管理、日志记录、系统设置六分类） |
+| 界面 | WPF 代码构建，水墨五页（实例、账号、项目、日志、系统设置六分类），支持系统／浅／深主题与中文／English |
 | 设置 | `%LOCALAPPDATA%\Claude-MultiLauncher\settings.json`（`src/Settings.cs`）；开机启动为 HKCU Run 的 `ClaudeMultiLauncher` 值 |
 
 目录：`src/` 生产源码（`ClaudeLauncher.cs` 核心逻辑，`LauncherUI.cs` 界面与流程，`Storage.cs` 存储校验与自检），`tests/` 自动检查，`scripts/` 构建、安装包与发布工具，`installer/` Inno Setup 脚本，`assets/` 图标与更新验签公钥，`updates/` 自建更新服务，`docs/` 开发、设计和用户说明。界面插画取自仓库根目录 `resources/ui/*.webp`，构建时转为 JPEG 内嵌，客户电脑不需要 WebP 解码器。

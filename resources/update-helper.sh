@@ -12,10 +12,12 @@ done
 for i in {1..150}; do kill -0 "$pid" 2>/dev/null || break; sleep 0.2; done
 if kill -0 "$pid" 2>/dev/null; then rm -rf -- "$staged"; exit 3; fi
 if ! mv -- "$current" "$backup"; then rm -rf -- "$staged"; open -- "$current"; exit 4; fi
+failure_code=5
 if mv -- "$staged" "$current" && /usr/bin/codesign --verify --strict -- "$current"; then
-    open -- "$current"; exit 0
+    if open -- "$current"; then exit 0; fi
+    failure_code=6
 fi
 rm -rf -- "$current" "$staged"
 mv -- "$backup" "$current"
 open -- "$current"
-exit 5
+exit "$failure_code"

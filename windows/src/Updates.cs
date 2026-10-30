@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -215,12 +215,18 @@ namespace ClaudeLauncher {
         // Setup 只显示进度窗口（不显示向导页、不弹确认框），完成后由 Setup 重新打开启动器。
         public const string SetupArguments = "/SILENT /SUPPRESSMSGBOXES /NORESTART /RELAUNCH=1";
         // 运行前再次核对哈希与签名者。
-        public static void StartSetup(string setup, Release r) {
+        public static void ValidateSetup(string setup, Release r) {
             VerifyFile(setup, r.size, r.sha256);
             string problem = SignerProblem(Signer(Assembly.GetExecutingAssembly().Location), Signer(setup));
             if (problem != null) throw new IOException(problem);
+        }
+        public static void StartSetup(string setup, Release r) {
+            ValidateSetup(setup, r);
+            StartValidatedSetup(setup, r);
+        }
+        static void StartValidatedSetup(string setup, Release r) {
             Diagnostics.Write("update_setup_start", "version=" + r.version);
-            Process.Start(new ProcessStartInfo(setup, SetupArguments) { UseShellExecute = false });
+            using (var process = Process.Start(new ProcessStartInfo(setup, SetupArguments) { UseShellExecute = false })) { if (process == null) throw new IOException("无法启动安装程序。请重新运行已下载的安装包。"); }
         }
 
         // ---- 1.2.0 兼容：旧清单与单 exe 原地替换 ----

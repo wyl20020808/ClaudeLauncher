@@ -10,7 +10,7 @@ namespace ClaudeLauncher {
     public sealed class LauncherSettings {
         public bool CloseToBackground = true, ShowTray = true, RememberPage, RestoreMinimized = true, ShowArtwork = true, ShowUsage = true, LocalNotifications = true, NotificationSound, AllowUpdates;
         public string StartPage = "instances";
-        public int AccountSort;
+        public int AccountSort, Theme = 1, Language;
         public bool GlobalHotkeys;
         public int RefreshInterval = 3, LogLimit = 500, UsageAlert = 80;
         // 读取失败的原因（已回落默认）；由调用方决定是否记录。
@@ -28,7 +28,7 @@ namespace ClaudeLauncher {
         // 固定键顺序的设置值，用于保存、导出与比较。
         public Dictionary<string, object> Values() {
             return new Dictionary<string, object> {
-                { "globalHotkeys", GlobalHotkeys }, { "accountSort", AccountSort }, { "usageAlert", UsageAlert }, { "closeToBackground", CloseToBackground }, { "showTray", ShowTray }, { "rememberPage", RememberPage }, { "startPage", StartPage },
+                { "theme", Theme }, { "language", Language }, { "globalHotkeys", GlobalHotkeys }, { "accountSort", AccountSort }, { "usageAlert", UsageAlert }, { "closeToBackground", CloseToBackground }, { "showTray", ShowTray }, { "rememberPage", RememberPage }, { "startPage", StartPage },
                 { "refreshInterval", RefreshInterval }, { "restoreMinimized", RestoreMinimized }, { "showArtwork", ShowArtwork }, { "showUsage", ShowUsage }, { "logLimit", LogLimit },
                 { "localNotifications", LocalNotifications }, { "notificationSound", NotificationSound }, { "allowUpdates", AllowUpdates } };
         }
@@ -36,6 +36,7 @@ namespace ClaudeLauncher {
         public static LauncherSettings FromValues(IDictionary<string, object> values) {
             var d = new LauncherSettings();
             return new LauncherSettings {
+                Theme = Pick(values,"theme",new[]{0,1,2},d.Theme), Language = Pick(values,"language",new[]{0,1},d.Language),
                 GlobalHotkeys = Flag(values, "globalHotkeys", d.GlobalHotkeys),
                 AccountSort = Pick(values, "accountSort", new[] { 0, 1, 2 }, d.AccountSort),
                 UsageAlert = Pick(values, "usageAlert", new[] { 0, 70, 80, 90 }, d.UsageAlert),
@@ -58,7 +59,7 @@ namespace ClaudeLauncher {
         public static LauncherSettings Load(string path) {
             try {
                 if (!File.Exists(path)) return new LauncherSettings();
-                var values = new JavaScriptSerializer().DeserializeObject(File.ReadAllText(path)) as Dictionary<string, object>;
+                var values = new JavaScriptSerializer().DeserializeObject(LocalFiles.Read(path, 65536)) as Dictionary<string, object>;
                 object version;
                 if (values == null || !values.TryGetValue("version", out version) || !(version is int) || (int)version != 1) throw new InvalidDataException("设置文件格式无效");
                 return FromValues(values);
@@ -90,7 +91,7 @@ namespace ClaudeLauncher {
         }
 
         public static string ReadLastPage(string path) {
-            try { string page = File.Exists(path) ? File.ReadAllText(path).Trim() : null; return Pages.Contains(page) ? page : null; }
+            try { string page = File.Exists(path) ? LocalFiles.Read(path, 16 * 1024 * 1024).Trim() : null; return Pages.Contains(page) ? page : null; }
             catch (Exception) { return null; }
         }
         public static void WriteLastPage(string path, string page) {
@@ -98,12 +99,7 @@ namespace ClaudeLauncher {
             WriteAtomic(path, page);
         }
         internal static void WriteAtomic(string path, string text) {
-            Directory.CreateDirectory(Path.GetDirectoryName(path));
-            string temp = path + ".tmp-" + Guid.NewGuid().ToString("N");
-            try {
-                File.WriteAllText(temp, text);
-                if (File.Exists(path)) File.Replace(temp, path, null); else File.Move(temp, path);
-            } finally { if (File.Exists(temp)) File.Delete(temp); }
+            LocalFiles.Write(path, text);
         }
     }
 
@@ -122,7 +118,7 @@ namespace ClaudeLauncher {
             var names = new Dictionary<int, string>();
             if (!File.Exists(path)) return names;
             Dictionary<string, object> values;
-            try { values = new JavaScriptSerializer().DeserializeObject(File.ReadAllText(path)) as Dictionary<string, object>; }
+            try { values = new JavaScriptSerializer().DeserializeObject(LocalFiles.Read(path, 16 * 1024 * 1024)) as Dictionary<string, object>; }
             catch (Exception error) { throw new InvalidDataException("别名文件无法读取：" + error.Message); }
             object version, raw;
             if (values == null || !values.TryGetValue("version", out version) || !(version is int) || (int)version != 1 || !values.TryGetValue("names", out raw) || !(raw is Dictionary<string, object>))
@@ -175,11 +171,8 @@ namespace ClaudeLauncher {
                 if (Stamp(path) == null || info.Length > SizeLimit) return null;
                 var owner = (System.Security.Principal.SecurityIdentifier)File.GetAccessControl(path, System.Security.AccessControl.AccessControlSections.Owner).GetOwner(typeof(System.Security.Principal.SecurityIdentifier));
                 if (!Storage.OwnedByMe(owner)) return null;
-                var root = new JavaScriptSerializer { MaxJsonLength = (int)SizeLimit }.DeserializeObject(File.ReadAllText(path)) as Dictionary<string, object>;
-                object account, name;
-                if (root == null || !root.TryGetValue("oauthAccount", out account) || !(account is Dictionary<string, object>)) return null;
-                if (!((Dictionary<string, object>)account).TryGetValue("displayName", out name) || !(name is string)) return null;
-                string valid = AccountNames.Validate((string)name);
+                string valid;
+                using(var guard=new LocalFiles(Path.GetDirectoryName(path),false)) using(var stream=LocalFiles.OpenRead(path,SizeLimit)) valid=AccountNames.Validate(DisplayNameReader.Read(stream));
                 return String.IsNullOrEmpty(valid) ? null : valid;
             } catch (Exception) { return null; }
         }
@@ -187,6 +180,7 @@ namespace ClaudeLauncher {
 
     // SPEC 账号与日志交互 [Windows]：启动器日志文件 launcher-log.json，与 macOS 同格式，最新在前；只处理启动器自己的文件。
     static class LogStore {
+        internal static string LastError;
         public static readonly string DefaultPath = Path.Combine(LauncherSettings.DataDirectory, "launcher-log.json");
         static readonly string[] Levels = { "信息", "警告", "错误" };
         static readonly DateTime Epoch = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc);
@@ -197,8 +191,8 @@ namespace ClaudeLauncher {
         public static List<LogEntry> Load(string path) {
             var entries = new List<LogEntry>();
             object[] rows;
-            try { rows = File.Exists(path) ? new JavaScriptSerializer { MaxJsonLength = 16 * 1024 * 1024 }.DeserializeObject(File.ReadAllText(path)) as object[] : null; }
-            catch (Exception) { return entries; }
+            try { rows = File.Exists(path) ? new JavaScriptSerializer { MaxJsonLength = 16 * 1024 * 1024 }.DeserializeObject(LocalFiles.Read(path, 16 * 1024 * 1024)) as object[] : null; }
+            catch (Exception error) { LastError=error.Message; return entries; }
             if (rows == null) return entries;
             foreach (object raw in rows) {
                 var row = raw as Dictionary<string, object>;
