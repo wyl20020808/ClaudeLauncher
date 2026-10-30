@@ -19,6 +19,8 @@
 
 不再提供自动恢复 Claude 实例、改默认浏览器、迁移账号目录或未存在的批量启动间隔。默认页面只在「恢复上次页面」关闭时可选。设置保存不修改运行中 Claude 的配置。
 
+macOS 日志存储：启动时和读写前逐级检查启动器数据目录及上级，拒绝符号链接；通过不跟随链接的目录／文件句柄访问。日志必须为当前用户所有的普通文件、链接数为 1、大小不超过 16 MiB，写入以 0600 权限原子替换。不安全或不可访问的日志不读不写，日志页显示存储不可用，状态栏每次运行只提示一次，不递归记录失败。数据目录本身无法安全打开时，在建立实例锁前提示并停止启动。
+
 **[Windows]**（2026-10-29，feature/windows-settings）同一六分类与草稿规则，WPF 原生控件（开关为带切换状态的复选框，选项为下拉框）。布局对应 macOS 1.7.14（feature/windows-settings-layout）：顶部分段标签（常规／启动行为／外观／数据与存储／通知／关于）切换分类；各分类按小标题分组为白色圆角卡片，每行 60 px，左侧图标、标题与说明，右侧开关／下拉／按钮／只读值；分组后可有带信息图标的提示框；内容超出时在面板内纵向滚动。草稿、保存、撤销、恢复默认及退出前提示不变。
 
 - 存储：`%LOCALAPPDATA%\Claude-MultiLauncher\settings.json`，`{"version":1,"closeToBackground":true,"showTray":true,"rememberPage":false,"startPage":"instances","refreshInterval":3,"restoreMinimized":true,"showArtwork":true,"showUsage":true,"logLimit":500,"localNotifications":true,"notificationSound":false,"allowUpdates":false}`。逐项按类型与可选值校验，单项异常只回落该项；文件缺失、损坏或版本不是 1 时全部用默认。同目录临时文件写完后替换；保存失败保留原文件与草稿。`startPage` 存页面名（`instances`／`accounts`／`logs`／`settings`，项目页接入后加 `projects`），不存序号。上次页面只在开启「恢复上次页面」时写入同目录 `last-page`。

@@ -24,6 +24,77 @@
 
 static NSString * const BundleID = @"local.claude.profile-launcher";
 static NSString * const WakeNotification = @"local.claude.profile-launcher.show";
+static const NSUInteger LogFileLimit = 16 * 1024 * 1024;
+// Like ProjectStore.storageProblem, check every directory component, then keep an anchored descriptor.
+static int OpenLogDirectory(NSString *directory, BOOL create) {
+    if (!directory.isAbsolutePath) return -1;
+    // Do not standardize: Foundation may rewrite /private/var to the symlink /var.
+    NSArray *parts = [directory componentsSeparatedByString:@"/"];
+    for (NSUInteger i = 1; i < parts.count; i++)
+        if (![parts[i] length] || [parts[i] isEqual:@"."] || [parts[i] isEqual:@".."]) return -1;
+    int fd = open("/", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    if (fd < 0) return -1;
+    for (NSString *part in [parts subarrayWithRange:NSMakeRange(1, parts.count - 1)]) {
+        int next = openat(fd, part.fileSystemRepresentation, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+        if (next < 0 && errno == ENOENT && create && mkdirat(fd, part.fileSystemRepresentation, 0700) == 0)
+            next = openat(fd, part.fileSystemRepresentation, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+        close(fd); fd = next;
+        if (fd < 0) return -1;
+    }
+    struct stat info;
+    if (fstat(fd, &info) != 0 || info.st_uid != getuid()) { close(fd); return -1; }
+    return fd;
+}
+static BOOL SafeLogFile(struct stat info) {
+    return S_ISREG(info.st_mode) && info.st_uid == getuid() && info.st_nlink == 1 && info.st_size >= 0 && (uint64_t)info.st_size <= LogFileLimit;
+}
+static BOOL LogTargetSafe(int directory, NSString *name) {
+    struct stat info;
+    if (fstatat(directory, name.fileSystemRepresentation, &info, AT_SYMLINK_NOFOLLOW) != 0) return errno == ENOENT;
+    return SafeLogFile(info);
+}
+static NSData *ReadLogFile(NSString *path, BOOL *failed) {
+    *failed = YES;
+    int directory = OpenLogDirectory(path.stringByDeletingLastPathComponent, NO);
+    if (directory < 0) return nil;
+    if (!LogTargetSafe(directory, path.lastPathComponent)) { close(directory); return nil; }
+    int fd = openat(directory, path.lastPathComponent.fileSystemRepresentation, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
+    int openError = errno; close(directory);
+    if (fd < 0) { *failed = openError != ENOENT; return nil; }
+    struct stat info; NSMutableData *data = [NSMutableData data]; BOOL ok = fstat(fd, &info) == 0 && SafeLogFile(info);
+    unsigned char buffer[8192];
+    while (ok) {
+        ssize_t count = read(fd, buffer, sizeof(buffer));
+        if (count < 0 && errno == EINTR) continue;
+        if (count < 0 || data.length + (NSUInteger)MAX(count, 0) > LogFileLimit) { ok = NO; break; }
+        if (!count) break;
+        [data appendBytes:buffer length:(NSUInteger)count];
+    }
+    ok = ok && fstat(fd, &info) == 0 && SafeLogFile(info); close(fd);
+    *failed = !ok; return ok ? data : nil;
+}
+static BOOL WriteLogFile(NSString *path, NSData *data) {
+    if (!data || data.length > LogFileLimit) return NO;
+    int directory = OpenLogDirectory(path.stringByDeletingLastPathComponent, NO);
+    if (directory < 0) return NO;
+    NSString *name = path.lastPathComponent;
+    if (!LogTargetSafe(directory, name)) { close(directory); return NO; }
+    NSString *temporary = [@".launcher-log-" stringByAppendingString:NSUUID.UUID.UUIDString];
+    int fd = openat(directory, temporary.fileSystemRepresentation, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+    if (fd < 0) { close(directory); return NO; }
+    BOOL ok = YES; NSUInteger written = 0;
+    while (written < data.length) {
+        ssize_t count = write(fd, (const char *)data.bytes + written, data.length - written);
+        if (count < 0 && errno == EINTR) continue;
+        if (count <= 0) { ok = NO; break; }
+        written += (NSUInteger)count;
+    }
+    if (ok) ok = fsync(fd) == 0;
+    if (close(fd) != 0) ok = NO;
+    if (ok) ok = LogTargetSafe(directory, name) && renameat(directory, temporary.fileSystemRepresentation, directory, name.fileSystemRepresentation) == 0;
+    if (!ok) unlinkat(directory, temporary.fileSystemRepresentation, 0);
+    close(directory); return ok;
+}
 static NSString *ProfilePath(NSInteger n) {
     NSString *name = n == 1 ? @"Claude" : n == 2 ? @"Claude-Second" : [NSString stringWithFormat:@"Claude-Profile-%02ld", (long)n];
     return [[NSHomeDirectory() stringByAppendingPathComponent:@"Library/Application Support"] stringByAppendingPathComponent:name];
@@ -689,6 +760,8 @@ static const unsigned CardFill = 0xFFFCF7;
 @property NSMutableArray<NSView *> *logPageButtons;
 @property NSTextField *logEmpty;
 @property NSString *logPath; // Launcher-owned log file; nil in tests so nothing is written.
+@property BOOL logStorageFailed;
+@property NSString *logStorageNotice;
 @property NSDate *launchDate;
 @property NSInteger logPage, settingsSection;
 @property NSUInteger toastGeneration;
@@ -777,11 +850,11 @@ static const unsigned CardFill = 0xFFFCF7;
 }
 - (void)applicationDidFinishLaunching:(NSNotification *)note {
     NSString *support = [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Application Support/Claude Launcher"];
-    NSError *error;
-    if (![NSFileManager.defaultManager createDirectoryAtPath:support withIntermediateDirectories:YES attributes:nil error:&error]) {
-        [self alert:L(@"无法打开启动器") detail:error.localizedDescription]; [NSApp terminate:nil]; return;
+    int supportFD = OpenLogDirectory(support, YES);
+    if (supportFD < 0) {
+        [self alert:L(@"无法打开启动器") detail:L(@"启动器数据目录或上级不安全或不可访问，已停止访问。")]; [NSApp terminate:nil]; return;
     }
-    self.lockFD = open([[support stringByAppendingPathComponent:@"instance.lock"] fileSystemRepresentation], O_CREAT | O_RDWR | O_NOFOLLOW, 0600);
+    self.lockFD = openat(supportFD, "instance.lock", O_CREAT | O_RDWR | O_NOFOLLOW, 0600); close(supportFD);
     if (self.lockFD < 0) { [self alert:L(@"无法建立启动器实例锁") detail:L(@"请检查 Claude Launcher 目录权限。未启动 Claude。")] ; [NSApp terminate:nil]; return; }
     if (flock(self.lockFD, LOCK_EX | LOCK_NB) != 0) {
         if (errno != EWOULDBLOCK) { [self alert:L(@"无法读取启动器实例锁") detail:L(@"未启动 Claude，请检查目录权限。")] ; [NSApp terminate:nil]; return; }
@@ -795,7 +868,8 @@ static const unsigned CardFill = 0xFFFCF7;
     self.loginAccount = savedLogin >= 1 && savedLogin <= 10 ? savedLogin : 0;
     // Logs live in the launcher's own data folder so they survive restarts and updates.
     self.logPath = [support stringByAppendingPathComponent:@"launcher-log.json"];
-    self.logEntries = LoadedLogs([NSData dataWithContentsOfFile:self.logPath]);
+    BOOL logReadFailed = NO;
+    self.logEntries = LoadedLogs(ReadLogFile(self.logPath, &logReadFailed));
     self.projectStore = [[ProjectStore alloc] initWithDirectory:support home:NSHomeDirectory() applicationPaths:@[NSBundle.mainBundle.bundlePath,@"/Applications/Claude 启动器.app",[NSHomeDirectory() stringByAppendingPathComponent:@"Applications/Claude 启动器.app"]]];
     [self.projectStore load];
     self.page = [self.settings[@"rememberPage"] boolValue] ? [self.preferences integerForKey:@"lastLauncherPage"] : [self.settings[@"startPage"] integerValue];
@@ -803,6 +877,8 @@ static const unsigned CardFill = 0xFFFCF7;
     if ([self.settings[@"showUsageHistory"] boolValue]) self.savedUsageInterface = LoadedUsageInterface([self.preferences objectForKey:@"usageInterfaceObservations"],NSDate.date);
     if ([self.settings[@"showUsageHistory"] boolValue]) self.usageTrend = LoadedUsageTrend([self.preferences objectForKey:@"usageTrend"],NSDate.date);
     [self refresh]; [self show:nil];
+    if (logReadFailed) [self reportLogStorageFailure];
+    if (self.logStorageNotice) { self.message.stringValue = self.logStorageNotice; self.lastLogged = self.logStorageNotice; }
     __weak Launcher *weak = self;
     self.usageClickMonitor = [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskLeftMouseUp handler:^NSEvent *(NSEvent *event) {
         if (event.window == weak.window) dispatch_async(dispatch_get_main_queue(),^{ [weak readLocalUsage]; });
@@ -1466,10 +1542,15 @@ static BOOL ConfigFolderExists(NSInteger n) {
     if (self.logEntries.count > limit) { [self.logEntries removeObjectsInRange:NSMakeRange(limit,self.logEntries.count-limit)]; [self saveLogs]; }
 }
 // Writes only the launcher's own log file (owner read/write); failures are not logged to avoid recursion.
+- (void)reportLogStorageFailure {
+    if (self.logStorageFailed) return;
+    self.logStorageFailed = YES;
+    self.logStorageNotice = L(@"启动器日志无法安全读写，请检查数据目录权限；当前记录保留在内存中。");
+    self.message.stringValue = self.logStorageNotice; self.lastLogged = self.logStorageNotice;
+}
 - (void)saveLogs {
     if (!self.logPath) return;
-    NSData *data = SerializedLogs(self.logEntries ?: @[]);
-    if ([data writeToFile:self.logPath options:NSDataWritingAtomic error:nil]) [NSFileManager.defaultManager setAttributes:@{NSFilePosixPermissions:@0600} ofItemAtPath:self.logPath error:nil];
+    if (!WriteLogFile(self.logPath, SerializedLogs(self.logEntries ?: @[]))) [self reportLogStorageFailure];
 }
 - (void)reloadLogs {
     NSArray *filtered = [self filteredLogEntries]; NSInteger pages = MAX(1,(filtered.count+9)/10);
@@ -1493,6 +1574,7 @@ static BOOL ConfigFolderExists(NSInteger n) {
     [self.nextLogs setFrameOrigin:NSMakePoint(x,652)];
     self.logEmpty.stringValue = filtered.count ? @"" : self.logEntries.count ? L(@"没有匹配的日志，可清除搜索或切换筛选条件") : L(@"暂无日志");
     self.logSummary.stringValue = !filtered.count ? [NSString stringWithFormat:L(@"共 %lu 条日志 · 每页显示 10 条"),(unsigned long)self.logEntries.count] : filtered.count == self.logEntries.count ? [NSString stringWithFormat:L(@"共 %lu 条日志 · 每页显示 10 条"),(unsigned long)filtered.count] : [NSString stringWithFormat:L(@"匹配 %lu 条 / 共 %lu 条日志 · 每页显示 10 条"),(unsigned long)filtered.count,(unsigned long)self.logEntries.count];
+    if (self.logStorageFailed) { self.logSummary.stringValue = L(@"日志存储不可用 · 当前记录仅在内存中"); self.logSummary.toolTip = self.logStorageNotice; }
 }
 - (NSInteger)numberOfRowsInTableView:(NSTableView *)tableView { return self.visibleLogs.count; }
 - (NSView *)tableView:(NSTableView *)tableView viewForTableColumn:(NSTableColumn *)column row:(NSInteger)row {
@@ -3027,9 +3109,44 @@ static OSStatus HotKeyHandler(EventHandlerCallRef next, EventRef event, void *co
 }
 @end
 
+static void TestLogStorage(void) {
+    NSFileManager *fm = NSFileManager.defaultManager;
+    char temporaryRoot[PATH_MAX];
+    NSCAssert(realpath(NSTemporaryDirectory().fileSystemRepresentation, temporaryRoot), @"canonical temporary directory");
+    NSString *root = [@(temporaryRoot) stringByAppendingPathComponent:[@"launcher-log-test-" stringByAppendingString:NSUUID.UUID.UUIDString]];
+    NSCAssert([fm createDirectoryAtPath:root withIntermediateDirectories:YES attributes:nil error:nil], @"temporary log fixtures");
+    @try {
+        NSData *original = [@"target must remain unchanged" dataUsingEncoding:NSUTF8StringEncoding];
+        NSData *replacement = [@"[]" dataUsingEncoding:NSUTF8StringEncoding];
+        NSString *targetDirectory = [root stringByAppendingPathComponent:@"target"], *target;
+        NSCAssert([fm createDirectoryAtPath:targetDirectory withIntermediateDirectories:NO attributes:nil error:nil], @"target directory");
+        target = [targetDirectory stringByAppendingPathComponent:@"log.json"];
+        NSCAssert([original writeToFile:target atomically:YES], @"target contents");
+        NSString *directoryLink = [root stringByAppendingPathComponent:@"linked-directory"];
+        NSString *fileLink = [root stringByAppendingPathComponent:@"linked-file.json"];
+        NSString *hardLink = [root stringByAppendingPathComponent:@"hard-link.json"];
+        NSCAssert(symlink(targetDirectory.fileSystemRepresentation, directoryLink.fileSystemRepresentation) == 0 && symlink(target.fileSystemRepresentation, fileLink.fileSystemRepresentation) == 0 && link(target.fileSystemRepresentation, hardLink.fileSystemRepresentation) == 0, @"linked log fixtures");
+        for (NSString *path in @[[directoryLink stringByAppendingPathComponent:@"log.json"], fileLink, hardLink]) {
+            BOOL failed = NO;
+            NSCAssert(!ReadLogFile(path, &failed) && failed, @"unsafe log paths are not read");
+            NSCAssert(!WriteLogFile(path, replacement), @"unsafe log paths are not written");
+            NSCAssert([[NSData dataWithContentsOfFile:target] isEqual:original], @"link target contents unchanged");
+        }
+        NSString *descendant = [directoryLink stringByAppendingPathComponent:@"child"];
+        NSCAssert(OpenLogDirectory(descendant, YES) < 0 && ![fm fileExistsAtPath:[targetDirectory stringByAppendingPathComponent:@"child"]], @"initialization never creates directories through ancestor links");
+        NSString *normal = [root stringByAppendingPathComponent:@"normal.json"]; BOOL failed = NO;
+        NSCAssert(!ReadLogFile(normal, &failed) && !failed, @"missing log starts empty");
+        NSCAssert(WriteLogFile(normal, replacement) && [ReadLogFile(normal, &failed) isEqual:replacement] && !failed, @"safe log round trip");
+        struct stat info; NSCAssert(lstat(normal.fileSystemRepresentation, &info) == 0 && (info.st_mode & 0777) == 0600, @"log owner-only permissions");
+        NSCAssert(truncate(normal.fileSystemRepresentation, LogFileLimit + 1) == 0, @"oversize fixture");
+        NSCAssert(!ReadLogFile(normal, &failed) && failed && !WriteLogFile(normal, replacement), @"oversize logs refused for read and write");
+        printf("TestLogStorage: PASS (directory/ancestor symlink, file symlink, hard link, missing file, safe 0600 round trip, size limit)\n");
+    } @finally { [fm removeItemAtPath:root error:nil]; }
+}
 static int SelfTest(void) {
     @autoreleasepool {
         TestSettings();
+        TestLogStorage();
         TestProjects();
         TestProjectImport();
         TestProjectRegistration();

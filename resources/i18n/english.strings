@@ -734,3 +734,6 @@
 "勾选要同步的条目。默认以链接方式同步：目标指向来源账号的同一份文件，之后在任一账号修改都会同时生效，无需再次同步。“不同”默认保留目标内容，勾选覆盖后才替换（旧内容移到废纸篓）；覆盖时“相同”的拷贝也会改成链接。“已链接”无需处理。" = "Check the items to sync. By default items are linked: the target points to the source account's file, so later edits in either account apply to both without syncing again. “Different” keeps the target's version unless overwrite is on (the old version goes to the Trash); with overwrite, “Same” copies also become links. “Linked” needs nothing.";
 "以链接方式同步（之后修改来源，目标自动跟随）" = "Sync as links (later source edits apply to targets)";
 "已链接" = "Linked";
+"启动器数据目录或上级不安全或不可访问，已停止访问。" = "The launcher data directory or an ancestor is unsafe or inaccessible. Access has stopped.";
+"启动器日志无法安全读写，请检查数据目录权限；当前记录保留在内存中。" = "Launcher logs cannot be safely read or written. Check data directory permissions; current records remain in memory.";
+"日志存储不可用 · 当前记录仅在内存中" = "Log storage unavailable · records held in memory";
