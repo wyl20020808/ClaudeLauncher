@@ -1,4 +1,5 @@
 #import "Projects.h"
+#import "Localization.h"
 #import <sys/stat.h>
 #import <fcntl.h>
 #import <unistd.h>
@@ -77,11 +78,11 @@ static NSString *DirectoryStatus(NSString *path) {
 - (NSString *)normalizeDirectory:(NSString *)path error:(NSString **)failure {
     if (failure) *failure = nil;
     if (![path isKindOfClass:NSString.class] || !path.isAbsolutePath || [path rangeOfString:@"\0"].location != NSNotFound) {
-        if (failure) *failure = @"请选择绝对路径的已有文件夹。"; return nil;
+        if (failure) *failure = L(@"请选择绝对路径的已有文件夹。"); return nil;
     }
     NSString *real = path.stringByStandardizingPath.stringByResolvingSymlinksInPath;
     if (!AbsoluteStandardPath(real) || [self forbidden:path.stringByStandardizingPath] || [self forbidden:real]) {
-        if (failure) *failure = @"不能添加账号数据目录、ClaudeCodeConfig 或启动器自己的目录。"; return nil;
+        if (failure) *failure = L(@"不能添加账号数据目录、ClaudeCodeConfig 或启动器自己的目录。"); return nil;
     }
     NSString *status = DirectoryStatus(real);
     if (![status isEqual:@"正常"]) { if (failure) *failure = [@"目录" stringByAppendingString:status]; return nil; }
@@ -121,17 +122,17 @@ static NSString *DirectoryStatus(NSString *path) {
 }
 // Check every ancestor before accessing our own JSON. Do not follow a launcher-store symlink into account data.
 - (NSString *)storageProblem {
-    if (!AbsoluteStandardPath(self.directory)) return @"项目清单目录不是标准绝对路径。";
+    if (!AbsoluteStandardPath(self.directory)) return L(@"项目清单目录不是标准绝对路径。");
     NSString *prefix = @"/";
     for (NSString *part in self.directory.pathComponents) {
         if ([part isEqual:@"/"]) continue;
         prefix = [prefix stringByAppendingPathComponent:part]; struct stat info;
         if (lstat(prefix.fileSystemRepresentation,&info) != 0) {
             if (errno == ENOENT) return nil;
-            return @"无法检查项目清单目录权限。";
+            return L(@"无法检查项目清单目录权限。");
         }
-        if (!S_ISDIR(info.st_mode)) return @"项目清单目录或上级是链接／非目录，已停止访问。";
-        if ([prefix isEqual:self.directory] && info.st_uid != getuid()) return @"项目清单目录不属于当前用户。";
+        if (!S_ISDIR(info.st_mode)) return L(@"项目清单目录或上级是链接／非目录，已停止访问。");
+        if ([prefix isEqual:self.directory] && info.st_uid != getuid()) return L(@"项目清单目录不属于当前用户。");
     }
     return nil;
 }
@@ -144,11 +145,11 @@ static NSString *DirectoryStatus(NSString *path) {
     int fd = open(self.file.fileSystemRepresentation,O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
     if (fd < 0) {
         if (errno == ENOENT) return;
-        self.notice = @"无法安全读取 projects.json，原文件未改动。"; self.writable = NO; return;
+        self.notice = L(@"无法安全读取 projects.json，原文件未改动。"); self.writable = NO; return;
     }
     struct stat info;
     if (fstat(fd,&info) != 0 || ![self safeFile:info]) {
-        close(fd); self.notice = @"projects.json 必须是当前用户独有的普通文件（0600），不能是链接。原文件未改动。"; self.writable = NO; return;
+        close(fd); self.notice = L(@"projects.json 必须是当前用户独有的普通文件（0600），不能是链接。原文件未改动。"); self.writable = NO; return;
     }
     // Bound the read of this launcher-owned file; never read project contents.
     NSMutableData *data = [NSMutableData data]; BOOL readError = NO;
@@ -160,10 +161,10 @@ static NSString *DirectoryStatus(NSString *path) {
         }
     }
     close(fd);
-    if (readError) { self.notice = @"读取项目清单失败，原文件未改动。"; self.writable = NO; return; }
+    if (readError) { self.notice = L(@"读取项目清单失败，原文件未改动。"); self.writable = NO; return; }
     id json = data.length <= 1024*1024 ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
     if ([json isKindOfClass:NSDictionary.class] && IntegerBetween(json[@"version"],2,NSIntegerMax)) {
-        self.notice = @"项目清单来自较新的版本，已停止写入并保留原文件。"; self.writable = NO; return;
+        self.notice = L(@"项目清单来自较新的版本，已停止写入并保留原文件。"); self.writable = NO; return;
     }
     if ([json isKindOfClass:NSDictionary.class] && IntegerBetween(json[@"version"],1,1) &&
         [json count] == 2 && [self validProjects:json[@"projects"]]) { self.projects = json[@"projects"]; return; }
@@ -171,22 +172,22 @@ static NSString *DirectoryStatus(NSString *path) {
     struct stat now;
     if (lstat(self.file.fileSystemRepresentation,&now) != 0 || now.st_dev != info.st_dev || now.st_ino != info.st_ino ||
         renamex_np(self.file.fileSystemRepresentation,backup.fileSystemRepresentation,RENAME_EXCL) != 0) {
-        self.notice = @"项目清单损坏，但无法安全保留原文件。已停止写入，请检查目录权限。"; self.writable = NO; return;
+        self.notice = L(@"项目清单损坏，但无法安全保留原文件。已停止写入，请检查目录权限。"); self.writable = NO; return;
     }
-    self.notice = [NSString stringWithFormat:@"项目清单损坏，原文件已改名保留：%@。当前显示空清单，可重新添加目录。",backup];
+    self.notice = [NSString stringWithFormat:L(@"项目清单损坏，原文件已改名保留：%@。当前显示空清单，可重新添加目录。"),backup];
 }
 - (BOOL)save:(NSArray<NSDictionary *> *)projects error:(NSString **)failure {
     if (failure) *failure = nil;
-    NSString *problem = !self.writable ? self.notice ?: @"项目清单尚未加载。" : [self storageProblem];
-    if (!problem && ![self validProjects:projects]) problem = @"项目记录格式无效（最多 1000 项，名称和分组最多 200 字）。";
+    NSString *problem = !self.writable ? self.notice ?: L(@"项目清单尚未加载。") : [self storageProblem];
+    if (!problem && ![self validProjects:projects]) problem = L(@"项目记录格式无效（最多 1000 项，名称和分组最多 200 字）。");
     struct stat existing;
-    if (!problem && lstat(self.file.fileSystemRepresentation,&existing) == 0 && ![self safeFile:existing]) problem = @"项目清单文件不安全，未覆盖。";
+    if (!problem && lstat(self.file.fileSystemRepresentation,&existing) == 0 && ![self safeFile:existing]) problem = L(@"项目清单文件不安全，未覆盖。");
     if (problem) { if (failure) *failure = problem; return NO; }
     NSError *error = nil;
     NSData *data = [NSJSONSerialization dataWithJSONObject:@{@"version":@1,@"projects":projects} options:NSJSONWritingPrettyPrinted error:&error];
-    if (!data || data.length > 1024*1024) { if (failure) *failure = @"项目清单过大或无法编码。"; return NO; }
+    if (!data || data.length > 1024*1024) { if (failure) *failure = L(@"项目清单过大或无法编码。"); return NO; }
     if (![NSFileManager.defaultManager createDirectoryAtPath:self.directory withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions:@0700} error:&error] || [self storageProblem]) {
-        if (failure) *failure = @"无法创建或安全访问项目清单目录。"; return NO;
+        if (failure) *failure = L(@"无法创建或安全访问项目清单目录。"); return NO;
     }
     NSString *temporary = [self.directory stringByAppendingPathComponent:[@".projects-" stringByAppendingString:NSUUID.UUID.UUIDString]];
     int fd = open(temporary.fileSystemRepresentation,O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW,0600);
@@ -199,7 +200,7 @@ static NSString *DirectoryStatus(NSString *path) {
     if (ok) ok = fsync(fd) == 0;
     if (fd >= 0 && close(fd) != 0) ok = NO;
     if (ok) ok = rename(temporary.fileSystemRepresentation,self.file.fileSystemRepresentation) == 0;
-    if (!ok) { unlink(temporary.fileSystemRepresentation); if (failure) *failure = @"保存项目清单失败，原清单保持不变。"; return NO; }
+    if (!ok) { unlink(temporary.fileSystemRepresentation); if (failure) *failure = L(@"保存项目清单失败，原清单保持不变。"); return NO; }
     // Round trip to immutable records so later UI edits cannot mutate an unsaved model.
     self.projects = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil][@"projects"];
     return YES;

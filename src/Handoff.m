@@ -1,4 +1,5 @@
 #import "Handoff.h"
+#import "Localization.h"
 #import <fcntl.h>
 #import <sys/stat.h>
 #import <unistd.h>
@@ -7,13 +8,13 @@ static NSString * const RuleStart = @"<!-- claude-launcher:handoff -->";
 
 NSString *HandoffRuleBlock(void) {
     return [@[RuleStart,
-              @"## 交接文档（由 Claude 启动器添加）",
+              L(@"## 交接文档（由 Claude 启动器添加）"),
               @"",
-              @"本项目可能由多个 Claude 账号轮流继续。请在项目根目录维护 `HANDOFF.md`：",
-              @"- 每完成一个阶段、做出重要决定，或预计会话即将结束时，立即更新它；",
-              @"- 内容包括：目标、已完成、进行中、下一步（按顺序）、关键文件与命令、已知问题与注意事项；",
-              @"- 写到让没有上下文的新会话能直接接手；",
-              @"- 新会话开始时，如果存在 `HANDOFF.md`，先阅读再继续。",
+              L(@"本项目可能由多个 Claude 账号轮流继续。请在项目根目录维护 `HANDOFF.md`："),
+              L(@"- 每完成一个阶段、做出重要决定，或预计会话即将结束时，立即更新它；"),
+              L(@"- 内容包括：目标、已完成、进行中、下一步（按顺序）、关键文件与命令、已知问题与注意事项；"),
+              L(@"- 写到让没有上下文的新会话能直接接手；"),
+              L(@"- 新会话开始时，如果存在 `HANDOFF.md`，先阅读再继续。"),
               @"<!-- /claude-launcher:handoff -->",@""] componentsJoinedByString:@"\n"];
 }
 
@@ -22,21 +23,21 @@ NSString *AppendHandoffRule(NSString *directory, BOOL *alreadyPresent) {
     if (alreadyPresent) *alreadyPresent = NO;
     NSString *path = [directory stringByAppendingPathComponent:@"CLAUDE.md"];
     struct stat info; BOOL exists = lstat(path.fileSystemRepresentation, &info) == 0;
-    if (!exists && errno != ENOENT) return @"无法读取 CLAUDE.md 的状态，未写入。";
-    if (exists && !S_ISREG(info.st_mode)) return @"CLAUDE.md 是链接或不是普通文件，未写入。";
-    if (exists && info.st_uid != getuid()) return @"CLAUDE.md 不属于当前用户，未写入。";
-    if (exists && info.st_nlink != 1) return @"CLAUDE.md 有硬链接，追加会同时改动其他位置的文件，未写入。";
-    if (exists && info.st_size > 1024*1024) return @"CLAUDE.md 超过 1 MB，未写入。";
+    if (!exists && errno != ENOENT) return L(@"无法读取 CLAUDE.md 的状态，未写入。");
+    if (exists && !S_ISREG(info.st_mode)) return L(@"CLAUDE.md 是链接或不是普通文件，未写入。");
+    if (exists && info.st_uid != getuid()) return L(@"CLAUDE.md 不属于当前用户，未写入。");
+    if (exists && info.st_nlink != 1) return L(@"CLAUDE.md 有硬链接，追加会同时改动其他位置的文件，未写入。");
+    if (exists && info.st_size > 1024*1024) return L(@"CLAUDE.md 超过 1 MB，未写入。");
     NSData *existing = exists ? [NSData dataWithContentsOfFile:path] : [NSData data];
-    if (!existing) return @"无法读取 CLAUDE.md，未写入。";
+    if (!existing) return L(@"无法读取 CLAUDE.md，未写入。");
     NSString *text = [[NSString alloc] initWithData:existing encoding:NSUTF8StringEncoding];
-    if (!text) return @"CLAUDE.md 不是 UTF-8 文本，未写入。";
+    if (!text) return L(@"CLAUDE.md 不是 UTF-8 文本，未写入。");
     if ([text containsString:RuleStart]) { if (alreadyPresent) *alreadyPresent = YES; return nil; }
     int fd = open(path.fileSystemRepresentation, O_WRONLY|O_APPEND|O_CREAT|O_NOFOLLOW|O_CLOEXEC, 0644);
-    if (fd < 0) return [NSString stringWithFormat:@"无法打开 CLAUDE.md：%s。未写入。",strerror(errno)];
+    if (fd < 0) return [NSString stringWithFormat:L(@"无法打开 CLAUDE.md：%s。未写入。"),strerror(errno)];
     struct stat opened;
     if (fstat(fd, &opened) != 0 || !S_ISREG(opened.st_mode) || opened.st_uid != getuid() || opened.st_nlink != 1 || (exists && (opened.st_ino != info.st_ino || opened.st_size != info.st_size))) {
-        close(fd); return @"CLAUDE.md 在检查期间发生变化，未写入。";
+        close(fd); return L(@"CLAUDE.md 在检查期间发生变化，未写入。");
     }
     NSString *block = HandoffRuleBlock();
     if (text.length) block = [([text hasSuffix:@"\n"] ? @"\n" : @"\n\n") stringByAppendingString:block];
@@ -44,7 +45,7 @@ NSString *AppendHandoffRule(NSString *directory, BOOL *alreadyPresent) {
     ssize_t written = write(fd, data.bytes, data.length);
     BOOL ok = written == (ssize_t)data.length && fsync(fd) == 0;
     close(fd);
-    return ok ? nil : @"写入 CLAUDE.md 未完成，请检查文件末尾。";
+    return ok ? nil : L(@"写入 CLAUDE.md 未完成，请检查文件末尾。");
 }
 
 NSDate *HandoffModified(NSString *directory) {
@@ -56,18 +57,18 @@ NSDate *HandoffModified(NSString *directory) {
 NSString *HandoffAge(NSDate *modified, NSDate *now) {
     if (!modified) return nil;
     NSTimeInterval seconds = MAX(0, [now timeIntervalSinceDate:modified]);
-    if (seconds < 60) return @"刚刚";
-    if (seconds < 3600) return [NSString stringWithFormat:@"%.0f 分钟前",floor(seconds/60)];
-    if (seconds < 86400) return [NSString stringWithFormat:@"%.0f 小时前",floor(seconds/3600)];
-    return [NSString stringWithFormat:@"%.0f 天前",floor(seconds/86400)];
+    if (seconds < 60) return L(@"刚刚");
+    if (seconds < 3600) return [NSString stringWithFormat:L(@"%.0f 分钟前"),floor(seconds/60)];
+    if (seconds < 86400) return [NSString stringWithFormat:L(@"%.0f 小时前"),floor(seconds/3600)];
+    return [NSString stringWithFormat:L(@"%.0f 天前"),floor(seconds/86400)];
 }
 
 NSString *HandoffWritePrompt(void) {
-    return @"请把当前工作整理成交接文档，写入项目根目录的 HANDOFF.md（已有则更新）：目标、已完成、进行中、下一步（按顺序）、关键文件与命令、已知问题与注意事项。写到让没有上下文的新会话能直接接手。写完后告诉我。";
+    return L(@"请把当前工作整理成交接文档，写入项目根目录的 HANDOFF.md（已有则更新）：目标、已完成、进行中、下一步（按顺序）、关键文件与命令、已知问题与注意事项。写到让没有上下文的新会话能直接接手。写完后告诉我。");
 }
 
 NSString *HandoffContinuePrompt(NSString *directory) {
-    return [NSString stringWithFormat:@"这是从另一个会话交接过来的工作。项目目录：%@\n请先阅读项目根目录的 HANDOFF.md，用几句话复述目标和下一步，然后继续完成剩余工作；过程中按 CLAUDE.md 的要求持续更新 HANDOFF.md。",directory];
+    return [NSString stringWithFormat:L(@"这是从另一个会话交接过来的工作。项目目录：%@\n请先阅读项目根目录的 HANDOFF.md，用几句话复述目标和下一步，然后继续完成剩余工作；过程中按 CLAUDE.md 的要求持续更新 HANDOFF.md。"),directory];
 }
 
 void TestHandoff(void) {

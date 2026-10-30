@@ -1,4 +1,5 @@
 #import "ProxyCheck.h"
+#import "Localization.h"
 #import <SystemConfiguration/SystemConfiguration.h>
 #import <sys/socket.h>
 #import <netinet/in.h>
@@ -94,16 +95,16 @@ NSDictionary *ProxyEnvironmentReport(NSArray<NSDictionary *> *apps) {
     NSMutableArray *lines = [NSMutableArray array];
     for (NSDictionary *f in ProxyFindings(proxies, primary)) {
         NSString *kind = f[@"kind"];
-        if ([kind isEqualToString:@"TUN"]) { ok = YES; [lines addObject:[NSString stringWithFormat:@"✓ TUN／VPN 模式：主网络接口为 %@",f[@"interface"]]]; continue; }
-        if ([kind isEqualToString:@"PAC"]) { ok = YES; [lines addObject:[NSString stringWithFormat:@"✓ 自动代理配置（PAC）：%@",f[@"url"]]]; continue; }
+        if ([kind isEqualToString:@"TUN"]) { ok = YES; [lines addObject:[NSString stringWithFormat:L(@"✓ TUN／VPN 模式：主网络接口为 %@"),f[@"interface"]]]; continue; }
+        if ([kind isEqualToString:@"PAC"]) { ok = YES; [lines addObject:[NSString stringWithFormat:L(@"✓ 自动代理配置（PAC）：%@"),f[@"url"]]]; continue; }
         NSString *address = [NSString stringWithFormat:@"%@:%@",f[@"host"],f[@"port"]];
-        if (!IsLoopbackHost(f[@"host"])) { ok = YES; [lines addObject:[NSString stringWithFormat:@"✓ %@ 代理：%@（非本机地址，未探测）",kind,address]]; continue; }
-        if (LoopbackPortOpen(f[@"host"], [f[@"port"] integerValue])) { ok = YES; [lines addObject:[NSString stringWithFormat:@"✓ %@ 代理：%@（本机端口可连接）",kind,address]]; }
-        else [lines addObject:[NSString stringWithFormat:@"✗ %@ 代理：%@（本机端口无响应，代理软件可能未运行）",kind,address]];
+        if (!IsLoopbackHost(f[@"host"])) { ok = YES; [lines addObject:[NSString stringWithFormat:L(@"✓ %@ 代理：%@（非本机地址，未探测）"),kind,address]]; continue; }
+        if (LoopbackPortOpen(f[@"host"], [f[@"port"] integerValue])) { ok = YES; [lines addObject:[NSString stringWithFormat:L(@"✓ %@ 代理：%@（本机端口可连接）"),kind,address]]; }
+        else [lines addObject:[NSString stringWithFormat:L(@"✗ %@ 代理：%@（本机端口无响应，代理软件可能未运行）"),kind,address]];
     }
-    if (!lines.count) [lines addObject:@"✗ 未检测到系统代理或 TUN／VPN 模式"];
+    if (!lines.count) [lines addObject:L(@"✗ 未检测到系统代理或 TUN／VPN 模式")];
     NSArray *clients = KnownProxyApps(apps);
-    [lines addObject:clients.count ? [@"• 正在运行的代理软件：" stringByAppendingString:[clients componentsJoinedByString:@"、"]] : @"• 未发现常见代理软件在运行"];
+    [lines addObject:clients.count ? [L(@"• 正在运行的代理软件：") stringByAppendingString:[clients componentsJoinedByString:@"、"]] : L(@"• 未发现常见代理软件在运行")];
     return @{@"ok":@(ok), @"lines":lines, @"clients":clients};
 }
 

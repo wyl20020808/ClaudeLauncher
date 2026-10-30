@@ -5,14 +5,14 @@ NSDictionary *DefaultSettings(void) {
              @"startPage":@0, @"restoreMinimized":@YES, @"refreshInterval":@1,
              @"showArtwork":@YES, @"showUsageHistory":@YES, @"logLimit":@500,
              @"localNotifications":@YES, @"notificationSound":@NO, @"allowUpdates":@NO,
-             @"usageAlert":@80, @"globalHotkeys":@NO, @"theme":@1};
+             @"usageAlert":@80, @"globalHotkeys":@NO, @"theme":@1, @"language":@0};
 }
 // Each valid item from input replaces the base value; invalid or unknown items keep the base value.
 static NSDictionary *MergedSettings(id input, NSDictionary *base) {
     NSMutableDictionary *result = ValidatedSettings(base).mutableCopy;
     if (![input isKindOfClass:NSDictionary.class]) return result;
     NSDictionary *choices = @{@"startPage":@[@0,@1,@2,@3,@4], @"refreshInterval":@[@1,@3,@5], @"logLimit":@[@100,@500,@1000],
-                              @"usageAlert":@[@0,@70,@80,@90], @"theme":@[@0,@1,@2]};
+                              @"usageAlert":@[@0,@70,@80,@90], @"theme":@[@0,@1,@2], @"language":@[@0,@1]};
     for (NSString *key in result.allKeys) {
         id value = input[key];
         if (![value isKindOfClass:NSNumber.class]) continue;
@@ -29,7 +29,7 @@ NSDictionary *ValidatedSettings(id input) {
     NSMutableDictionary *result = DefaultSettings().mutableCopy;
     if (![input isKindOfClass:NSDictionary.class]) return result;
     NSDictionary *choices = @{@"startPage":@[@0,@1,@2,@3,@4], @"refreshInterval":@[@1,@3,@5], @"logLimit":@[@100,@500,@1000],
-                              @"usageAlert":@[@0,@70,@80,@90], @"theme":@[@0,@1,@2]};
+                              @"usageAlert":@[@0,@70,@80,@90], @"theme":@[@0,@1,@2], @"language":@[@0,@1]};
     for (NSString *key in result.allKeys) {
         id value = input[key];
         if (![value isKindOfClass:NSNumber.class]) continue;

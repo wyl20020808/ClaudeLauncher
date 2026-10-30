@@ -15,6 +15,7 @@
 #import "Settings.h"
 #import "ProxyCheck.h"
 #import "Handoff.h"
+#import "Localization.h"
 #import <ServiceManagement/ServiceManagement.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import <Carbon/Carbon.h>
@@ -36,15 +37,15 @@ static NSString *Canonical(NSString *path) {
 static NSString *CheckStorageNode(NSString *path, BOOL recursive) {
     struct stat info;
     if (lstat(path.fileSystemRepresentation, &info) != 0)
-        return errno == ENOENT ? nil : [NSString stringWithFormat:@"无法检查存储路径：%@", path];
-    if (S_ISLNK(info.st_mode)) return [NSString stringWithFormat:@"隔离检查失败：路径是符号链接：%@", path];
-    if (!S_ISDIR(info.st_mode) && !S_ISREG(info.st_mode)) return [NSString stringWithFormat:@"隔离检查失败：存储类型异常：%@", path];
-    if (info.st_uid != getuid()) return [NSString stringWithFormat:@"隔离检查失败：目录或文件不属于当前用户：%@", path];
-    if (S_ISREG(info.st_mode) && info.st_nlink > 1) return [NSString stringWithFormat:@"隔离检查失败：存储文件有硬链接：%@", path];
+        return errno == ENOENT ? nil : [NSString stringWithFormat:L(@"无法检查存储路径：%@"), path];
+    if (S_ISLNK(info.st_mode)) return [NSString stringWithFormat:L(@"隔离检查失败：路径是符号链接：%@"), path];
+    if (!S_ISDIR(info.st_mode) && !S_ISREG(info.st_mode)) return [NSString stringWithFormat:L(@"隔离检查失败：存储类型异常：%@"), path];
+    if (info.st_uid != getuid()) return [NSString stringWithFormat:L(@"隔离检查失败：目录或文件不属于当前用户：%@"), path];
+    if (S_ISREG(info.st_mode) && info.st_nlink > 1) return [NSString stringWithFormat:L(@"隔离检查失败：存储文件有硬链接：%@"), path];
     if (recursive && S_ISDIR(info.st_mode)) {
         NSError *error = nil;
         NSArray *names = [NSFileManager.defaultManager contentsOfDirectoryAtPath:path error:&error];
-        if (!names) return [NSString stringWithFormat:@"无法检查存储目录：%@（%@）",path,error.localizedDescription];
+        if (!names) return [NSString stringWithFormat:L(@"无法检查存储目录：%@（%@）"),path,error.localizedDescription];
         for (NSString *name in names) {
             NSString *failure = CheckStorageNode([path stringByAppendingPathComponent:name], YES);
             if (failure) return failure;
@@ -53,7 +54,7 @@ static NSString *CheckStorageNode(NSString *path, BOOL recursive) {
     return nil;
 }
 static NSString *ValidateProfileRoot(NSString *path, NSString *expected) {
-    if (![path isEqual:expected] || !path.isAbsolutePath || ![path isEqual:path.stringByStandardizingPath]) return @"账号数据路径不符合固定目录约定。";
+    if (![path isEqual:expected] || !path.isAbsolutePath || ![path isEqual:path.stringByStandardizingPath]) return L(@"账号数据路径不符合固定目录约定。");
     NSString *prefix = @"/";
     for (NSString *component in path.pathComponents) {
         if ([component isEqual:@"/"]) continue;
@@ -61,9 +62,9 @@ static NSString *ValidateProfileRoot(NSString *path, NSString *expected) {
         struct stat info;
         if (lstat(prefix.fileSystemRepresentation,&info) != 0) {
             if (errno == ENOENT) break;
-            return [NSString stringWithFormat:@"无法检查路径：%@",prefix];
+            return [NSString stringWithFormat:L(@"无法检查路径：%@"),prefix];
         }
-        if (S_ISLNK(info.st_mode) || !S_ISDIR(info.st_mode)) return [NSString stringWithFormat:@"账号目录或其上级是链接/非目录，已停止：%@",prefix];
+        if (S_ISLNK(info.st_mode) || !S_ISDIR(info.st_mode)) return [NSString stringWithFormat:L(@"账号目录或其上级是链接/非目录，已停止：%@"),prefix];
     }
     return CheckStorageNode(path,NO);
 }
@@ -87,9 +88,9 @@ static void ValidateProfileAsync(NSString *path, void (^completion)(NSString *))
 }
 // Returns why an account cannot be deleted right now, or nil. 01 is the official default profile and is never deleted here.
 static NSString *DeleteBlocker(NSInteger account, NSArray *pids, BOOL starting) {
-    if (account == 1) return @"账号 01 是 Claude 默认目录，启动器不删除它。";
-    if (account < 2 || account > 10) return @"账号编号无效。";
-    if (starting || pids.count) return @"该账号正在运行或启动中。请先在 Claude 中正常退出（⌘Q），再删除。";
+    if (account == 1) return L(@"账号 01 是 Claude 默认目录，启动器不删除它。");
+    if (account < 2 || account > 10) return L(@"账号编号无效。");
+    if (starting || pids.count) return L(@"该账号正在运行或启动中。请先在 Claude 中正常退出（⌘Q），再删除。");
     return nil;
 }
 // ---- Updates (docs/SPEC.md「更新与安装」) ----
@@ -169,8 +170,8 @@ static NSString *SHA256Hex(NSData *data) {
 }
 // Validates shape and RSA-SHA256 (PKCS#1 v1.5) signature of latest-macos.json. Returns the manifest or nil with *failure set.
 static NSDictionary *VerifyManifest(NSData *data, NSArray *keys, NSString **failure) {
-    *failure = @"更新清单格式无效。";
-    if (!data.length || data.length > 16384) { *failure = @"更新清单过大或为空。"; return nil; }
+    *failure = L(@"更新清单格式无效。");
+    if (!data.length || data.length > 16384) { *failure = L(@"更新清单过大或为空。"); return nil; }
     NSDictionary *m = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
     if (![m isKindOfClass:NSDictionary.class]) return nil;
     NSString *version = m[@"version"]; NSNumber *size = m[@"size"];
@@ -183,7 +184,7 @@ static NSDictionary *VerifyManifest(NSData *data, NSArray *keys, NSString **fail
     BOOL verified = NO;
     for (id key in keys) verified = verified || (signature && SecKeyVerifySignature((__bridge SecKeyRef)key, kSecKeyAlgorithmRSASignatureMessagePKCS1v15SHA256, (__bridge CFDataRef)[payload dataUsingEncoding:NSUTF8StringEncoding], (__bridge CFDataRef)signature, NULL));
     if (!verified) {
-        *failure = @"更新清单签名无效，已拒绝。"; return nil;
+        *failure = L(@"更新清单签名无效，已拒绝。"); return nil;
     }
     *failure = nil; return m;
 }
@@ -197,16 +198,16 @@ static BOOL RedirectAllowed(NSURL *url, BOOL github) {
 // The running app may replace itself only from a normal, writable .app location (not App Translocation or a mounted image).
 static NSString *InstallBlocker(NSString *bundlePath) {
     if (![bundlePath.pathExtension isEqual:@"app"] || [bundlePath containsString:@"/AppTranslocation/"] || [bundlePath hasPrefix:@"/Volumes/"])
-        return @"请先把启动器拖到「应用程序」文件夹并从那里打开，再检查更新。";
-    if (![NSFileManager.defaultManager isWritableFileAtPath:bundlePath.stringByDeletingLastPathComponent]) return @"没有写入应用所在文件夹的权限，无法自动安装。";
+        return L(@"请先把启动器拖到「应用程序」文件夹并从那里打开，再检查更新。");
+    if (![NSFileManager.defaultManager isWritableFileAtPath:bundlePath.stringByDeletingLastPathComponent]) return L(@"没有写入应用所在文件夹的权限，无法自动安装。");
     return nil;
 }
 // New app must satisfy the running app's designated requirement (same bundle id and signing certificate).
 static NSString *SameSigner(NSString *candidate) {
     SecCodeRef me = NULL; SecRequirementRef requirement = NULL; SecStaticCodeRef other = NULL; NSString *failure = nil;
-    if (SecCodeCopySelf(kSecCSDefaultFlags,&me) || SecCodeCopyDesignatedRequirement(me,kSecCSDefaultFlags,&requirement)) failure = @"无法读取当前应用的签名要求。";
-    else if (SecStaticCodeCreateWithPath((__bridge CFURLRef)[NSURL fileURLWithPath:candidate],kSecCSDefaultFlags,&other)) failure = @"无法读取新版本的签名。";
-    else if (SecStaticCodeCheckValidity(other,kSecCSCheckAllArchitectures|kSecCSStrictValidate|kSecCSCheckNestedCode,requirement)) failure = @"新版本与当前版本的签名证书不一致或签名无效，已拒绝更新。";
+    if (SecCodeCopySelf(kSecCSDefaultFlags,&me) || SecCodeCopyDesignatedRequirement(me,kSecCSDefaultFlags,&requirement)) failure = L(@"无法读取当前应用的签名要求。");
+    else if (SecStaticCodeCreateWithPath((__bridge CFURLRef)[NSURL fileURLWithPath:candidate],kSecCSDefaultFlags,&other)) failure = L(@"无法读取新版本的签名。");
+    else if (SecStaticCodeCheckValidity(other,kSecCSCheckAllArchitectures|kSecCSStrictValidate|kSecCSCheckNestedCode,requirement)) failure = L(@"新版本与当前版本的签名证书不一致或签名无效，已拒绝更新。");
     if (me) CFRelease(me); if (requirement) CFRelease(requirement); if (other) CFRelease(other);
     return failure;
 }
@@ -227,12 +228,12 @@ static NSString *SameSigner(NSString *candidate) {
     completionHandler(allowed ? request : nil);
 }
 - (void)URLSession:(NSURLSession *)session dataTask:(NSURLSessionDataTask *)task didReceiveResponse:(NSURLResponse *)response completionHandler:(void (^)(NSURLSessionResponseDisposition))completionHandler {
-    if (response.expectedContentLength > self.limit) { self.overLimit = @"下载内容超出上限。"; completionHandler(NSURLSessionResponseCancel); return; }
+    if (response.expectedContentLength > self.limit) { self.overLimit = L(@"下载内容超出上限。"); completionHandler(NSURLSessionResponseCancel); return; }
     completionHandler(NSURLSessionResponseAllow);
 }
 - (void)URLSession:(NSURLSession *)session dataTask:(NSURLSessionDataTask *)task didReceiveData:(NSData *)data {
     [self.body appendData:data];
-    if ((long long)self.body.length > self.limit) { self.overLimit = @"下载内容超出上限。"; [task cancel]; return; }
+    if ((long long)self.body.length > self.limit) { self.overLimit = L(@"下载内容超出上限。"); [task cancel]; return; }
     if (self.progress) {
         long long received = self.body.length, expected = task.response.expectedContentLength;
         void (^progress)(long long, long long) = self.progress;
@@ -242,7 +243,7 @@ static NSString *SameSigner(NSString *candidate) {
 - (void)URLSession:(NSURLSession *)session task:(NSURLSessionTask *)task didCompleteWithError:(NSError *)error {
     NSInteger status = [task.response isKindOfClass:NSHTTPURLResponse.class] ? ((NSHTTPURLResponse *)task.response).statusCode : 0;
     if (TraceNetwork) printf("[network] %s -> HTTP %ld, %lu bytes\n",self.url.absoluteString.UTF8String,(long)status,(unsigned long)self.body.length);
-    NSString *failure = self.overLimit ?: error.code == NSURLErrorCancelled ? @"已取消。" : error ? error.localizedDescription : status != 200 ? [NSString stringWithFormat:@"服务器返回 %ld。",(long)status] : nil;
+    NSString *failure = self.overLimit ?: error.code == NSURLErrorCancelled ? L(@"已取消。") : error ? error.localizedDescription : status != 200 ? [NSString stringWithFormat:L(@"服务器返回 %ld。"),(long)status] : nil;
     NSData *data = failure ? nil : [self.body copy];
     void (^done)(NSData *, NSString *) = self.done;
     [session finishTasksAndInvalidate];
@@ -251,7 +252,7 @@ static NSString *SameSigner(NSString *candidate) {
 @end
 // Returns the task so a caller can cancel it; progress (optional) runs on the main queue.
 static NSURLSessionTask *Fetch(NSURL *url, BOOL github, long long limit, NSTimeInterval timeout, void (^progress)(long long received, long long expected), void (^done)(NSData *data, NSString *failure)) {
-    if (!NetworkEnabled || !github || !AllowedUpdateURL(url,NO)) { done(nil,@"本地安全策略已阻止此请求；仅允许主动检查本项目的 GitHub 更新。"); return nil; }
+    if (!NetworkEnabled || !github || !AllowedUpdateURL(url,NO)) { done(nil,L(@"本地安全策略已阻止此请求；仅允许主动检查本项目的 GitHub 更新。")); return nil; }
     RedirectGuard *guard = [RedirectGuard new]; guard.github = github;
     guard.limit = limit; guard.url = url; guard.body = [NSMutableData data]; guard.progress = progress; guard.done = done;
     NSURLSessionConfiguration *config = NSURLSessionConfiguration.ephemeralSessionConfiguration;
@@ -271,7 +272,7 @@ static NSString *RunTool(NSString *path, NSArray<NSString *> *arguments, NSData 
     if (![task launchAndReturnError:&error]) return error.localizedDescription;
     NSData *data = [pipe.fileHandleForReading readDataToEndOfFile]; [task waitUntilExit];
     if (output) *output = data;
-    return task.terminationStatus == 0 ? nil : [NSString stringWithFormat:@"%@ 执行失败（%d）。",path.lastPathComponent,task.terminationStatus];
+    return task.terminationStatus == 0 ? nil : [NSString stringWithFormat:L(@"%@ 执行失败（%d）。"),path.lastPathComponent,task.terminationStatus];
 }
 
 static BOOL LoginConflict(NSDictionary<NSNumber *,NSArray *> *processes, NSInteger account) {
@@ -279,15 +280,15 @@ static BOOL LoginConflict(NSDictionary<NSNumber *,NSArray *> *processes, NSInteg
     return NO;
 }
 static NSString *LoginBlocker(NSDictionary<NSNumber *,NSArray *> *processes, NSArray<NSNumber *> *busy, NSInteger account) {
-    if (LoginConflict(processes,account)) return @"请先保存工作并正常退出其他 Claude 实例（包括未管理的实例），再进入登录保护。启动器不会替你退出或登出账号。";
-    if ([processes[@(account)] count] > 1) return @"该账号有多个主进程，不能进入登录保护。";
-    for (NSNumber *key in busy) if (key.integerValue != account) return @"其他账号正在检查或启动，请等待完成后重试。";
+    if (LoginConflict(processes,account)) return L(@"请先保存工作并正常退出其他 Claude 实例（包括未管理的实例），再进入登录保护。启动器不会替你退出或登出账号。");
+    if ([processes[@(account)] count] > 1) return L(@"该账号有多个主进程，不能进入登录保护。");
+    for (NSNumber *key in busy) if (key.integerValue != account) return L(@"其他账号正在检查或启动，请等待完成后重试。");
     return nil;
 }
 static NSString *CodeStatus(NSInteger account, BOOL running, BOOL configured) {
-    if (account == 1) return @"Code 默认";
-    if (!running) return @"Code 待启动";
-    return configured ? @"Code 已指定" : @"Code 未确认";
+    if (account == 1) return L(@"Code 默认");
+    if (!running) return L(@"Code 待启动");
+    return configured ? L(@"Code 已指定") : L(@"Code 未确认");
 }
 // Local file only, no network: Claude Code caches the signed-in profile in <config>/.claude.json (tokens live in Keychain).
 // Take just oauthAccount.displayName; never keep, log or export anything else from the file.
@@ -347,12 +348,12 @@ static BOOL IsMainExecutable(NSString *path) {
 }
 static NSDictionary<NSNumber *, NSArray<NSNumber *> *> *Scan(NSString **failure) {
     int capacity = proc_listallpids(NULL, 0);
-    if (capacity <= 0) { *failure = @"无法读取进程列表。为避免重复启动，已暂停启动操作。"; return nil; }
+    if (capacity <= 0) { *failure = L(@"无法读取进程列表。为避免重复启动，已暂停启动操作。"); return nil; }
     capacity += 256;
     pid_t *pids = calloc((size_t)capacity, sizeof(pid_t));
-    if (!pids) { *failure = @"无法分配进程检查缓冲区，已停止启动。"; return nil; }
+    if (!pids) { *failure = L(@"无法分配进程检查缓冲区，已停止启动。"); return nil; }
     int count = proc_listallpids(pids, capacity * (int)sizeof(pid_t));
-    if (count <= 0 || count >= capacity) { free(pids); *failure = @"进程列表读取不完整，请稍后重试。"; return nil; }
+    if (count <= 0 || count >= capacity) { free(pids); *failure = L(@"进程列表读取不完整，请稍后重试。"); return nil; }
     NSMutableDictionary *result = [NSMutableDictionary dictionary];
     NSMutableSet *seen = [NSMutableSet set];
     for (int i = 0; i < count; i++) {
@@ -363,11 +364,11 @@ static NSDictionary<NSNumber *, NSArray<NSNumber *> *> *Scan(NSString **failure)
         NSArray *args = Arguments(pids[i]);
         if (!args) {
             if (kill(pids[i], 0) == -1 && errno == ESRCH) continue;
-            *failure = [NSString stringWithFormat:@"无法读取 Claude 主进程 PID %d 的启动参数。已暂停启动，未结束任何进程。", pids[i]];
+            *failure = [NSString stringWithFormat:L(@"无法读取 Claude 主进程 PID %d 的启动参数。已暂停启动，未结束任何进程。"), pids[i]];
             free(pids); return nil;
         }
         NSInteger account = AccountForArguments(args);
-        if (account < 0) { *failure = @"Claude 使用无法安全识别的数据目录参数。已暂停启动。"; free(pids); return nil; }
+        if (account < 0) { *failure = L(@"Claude 使用无法安全识别的数据目录参数。已暂停启动。"); free(pids); return nil; }
         // Keep unmanaged official instances under 0 so login protection also detects them.
         NSMutableArray *list = result[@(account)];
         if (!list) result[@(account)] = list = [NSMutableArray array];
@@ -376,7 +377,7 @@ static NSDictionary<NSNumber *, NSArray<NSNumber *> *> *Scan(NSString **failure)
     free(pids);
     for (NSRunningApplication *app in NSWorkspace.sharedWorkspace.runningApplications) {
         if ([app.bundleIdentifier isEqual:@"com.anthropic.claudefordesktop"] && !app.terminated && ![seen containsObject:@(app.processIdentifier)]) {
-            *failure = @"发现无法核对启动参数的 Claude 实例。请稍后重试；不会重复启动或结束它。";
+            *failure = L(@"发现无法核对启动参数的 Claude 实例。请稍后重试；不会重复启动或结束它。");
             return nil;
         }
     }
@@ -427,17 +428,17 @@ static ProjectStore *RegistrationValidator(void) {
         home:NSHomeDirectory() applicationPaths:@[NSBundle.mainBundle.bundlePath,@"/Applications/Claude 启动器.app",[NSHomeDirectory() stringByAppendingPathComponent:@"Applications/Claude 启动器.app"]]];
 }
 static NSString *RegistrationGuard(NSInteger account) {
-    if (account < 1 || account > 10) return @"目标账号编号无效。";
-    if ([NSUserDefaults.standardUserDefaults integerForKey:@"loginProtectionAccount"]) return @"登录保护期间不能登记项目，请先完成登录并结束保护。";
+    if (account < 1 || account > 10) return L(@"目标账号编号无效。");
+    if ([NSUserDefaults.standardUserDefaults integerForKey:@"loginProtectionAccount"]) return L(@"登录保护期间不能登记项目，请先完成登录并结束保护。");
     NSString *version = nil;
     for (NSString *path in @[@"/Applications/Claude.app",[NSHomeDirectory() stringByAppendingPathComponent:@"Applications/Claude.app"]]) {
         if (![NSFileManager.defaultManager isExecutableFileAtPath:[path stringByAppendingPathComponent:@"Contents/MacOS/Claude"]]) continue;
         version = [NSDictionary dictionaryWithContentsOfFile:[path stringByAppendingPathComponent:@"Contents/Info.plist"]][@"CFBundleShortVersionString"]; break;
     }
-    if (![version isEqual:@"4.29.0"]) return @"此功能只验证过 Claude 4.29.0；当前版本不匹配，已停止写入。";
+    if (![version isEqual:@"4.29.0"]) return L(@"此功能只验证过 Claude 4.29.0；当前版本不匹配，已停止写入。");
     NSString *failure = nil; NSDictionary *processes = Scan(&failure);
     if (failure) return failure;
-    if ([processes[@(account)] count]) return @"请保存工作并正常退出目标账号后重试；登记期间不要从其他入口启动它。启动器不会替你退出。";
+    if ([processes[@(account)] count]) return L(@"请保存工作并正常退出目标账号后重试；登记期间不要从其他入口启动它。启动器不会替你退出。");
     return ValidateProfileRoot(ProfilePath(account),ProfilePath(account));
 }
 static NSDictionary *RegisterForAccount(NSInteger account, NSArray *paths, BOOL apply) {
@@ -557,11 +558,11 @@ static void DrawPanel(NSRect rect, CGFloat radius, CGFloat alpha) {
 @implementation ActionButton
 - (void)drawRect:(NSRect)dirtyRect {
     NSRect rect = NSInsetRect(self.bounds,1,1);
-    BOOL pill = [self.title hasPrefix:@"+"], filled = self.primary || pill || [self.title isEqualToString:@"打开"];
+    BOOL pill = [self.title hasPrefix:@"+"], filled = self.primary || pill || [self.title isEqualToString:L(@"打开")];
     CGFloat radius = pill ? NSHeight(rect)/2 : MIN(12,NSHeight(rect)/3);
     NSBezierPath *shape = [NSBezierPath bezierPathWithRoundedRect:rect xRadius:radius yRadius:radius];
     NSColor *fill = filled ? SRGB(DarkDrawing() ? 0x8A573C : 0xA8765A) : Hex(0xFFFFFF); // Brand fill stays deep so white text keeps contrast.
-    NSColor *text = filled ? NSColor.whiteColor : [self.title isEqualToString:@"创建"] ? Hex(0x9A6447) : Hex(0x2B2622);
+    NSColor *text = filled ? NSColor.whiteColor : [self.title isEqualToString:L(@"创建")] ? Hex(0x9A6447) : Hex(0x2B2622);
     if (!self.enabled) { fill = Hex(0xEFE9E1); text = Hex(0xA59B90); }
     if (self.plain && !filled) { fill = NSColor.clearColor; text = Hex(0x5A524A); }
     if (self.highlighted && self.enabled) fill = [fill blendedColorWithFraction:0.12 ofColor:NSColor.blackColor];
@@ -754,6 +755,7 @@ static const unsigned CardFill = 0xFFFCF7;
     if ((self = [super init])) {
         self.preferences = NSUserDefaults.standardUserDefaults;
         self.settings = ValidatedSettings([self.preferences objectForKey:@"localSettings"]);
+        UIEnglish = [self.settings[@"language"] integerValue] == 1;
         self.settingsDraft = self.settings.mutableCopy;
         self.accountNames = [NSMutableDictionary dictionary];
         id savedNames = [self.preferences objectForKey:@"accountDisplayNames"];
@@ -772,12 +774,12 @@ static const unsigned CardFill = 0xFFFCF7;
     NSString *support = [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Application Support/Claude Launcher"];
     NSError *error;
     if (![NSFileManager.defaultManager createDirectoryAtPath:support withIntermediateDirectories:YES attributes:nil error:&error]) {
-        [self alert:@"无法打开启动器" detail:error.localizedDescription]; [NSApp terminate:nil]; return;
+        [self alert:L(@"无法打开启动器") detail:error.localizedDescription]; [NSApp terminate:nil]; return;
     }
     self.lockFD = open([[support stringByAppendingPathComponent:@"instance.lock"] fileSystemRepresentation], O_CREAT | O_RDWR | O_NOFOLLOW, 0600);
-    if (self.lockFD < 0) { [self alert:@"无法建立启动器实例锁" detail:@"请检查 Claude Launcher 目录权限。未启动 Claude。"] ; [NSApp terminate:nil]; return; }
+    if (self.lockFD < 0) { [self alert:L(@"无法建立启动器实例锁") detail:L(@"请检查 Claude Launcher 目录权限。未启动 Claude。")] ; [NSApp terminate:nil]; return; }
     if (flock(self.lockFD, LOCK_EX | LOCK_NB) != 0) {
-        if (errno != EWOULDBLOCK) { [self alert:@"无法读取启动器实例锁" detail:@"未启动 Claude，请检查目录权限。"] ; [NSApp terminate:nil]; return; }
+        if (errno != EWOULDBLOCK) { [self alert:L(@"无法读取启动器实例锁") detail:L(@"未启动 Claude，请检查目录权限。")] ; [NSApp terminate:nil]; return; }
         [NSDistributedNotificationCenter.defaultCenter postNotificationName:WakeNotification object:nil userInfo:nil deliverImmediately:YES];
         for (NSRunningApplication *other in [NSRunningApplication runningApplicationsWithBundleIdentifier:BundleID])
             if (other.processIdentifier != getpid()) [other activateWithOptions:NSApplicationActivateIgnoringOtherApps];
@@ -800,7 +802,7 @@ static const unsigned CardFill = 0xFFFCF7;
         if (event.window == weak.window) dispatch_async(dispatch_get_main_queue(),^{ [weak readLocalUsage]; });
         return event; // Observe clicks in this launcher only; never consume or synthesize input.
     }];
-    if (self.projectStore.notice) [self alert:@"项目清单提示" detail:self.projectStore.notice];
+    if (self.projectStore.notice) [self alert:L(@"项目清单提示") detail:self.projectStore.notice];
     [self finishPendingUpdate];
     // One check per launch (only when the user enabled updates); no timers or repeated background checks.
     if (NetworkEnabled) dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(3*NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ [self runUpdateCheck:NO]; });
@@ -808,15 +810,15 @@ static const unsigned CardFill = 0xFFFCF7;
 - (void)alert:(NSString *)title detail:(NSString *)detail {
     if (self.headless) { printf("[result] %s：%s\n",title.UTF8String,detail.UTF8String); exit(3); }
     NSAlert *alert = [NSAlert new]; alert.messageText = title; alert.informativeText = detail;
-    [alert addButtonWithTitle:@"知道了"]; [alert runModal];
+    [alert addButtonWithTitle:L(@"知道了")]; [alert runModal];
 }
 - (AccountCard *)cardFor:(NSInteger)n frame:(NSRect)frame art:(NSImage *)art {
     NSColor *ink = Hex(0x2B2622), *muted = Hex(0x6E655C);
     AccountCard *card = [[AccountCard alloc] initWithFrame:frame];
     card.number = n; card.art = art; card.dot = Hex(0xB9B1A7);
     card.nameLabel = Text([self accountName:n], NSMakeRect(84,26,270,24), [NSFont systemFontOfSize:18 weight:NSFontWeightSemibold], ink); [card addSubview:card.nameLabel];
-    card.status = Text(@"读取状态…", NSMakeRect(102,82,160,20), [NSFont systemFontOfSize:13], muted); [card addSubview:card.status];
-    NSArray *rows = @[@[@"clock",@"5小时限额"],@[@"calendar",@"周限额"]];
+    card.status = Text(L(@"读取状态…"), NSMakeRect(102,82,160,20), [NSFont systemFontOfSize:13], muted); [card addSubview:card.status];
+    NSArray *rows = @[@[@"clock",L(@"5小时限额")],@[@"calendar",L(@"周限额")]];
     NSMutableArray *usageLabels = [NSMutableArray array], *usageTimes = [NSMutableArray array];
     for (NSInteger row = 0; row < 2; row++) {
         CGFloat y = 18+row*46;
@@ -825,16 +827,16 @@ static const unsigned CardFill = 0xFFFCF7;
         NSTextField *pending = Text(@"—", NSMakeRect(588,y+19,48,16), [NSFont systemFontOfSize:12], Hex(0xA59B90)); pending.alignment = NSTextAlignmentRight;
         [card addSubview:pending];
         [usageLabels addObject:pending];
-        NSTextField *time = Text(@"尚未观察到",NSMakeRect(525,y+2,111,16),[NSFont systemFontOfSize:10],muted); time.alignment = NSTextAlignmentRight;
+        NSTextField *time = Text(L(@"尚未观察到"),NSMakeRect(525,y+2,111,16),[NSFont systemFontOfSize:10],muted); time.alignment = NSTextAlignmentRight;
         [card addSubview:time]; [usageTimes addObject:time];
     }
     card.usageLabels = usageLabels; card.usageTimes = usageTimes;
-    card.usageSource = Text(@"界面观察 · 待读取",NSMakeRect(436,100,200,16),[NSFont systemFontOfSize:11],muted);
+    card.usageSource = Text(L(@"界面观察 · 待读取"),NSMakeRect(436,100,200,16),[NSFont systemFontOfSize:11],muted);
     [card addSubview:card.usageSource];
-    card.button = [ActionButton buttonWithTitle:@"启动" target:self action:@selector(selectAccount:)];
+    card.button = [ActionButton buttonWithTitle:L(@"启动") target:self action:@selector(selectAccount:)];
     card.button.tag = n; card.button.frame = NSMakeRect(646,36,86,52); card.button.bordered = NO; card.button.buttonType = NSButtonTypeMomentaryPushIn;
     card.button.toolTip = ProfilePath(n); [card addSubview:card.button];
-    NSButton *more = [NSButton buttonWithTitle:@"" image:[NSImage imageWithSystemSymbolName:@"ellipsis" accessibilityDescription:@"更多"] target:self action:@selector(showMore:)];
+    NSButton *more = [NSButton buttonWithTitle:@"" image:[NSImage imageWithSystemSymbolName:@"ellipsis" accessibilityDescription:L(@"更多")] target:self action:@selector(showMore:)];
     more.frame = NSMakeRect(740,47,30,30); more.bordered = NO; more.tag = n; more.contentTintColor = Hex(0xA59B90);
     [card addSubview:more];
     return card;
@@ -867,19 +869,19 @@ static const unsigned CardFill = 0xFFFCF7;
 }
 - (NSView *)accountsPage:(NSRect)frame {
     NSColor *ink = Hex(0x2B2622), *muted = Hex(0x6E655C);
-    Canvas *page = [self pageTitled:@"账号管理" subtitle:@"统一管理本机 Claude 账号空间，直接启动或切换，查看运行状态与最近使用记录。" frame:frame];
+    Canvas *page = [self pageTitled:L(@"账号管理") subtitle:L(@"统一管理本机 Claude 账号空间，直接启动或切换，查看运行状态与最近使用记录。") frame:frame];
     page.paint = ^(NSRect bounds) {
         for (NSInteger i = 0; i < 3; i++) DrawPanel(NSMakeRect(36+i*248,140,240,84), 16, 0.86);
         DrawPanel(NSMakeRect(36,292,736,404), 16, 0.86);
         [Hex(0xEFE7DC) setFill]; NSRectFill(NSMakeRect(37,336,734,1)); NSRectFill(NSMakeRect(37,655,734,1));
         NSDictionary *head = @{NSFontAttributeName:[NSFont systemFontOfSize:13 weight:NSFontWeightSemibold],NSForegroundColorAttributeName:Hex(0x7A6F64)};
-        NSArray *columns = @[@[@"账号名称",@100],@[@"Code 用户名",@250],@[@"状态",@400],@[@"最近使用",@486],@[@"操作",@572]];
+        NSArray *columns = @[@[L(@"账号名称"),@100],@[L(@"Code 用户名"),@250],@[L(@"状态"),@400],@[L(@"最近使用"),@486],@[L(@"操作"),@572]];
         for (NSArray *column in columns) [column[0] drawAtPoint:NSMakePoint(36+[column[1] doubleValue],305) withAttributes:head];
     };
-    ActionButton *add = [ActionButton buttonWithTitle:@"+  添加账号" target:self action:@selector(newInstance:)];
+    ActionButton *add = [ActionButton buttonWithTitle:L(@"+  添加账号") target:self action:@selector(newInstance:)];
     add.frame = NSMakeRect(612,56,160,44); add.bordered = NO; [page addSubview:add];
-    [page addSubview:[self toolButton:@"刷新状态" symbol:@"arrow.clockwise" frame:NSMakeRect(660,240,112,38) action:@selector(refresh)]];
-    NSArray *statInfo = @[@[@"账号总数",@"本机已有账号空间",@0x2B2622],@[@"运行中",@"主进程正在运行",@0x3C8A68],@[@"需要处理",@"启动失败或检查未通过",@0xC7704A]];
+    [page addSubview:[self toolButton:L(@"刷新状态") symbol:@"arrow.clockwise" frame:NSMakeRect(660,240,112,38) action:@selector(refresh)]];
+    NSArray *statInfo = @[@[L(@"账号总数"),L(@"本机已有账号空间"),@0x2B2622],@[L(@"运行中"),L(@"主进程正在运行"),@0x3C8A68],@[L(@"需要处理"),L(@"启动失败或检查未通过"),@0xC7704A]];
     NSMutableArray *stats = [NSMutableArray array];
     for (NSInteger i = 0; i < 3; i++) {
         CGFloat x = 36+i*248;
@@ -889,12 +891,12 @@ static const unsigned CardFill = 0xFFFCF7;
         [page addSubview:Text(statInfo[i][1], NSMakeRect(x+80,190,150,16), [NSFont systemFontOfSize:11], muted)];
     }
     self.stats = stats;
-    self.accountSearch = [[NSSearchField alloc] initWithFrame:NSMakeRect(36,242,220,32)]; self.accountSearch.placeholderString = @"搜索账号名称或目录…"; self.accountSearch.accessibilityLabel = @"搜索账号"; self.accountSearch.delegate = self; [page addSubview:self.accountSearch];
-    self.accountFilter = [self filter:@[@"全部状态",@"运行中",@"未运行",@"处理中",@"异常"] frame:NSMakeRect(266,242,120,32) label:@"账号状态" action:@selector(accountFilterChanged:)]; [page addSubview:self.accountFilter];
-    self.accountSort = [self filter:@[@"按编号",@"按最近使用",@"按状态"] frame:NSMakeRect(396,242,130,32) label:@"账号排序" action:@selector(accountSortChanged:)];
+    self.accountSearch = [[NSSearchField alloc] initWithFrame:NSMakeRect(36,242,220,32)]; self.accountSearch.placeholderString = L(@"搜索账号名称或目录…"); self.accountSearch.accessibilityLabel = L(@"搜索账号"); self.accountSearch.delegate = self; [page addSubview:self.accountSearch];
+    self.accountFilter = [self filter:@[L(@"全部状态"),L(@"运行中"),L(@"未运行"),L(@"处理中"),L(@"异常")] frame:NSMakeRect(266,242,120,32) label:L(@"账号状态") action:@selector(accountFilterChanged:)]; [page addSubview:self.accountFilter];
+    self.accountSort = [self filter:@[L(@"按编号"),L(@"按最近使用"),L(@"按状态")] frame:NSMakeRect(396,242,130,32) label:L(@"账号排序") action:@selector(accountSortChanged:)];
     [self.accountSort selectItemAtIndex:MIN(MAX([self.preferences integerForKey:@"accountSort"],0),2)]; [page addSubview:self.accountSort];
-    self.selectedPathsButton = [self toolButton:@"复制选中路径" symbol:nil frame:NSMakeRect(536,240,114,38) action:@selector(copySelectedAccounts:)]; [page addSubview:self.selectedPathsButton];
-    self.selectAllAccounts = [NSButton checkboxWithTitle:@"" target:self action:@selector(selectVisibleAccounts:)]; self.selectAllAccounts.frame = NSMakeRect(58,302,24,24); self.selectAllAccounts.accessibilityLabel = @"全选当前筛选账号"; self.selectAllAccounts.allowsMixedState = YES; [page addSubview:self.selectAllAccounts];
+    self.selectedPathsButton = [self toolButton:L(@"复制选中路径") symbol:nil frame:NSMakeRect(536,240,114,38) action:@selector(copySelectedAccounts:)]; [page addSubview:self.selectedPathsButton];
+    self.selectAllAccounts = [NSButton checkboxWithTitle:@"" target:self action:@selector(selectVisibleAccounts:)]; self.selectAllAccounts.frame = NSMakeRect(58,302,24,24); self.selectAllAccounts.accessibilityLabel = L(@"全选当前筛选账号"); self.selectAllAccounts.allowsMixedState = YES; [page addSubview:self.selectAllAccounts];
     NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(37,337,734,318)];
     scroll.drawsBackground = NO; scroll.contentView.drawsBackground = NO; scroll.hasVerticalScroller = YES; scroll.autohidesScrollers = YES; scroll.scrollerStyle = NSScrollerStyleOverlay;
     Canvas *rowsView = [[Canvas alloc] initWithFrame:NSMakeRect(0,0,734,10*52)];
@@ -903,20 +905,20 @@ static const unsigned CardFill = 0xFFFCF7;
         AccountRow *row = [[AccountRow alloc] initWithFrame:NSMakeRect(0,(n-1)*52,734,52)];
         row.number = n; row.dot = Hex(0xB9B1A7);
         row.nameLabel = Text([self accountName:n], NSMakeRect(100,16,140,20), [NSFont systemFontOfSize:14 weight:NSFontWeightMedium], ink); [row addSubview:row.nameLabel];
-        row.selection = [NSButton checkboxWithTitle:@"" target:self action:@selector(selectAccountRow:)]; row.selection.frame = NSMakeRect(22,14,24,24); row.selection.tag = n; row.selection.accessibilityLabel = [NSString stringWithFormat:@"选择账号 %02ld",(long)n]; [row addSubview:row.selection];
-        NSButton *edit = [NSButton buttonWithTitle:@"" image:[NSImage imageWithSystemSymbolName:@"pencil" accessibilityDescription:@"编辑本地别名"] target:self action:@selector(editAccountName:)]; edit.frame = NSMakeRect(652,11,30,30); edit.tag = n; edit.bezelStyle = NSBezelStyleRounded; [row addSubview:edit];
+        row.selection = [NSButton checkboxWithTitle:@"" target:self action:@selector(selectAccountRow:)]; row.selection.frame = NSMakeRect(22,14,24,24); row.selection.tag = n; row.selection.accessibilityLabel = [NSString stringWithFormat:L(@"选择账号 %02ld"),(long)n]; [row addSubview:row.selection];
+        NSButton *edit = [NSButton buttonWithTitle:@"" image:[NSImage imageWithSystemSymbolName:@"pencil" accessibilityDescription:L(@"编辑本地别名")] target:self action:@selector(editAccountName:)]; edit.frame = NSMakeRect(652,11,30,30); edit.tag = n; edit.bezelStyle = NSBezelStyleRounded; [row addSubview:edit];
         row.identity = Text(@"—", NSMakeRect(250,17,140,18), [NSFont systemFontOfSize:13], muted); [row addSubview:row.identity];
-        row.status = Text(@"未运行", NSMakeRect(400,16,80,20), [NSFont systemFontOfSize:13 weight:NSFontWeightSemibold], muted); [row addSubview:row.status];
+        row.status = Text(L(@"未运行"), NSMakeRect(400,16,80,20), [NSFont systemFontOfSize:13 weight:NSFontWeightSemibold], muted); [row addSubview:row.status];
         row.recent = Text(@"—", NSMakeRect(486,17,84,18), [NSFont systemFontOfSize:13], muted); [row addSubview:row.recent];
-        row.open = [NSButton buttonWithTitle:@"启动" target:self action:@selector(selectAccount:)]; row.open.frame = NSMakeRect(572,11,74,30); row.open.tag = n; row.open.bezelStyle = NSBezelStyleRounded; [row addSubview:row.open];
-        NSButton *more = [NSButton buttonWithTitle:@"" image:[NSImage imageWithSystemSymbolName:@"ellipsis" accessibilityDescription:@"更多"] target:self action:@selector(showMore:)];
+        row.open = [NSButton buttonWithTitle:L(@"启动") target:self action:@selector(selectAccount:)]; row.open.frame = NSMakeRect(572,11,74,30); row.open.tag = n; row.open.bezelStyle = NSBezelStyleRounded; [row addSubview:row.open];
+        NSButton *more = [NSButton buttonWithTitle:@"" image:[NSImage imageWithSystemSymbolName:@"ellipsis" accessibilityDescription:L(@"更多")] target:self action:@selector(showMore:)];
         more.frame = NSMakeRect(690,11,30,30); more.bordered = NO; more.tag = n; more.contentTintColor = Hex(0xA59B90);
         [row addSubview:more];
         [rowsView addSubview:row]; [self.rows addObject:row];
     }
     scroll.documentView = rowsView; [page addSubview:scroll]; self.rowsView = rowsView;
     self.tableFooter = Text(@"", NSMakeRect(60,667,300,18), [NSFont systemFontOfSize:12], muted); [page addSubview:self.tableFooter];
-    NSTextField *note = Text(@"登录信息由各实例独立管理", NSMakeRect(500,667,248,18), [NSFont systemFontOfSize:12], muted);
+    NSTextField *note = Text(L(@"登录信息由各实例独立管理"), NSMakeRect(500,667,248,18), [NSFont systemFontOfSize:12], muted);
     note.alignment = NSTextAlignmentRight; [page addSubview:note];
     return page;
 }
@@ -925,32 +927,32 @@ static const unsigned CardFill = 0xFFFCF7;
     self.projectFeedback.stringValue = text; self.projectFeedback.toolTip = text;
 }
 - (NSView *)projectsPage:(NSRect)frame {
-    Canvas *page = [self pageTitled:@"项目管理" subtitle:@"所有账号共用一份本机项目入口；各自的登录与会话保持独立。" frame:frame];
+    Canvas *page = [self pageTitled:L(@"项目管理") subtitle:L(@"所有账号共用一份本机项目入口；各自的登录与会话保持独立。") frame:frame];
     page.paint = ^(NSRect bounds) {
         DrawPanel(NSMakeRect(36,140,736,72),14,0.86);
         DrawPanel(NSMakeRect(36,274,736,366),16,0.86);
         [Hex(0xEFE7DC) setFill]; NSRectFill(NSMakeRect(37,318,734,1)); NSRectFill(NSMakeRect(37,600,734,1));
         NSDictionary *head = @{NSFontAttributeName:[NSFont systemFontOfSize:12 weight:NSFontWeightSemibold],NSForegroundColorAttributeName:Hex(0x7A6F64)};
-        for (NSArray *column in @[@[@"名称",@18],@[@"分组",@140],@[@"路径",@224],@[@"状态",@442],@[@"上次账号",@508],@[@"操作",@610]])
+        for (NSArray *column in @[@[L(@"名称"),@18],@[L(@"分组"),@140],@[L(@"路径"),@224],@[L(@"状态"),@442],@[L(@"上次账号"),@508],@[L(@"操作"),@610]])
             [column[0] drawAtPoint:NSMakePoint(36+[column[1] doubleValue],289) withAttributes:head];
     };
-    [page addSubview:Text(@"共享目录中的代码、CLAUDE.md、项目设置与 MCP 配置会互相影响。",NSMakeRect(54,154,694,20),[NSFont systemFontOfSize:13 weight:NSFontWeightMedium],Hex(0x795539))];
-    [page addSubview:Text(@"同一项目请轮流使用；启动器无法检测同时编辑，不复制、同步或合并文件。",NSMakeRect(54,182,694,18),[NSFont systemFontOfSize:12],Hex(0x6E655C))];
-    self.addProjectButton = [self toolButton:@"添加目录" symbol:@"folder.badge.plus" frame:NSMakeRect(640,56,132,44) action:@selector(addProject:)];
+    [page addSubview:Text(L(@"共享目录中的代码、CLAUDE.md、项目设置与 MCP 配置会互相影响。"),NSMakeRect(54,154,694,20),[NSFont systemFontOfSize:13 weight:NSFontWeightMedium],Hex(0x795539))];
+    [page addSubview:Text(L(@"同一项目请轮流使用；启动器无法检测同时编辑，不复制、同步或合并文件。"),NSMakeRect(54,182,694,18),[NSFont systemFontOfSize:12],Hex(0x6E655C))];
+    self.addProjectButton = [self toolButton:L(@"添加目录") symbol:@"folder.badge.plus" frame:NSMakeRect(640,56,132,44) action:@selector(addProject:)];
     [page addSubview:self.addProjectButton];
-    self.importProjectsButton = [self toolButton:@"识别并导入" symbol:@"square.and.arrow.down" frame:NSMakeRect(484,56,146,44) action:@selector(importProjects:)];
+    self.importProjectsButton = [self toolButton:L(@"识别并导入") symbol:@"square.and.arrow.down" frame:NSMakeRect(484,56,146,44) action:@selector(importProjects:)];
     [page addSubview:self.importProjectsButton];
-    [page addSubview:Text(@"本机目录入口 · 移除不删除文件",NSMakeRect(38,238,340,20),[NSFont systemFontOfSize:13],Hex(0x6E655C))];
-    self.registerProjectsButton = [self toolButton:@"登记到账号…" symbol:@"sidebar.left" frame:NSMakeRect(492,228,156,38) action:@selector(registerProjects:)];
+    [page addSubview:Text(L(@"本机目录入口 · 移除不删除文件"),NSMakeRect(38,238,340,20),[NSFont systemFontOfSize:13],Hex(0x6E655C))];
+    self.registerProjectsButton = [self toolButton:L(@"同步到账号…") symbol:@"sidebar.left" frame:NSMakeRect(492,228,156,38) action:@selector(registerProjects:)];
     [page addSubview:self.registerProjectsButton];
-    [page addSubview:[self toolButton:@"刷新状态" symbol:@"arrow.clockwise" frame:NSMakeRect(660,228,112,38) action:@selector(refreshProjects:)]];
+    [page addSubview:[self toolButton:L(@"刷新状态") symbol:@"arrow.clockwise" frame:NSMakeRect(660,228,112,38) action:@selector(refreshProjects:)]];
     NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(37,319,734,281)];
     scroll.drawsBackground = NO; scroll.contentView.drawsBackground = NO;
     scroll.hasVerticalScroller = YES; scroll.autohidesScrollers = YES; scroll.scrollerStyle = NSScrollerStyleOverlay;
     self.projectRowsView = [[Canvas alloc] initWithFrame:NSMakeRect(0,0,734,281)]; scroll.documentView = self.projectRowsView;
     [page addSubview:scroll];
     self.projectFooter = Text(@"",NSMakeRect(54,612,690,18),[NSFont systemFontOfSize:12],Hex(0x6E655C)); [page addSubview:self.projectFooter];
-    self.projectFeedback = Text(@"选择账号后会复制路径并显示 Finder，请在 Claude 中选择此文件夹。",NSMakeRect(38,656,734,42),[NSFont systemFontOfSize:12],Hex(0x795539));
+    self.projectFeedback = Text(L(@"选择账号后会复制路径并显示 Finder，请在 Claude 中选择此文件夹。"),NSMakeRect(38,656,734,42),[NSFont systemFontOfSize:12],Hex(0x795539));
     self.projectFeedback.maximumNumberOfLines = 2; [page addSubview:self.projectFeedback];
     [self refreshProjects:nil];
     if (self.projectStore.notice) [self projectNotice:self.projectStore.notice];
@@ -964,8 +966,8 @@ static const unsigned CardFill = 0xFFFCF7;
     self.registerProjectsButton.enabled = !self.registeringProjects && !self.discoveringProjects && projects.count > 0;
     [self.projectRowsView setFrameSize:NSMakeSize(734,MAX(281,projects.count*64))];
     if (!projects.count) {
-        [self.projectRowsView addSubview:Text(@"还没有项目",NSMakeRect(270,86,200,28),[NSFont systemFontOfSize:20 weight:NSFontWeightMedium],Hex(0x6E655C))];
-        [self.projectRowsView addSubview:Text(@"添加一个已有文件夹，所有账号都可从这里找到它。",NSMakeRect(156,124,440,22),[NSFont systemFontOfSize:13],Hex(0x8A7F74))];
+        [self.projectRowsView addSubview:Text(L(@"还没有项目"),NSMakeRect(270,86,200,28),[NSFont systemFontOfSize:20 weight:NSFontWeightMedium],Hex(0x6E655C))];
+        [self.projectRowsView addSubview:Text(L(@"添加一个已有文件夹，所有账号都可从这里找到它。"),NSMakeRect(156,124,440,22),[NSFont systemFontOfSize:13],Hex(0x8A7F74))];
     }
     [projects enumerateObjectsUsingBlock:^(NSDictionary *project, NSUInteger index, BOOL *stop) {
         Canvas *row = [[Canvas alloc] initWithFrame:NSMakeRect(0,index*64,734,64)];
@@ -973,12 +975,12 @@ static const unsigned CardFill = 0xFFFCF7;
         NSString *path = project[@"path"];
         NSString *status = self.snapshotProjects ? project[@"previewStatus"] : [self.projectStore statusForPath:path];
         NSInteger last = [project[@"lastAccount"] integerValue];
-        NSArray *values = @[project[@"name"], [project[@"group"] length] ? project[@"group"] : @"未分组",path,status,last ? [NSString stringWithFormat:@"账号 %02ld",(long)last] : @"未使用"];
+        NSArray *values = @[project[@"name"], [project[@"group"] length] ? project[@"group"] : L(@"未分组"),path,L(status),last ? [NSString stringWithFormat:L(@"账号 %02ld"),(long)last] : L(@"未使用")];
         CGFloat xs[] = {18,140,224,442,508}, widths[] = {112,74,204,58,88};
         NSDate *handoff = self.snapshotProjects ? project[@"previewHandoff"] : [status isEqual:@"正常"] ? HandoffModified(path) : nil;
         if (handoff) {
-            NSTextField *age = Text([@"交接 " stringByAppendingString:HandoffAge(handoff,NSDate.date)],NSMakeRect(18,36,112,16),[NSFont systemFontOfSize:11],Hex(0x9A6447));
-            age.toolTip = [NSString stringWithFormat:@"HANDOFF.md 最后修改：%@",[NSDateFormatter localizedStringFromDate:handoff dateStyle:NSDateFormatterMediumStyle timeStyle:NSDateFormatterShortStyle]];
+            NSTextField *age = Text([L(@"交接 ") stringByAppendingString:HandoffAge(handoff,NSDate.date)],NSMakeRect(18,36,112,16),[NSFont systemFontOfSize:11],Hex(0x9A6447));
+            age.toolTip = [NSString stringWithFormat:L(@"HANDOFF.md 最后修改：%@"),[NSDateFormatter localizedStringFromDate:handoff dateStyle:NSDateFormatterMediumStyle timeStyle:NSDateFormatterShortStyle]];
             [row addSubview:age];
         }
         for (NSUInteger i = 0; i < values.count; i++) {
@@ -987,17 +989,17 @@ static const unsigned CardFill = 0xFFFCF7;
             field.lineBreakMode = i == 2 ? NSLineBreakByTruncatingMiddle : NSLineBreakByTruncatingTail;
             field.toolTip = values[i]; field.accessibilityLabel = values[i]; [row addSubview:field];
         }
-        ActionButton *openProject = [self toolButton:@"打开" symbol:nil frame:NSMakeRect(608,16,62,32) action:@selector(openProject:)];
+        ActionButton *openProject = [self toolButton:L(@"打开") symbol:nil frame:NSMakeRect(608,16,62,32) action:@selector(openProject:)];
         openProject.fontSize = 12; openProject.tag = (NSInteger)index;
         openProject.enabled = (self.snapshotMode || self.projectStore.writable) && [status isEqual:@"正常"];
-        openProject.accessibilityLabel = [@"选择账号打开项目：" stringByAppendingString:project[@"name"]];
+        openProject.accessibilityLabel = [L(@"选择账号打开项目：") stringByAppendingString:project[@"name"]];
         [row addSubview:openProject];
-        NSButton *more = [NSButton buttonWithTitle:@"" image:[NSImage imageWithSystemSymbolName:@"ellipsis" accessibilityDescription:@"项目操作"] target:self action:@selector(projectMenu:)];
+        NSButton *more = [NSButton buttonWithTitle:@"" image:[NSImage imageWithSystemSymbolName:@"ellipsis" accessibilityDescription:L(@"项目操作")] target:self action:@selector(projectMenu:)];
         more.frame = NSMakeRect(678,16,32,32); more.bezelStyle = NSBezelStyleRounded; more.tag = (NSInteger)index;
-        more.enabled = self.snapshotMode || self.projectStore != nil; more.accessibilityLabel = [@"更多项目操作：" stringByAppendingString:project[@"name"]]; [row addSubview:more];
+        more.enabled = self.snapshotMode || self.projectStore != nil; more.accessibilityLabel = [L(@"更多项目操作：") stringByAppendingString:project[@"name"]]; [row addSubview:more];
         [self.projectRowsView addSubview:row];
     }];
-    self.projectFooter.stringValue = [NSString stringWithFormat:@"共 %lu 个项目 · 上次账号仅用于默认选择，不绑定项目",(unsigned long)projects.count];
+    self.projectFooter.stringValue = [NSString stringWithFormat:L(@"共 %lu 个项目 · 上次账号仅用于默认选择，不绑定项目"),(unsigned long)projects.count];
 }
 - (NSDictionary *)projectForSender:(id)sender {
     NSInteger index = [sender tag]; NSArray *projects = [self projectRecords];
@@ -1005,28 +1007,28 @@ static const unsigned CardFill = 0xFFFCF7;
 }
 - (BOOL)saveProjects:(NSArray *)projects {
     NSString *failure = nil;
-    if (![self.projectStore save:projects error:&failure]) { [self alert:@"项目清单未保存" detail:failure]; return NO; }
+    if (![self.projectStore save:projects error:&failure]) { [self alert:L(@"项目清单未保存") detail:failure]; return NO; }
     [self refreshProjects:nil]; return YES;
 }
 - (NSDictionary *)editProjectRecord:(NSDictionary *)project {
-    NSAlert *editor = [NSAlert new]; editor.messageText = @"项目名称与分组";
-    editor.informativeText = @"只修改清单中的显示信息，不改目录名称或位置。名称和分组最多 200 字。";
-    [editor addButtonWithTitle:@"保存"]; [editor addButtonWithTitle:@"取消"];
+    NSAlert *editor = [NSAlert new]; editor.messageText = L(@"项目名称与分组");
+    editor.informativeText = L(@"只修改清单中的显示信息，不改目录名称或位置。名称和分组最多 200 字。");
+    [editor addButtonWithTitle:L(@"保存")]; [editor addButtonWithTitle:L(@"取消")];
     Canvas *form = [[Canvas alloc] initWithFrame:NSMakeRect(0,0,360,96)];
-    [form addSubview:Text(@"名称",NSMakeRect(0,8,52,24),[NSFont systemFontOfSize:13],Hex(0x6E655C))];
-    [form addSubview:Text(@"分组",NSMakeRect(0,54,52,24),[NSFont systemFontOfSize:13],Hex(0x6E655C))];
-    NSTextField *name = [[NSTextField alloc] initWithFrame:NSMakeRect(56,4,300,28)]; name.stringValue = project[@"name"]; name.accessibilityLabel = @"项目名称";
-    NSTextField *group = [[NSTextField alloc] initWithFrame:NSMakeRect(56,50,300,28)]; group.stringValue = project[@"group"]; group.placeholderString = @"可留空"; group.accessibilityLabel = @"项目分组";
+    [form addSubview:Text(L(@"名称"),NSMakeRect(0,8,52,24),[NSFont systemFontOfSize:13],Hex(0x6E655C))];
+    [form addSubview:Text(L(@"分组"),NSMakeRect(0,54,52,24),[NSFont systemFontOfSize:13],Hex(0x6E655C))];
+    NSTextField *name = [[NSTextField alloc] initWithFrame:NSMakeRect(56,4,300,28)]; name.stringValue = project[@"name"]; name.accessibilityLabel = L(@"项目名称");
+    NSTextField *group = [[NSTextField alloc] initWithFrame:NSMakeRect(56,50,300,28)]; group.stringValue = project[@"group"]; group.placeholderString = L(@"可留空"); group.accessibilityLabel = L(@"项目分组");
     [form addSubview:name]; [form addSubview:group]; editor.accessoryView = form; editor.window.initialFirstResponder = name;
     if ([editor runModal] != NSAlertFirstButtonReturn) return nil;
     NSString *title = [name.stringValue stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-    if (!title.length || title.length > 200 || group.stringValue.length > 200) { [self alert:@"名称或分组无效" detail:@"名称不能为空；名称和分组最多 200 字。请重新编辑。"] ; return nil; }
+    if (!title.length || title.length > 200 || group.stringValue.length > 200) { [self alert:L(@"名称或分组无效") detail:L(@"名称不能为空；名称和分组最多 200 字。请重新编辑。")] ; return nil; }
     NSMutableDictionary *edited = project.mutableCopy; edited[@"name"] = title; edited[@"group"] = [group.stringValue stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet]; return edited;
 }
 - (NSAlert *)projectImportAlert:(NSDictionary *)result checks:(NSMutableArray<NSButton *> *)checks {
-    NSAlert *alert = [NSAlert new]; alert.messageText = @"确认要加入公共清单的目录";
-    alert.informativeText = @"识别范围：全部已创建账号（含未运行账号）的本机历史记录。\n只添加目录入口，不同步会话或文件，也不修改 Claude 的项目列表。\n历史识别可能不完整；记录可能来自远程会话，请核对本机目录是否正确。";
-    [alert addButtonWithTitle:@"导入所选"]; [alert addButtonWithTitle:@"取消"];
+    NSAlert *alert = [NSAlert new]; alert.messageText = L(@"确认要加入公共清单的目录");
+    alert.informativeText = L(@"识别范围：全部已创建账号（含未运行账号）的本机历史记录。\n只添加目录入口，不同步会话或文件，也不修改 Claude 的项目列表。\n历史识别可能不完整；记录可能来自远程会话，请核对本机目录是否正确。");
+    [alert addButtonWithTitle:L(@"导入所选")]; [alert addButtonWithTitle:L(@"取消")];
     NSArray *candidates = result[@"candidates"], *summaries = result[@"summaries"];
     NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(0,0,660,360)];
     scroll.hasVerticalScroller = YES; scroll.autohidesScrollers = YES; scroll.borderType = NSBezelBorder;
@@ -1036,14 +1038,14 @@ static const unsigned CardFill = 0xFFFCF7;
         NSTextField *line = Text(summary,NSMakeRect(10,y,620,20),[NSFont systemFontOfSize:11],Hex(0x6E655C));
         line.toolTip = summary; [content addSubview:line]; y += 24;
     }
-    [content addSubview:Text([NSString stringWithFormat:@"识别到 %lu 个目录候选 · 已在清单中的项目不重复添加",(unsigned long)candidates.count],NSMakeRect(10,y+2,620,22),[NSFont systemFontOfSize:12 weight:NSFontWeightMedium],Hex(0x795539))]; y += 34;
+    [content addSubview:Text([NSString stringWithFormat:L(@"识别到 %lu 个目录候选 · 已在清单中的项目不重复添加"),(unsigned long)candidates.count],NSMakeRect(10,y+2,620,22),[NSFont systemFontOfSize:12 weight:NSFontWeightMedium],Hex(0x795539))]; y += 34;
     for (NSDictionary *candidate in candidates) {
         NSString *path = candidate[@"path"]; BOOL exists = [self.projectStore containsDirectory:path];
         NSMutableArray *accounts = [NSMutableArray array];
         for (NSNumber *account in candidate[@"accounts"]) [accounts addObject:[NSString stringWithFormat:@"%02ld",(long)account.integerValue]];
-        NSButton *check = [NSButton checkboxWithTitle:[NSString stringWithFormat:@"%@  ·  来源账号 %@%@",path.lastPathComponent,[accounts componentsJoinedByString:@"、"],exists ? @" · 已在清单" : @""] target:nil action:nil];
+        NSButton *check = [NSButton checkboxWithTitle:[NSString stringWithFormat:L(@"%@  ·  来源账号 %@%@"),path.lastPathComponent,[accounts componentsJoinedByString:@"、"],exists ? L(@" · 已在清单") : @""] target:nil action:nil];
         check.frame = NSMakeRect(10,y,620,24); check.state = exists ? NSControlStateValueOff : NSControlStateValueOn;
-        check.enabled = !exists; check.toolTip = path; check.accessibilityLabel = [@"导入目录：" stringByAppendingString:path];
+        check.enabled = !exists; check.toolTip = path; check.accessibilityLabel = [L(@"导入目录：") stringByAppendingString:path];
         [checks addObject:check]; [content addSubview:check];
         NSTextField *label = Text(path,NSMakeRect(30,y+26,600,20),[NSFont systemFontOfSize:12],Hex(0x6E655C));
         label.lineBreakMode = NSLineBreakByTruncatingMiddle; label.toolTip = path; label.selectable = YES; [content addSubview:label]; y += 58;
@@ -1054,8 +1056,8 @@ static const unsigned CardFill = 0xFFFCF7;
 }
 - (void)importProjects:(id)sender {
     if (!self.projectStore.writable || self.discoveringProjects) return;
-    self.discoveringProjects = YES; self.importProjectsButton.title = @"正在识别…"; [self refreshProjects:nil];
-    [self projectNotice:@"正在只读检查所有已创建账号的目录记录，包含未运行账号；完成后可选择要导入的目录。"];
+    self.discoveringProjects = YES; self.importProjectsButton.title = L(@"正在识别…"); [self refreshProjects:nil];
+    [self projectNotice:L(@"正在只读检查所有已创建账号的目录记录，包含未运行账号；完成后可选择要导入的目录。")];
     NSMutableArray *profiles = [NSMutableArray array];
     for (NSInteger n = 1; n <= 10; n++) [profiles addObject:ProfilePath(n)];
     // A separate immutable validator avoids reading the UI's mutable store from the worker queue.
@@ -1066,96 +1068,104 @@ static const unsigned CardFill = 0xFFFCF7;
             NSMutableArray<NSButton *> *checks = [NSMutableArray array];
             NSAlert *preview = [self projectImportAlert:result checks:checks];
             NSModalResponse response = [preview runModal];
-            self.discoveringProjects = NO; self.importProjectsButton.title = @"识别并导入"; [self refreshProjects:nil];
-            if (response != NSAlertFirstButtonReturn) { [self projectNotice:@"已取消导入，清单和客户端数据未改动。"] ; return; }
+            self.discoveringProjects = NO; self.importProjectsButton.title = L(@"识别并导入"); [self refreshProjects:nil];
+            if (response != NSAlertFirstButtonReturn) { [self projectNotice:L(@"已取消导入，清单和客户端数据未改动。")] ; return; }
             NSMutableArray *selected = [NSMutableArray array]; NSArray *candidates = result[@"candidates"];
             for (NSUInteger i = 0; i < checks.count; i++) if (checks[i].enabled && checks[i].state == NSControlStateValueOn) [selected addObject:candidates[i][@"path"]];
             NSUInteger skipped = 0; NSArray *rows = PrepareProjectImport(self.projectStore,selected,NSHomeDirectory(),&skipped);
             NSUInteger added = rows.count-self.projectStore.projects.count;
-            if (rows.count > 1000) { [self alert:@"项目清单容量不足" detail:@"最多保存 1000 项，本次没有写入。请减少选择或移除不需要的记录。"] ; return; }
+            if (rows.count > 1000) { [self alert:L(@"项目清单容量不足") detail:L(@"最多保存 1000 项，本次没有写入。请减少选择或移除不需要的记录。")] ; return; }
             if (added && ![self saveProjects:rows]) return;
-            [self projectNotice:[NSString stringWithFormat:@"已导入 %lu 个目录；跳过 %lu 个重复或状态已变化的目录。仅更新公共清单，客户端数据未改动。",(unsigned long)added,(unsigned long)skipped]];
+            [self projectNotice:[NSString stringWithFormat:L(@"已导入 %lu 个目录；跳过 %lu 个重复或状态已变化的目录。仅更新公共清单，客户端数据未改动。"),(unsigned long)added,(unsigned long)skipped]];
         });
     });
 }
 - (void)registerProjects:(id)sender {
     if (self.snapshotMode || self.registeringProjects || self.discoveringProjects) return;
     NSArray *projects = [self projectRecords].copy; if (!projects.count) return;
-    NSAlert *choice = [NSAlert new]; choice.messageText = @"登记目录到 Claude 侧栏";
-    choice.informativeText = @"目标账号必须已正常退出。只新建目录路径和独立 ID 的空归档记录，不复制聊天、登录或权限配置；已有目录会跳过。\n完成后启动目标账号，在 Claude 的“分组和排序 → 显示”开启“空分组”。这些空记录需保留，且可能在归档列表中可见。";
-    [choice addButtonWithTitle:@"登记所选目录"]; [choice addButtonWithTitle:@"取消"];
+    NSAlert *choice = [NSAlert new]; choice.messageText = L(@"同步项目到账号");
+    choice.informativeText = L(@"把勾选的项目添加到勾选账号的 Claude 侧栏；账号中已有的项目保持不变。只新建不含对话的空归档记录，不复制聊天、登录或权限配置。\n目标账号须已正常退出，同步后重新启动该账号生效。若侧栏仍未显示，在 Claude 的“分组和排序 → 显示”开启“空分组”。这些空记录需保留，且可能在归档列表中可见。");
+    [choice addButtonWithTitle:L(@"同步")]; [choice addButtonWithTitle:L(@"取消")];
     Canvas *form = [[Canvas alloc] initWithFrame:NSMakeRect(0,0,620,340)];
-    NSPopUpButton *accounts = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(0,0,620,30) pullsDown:NO]; accounts.accessibilityLabel = @"登记目标账号";
-    [self refresh]; NSInteger preferred = -1;
+    [self refresh]; NSMutableArray<NSButton *> *accounts = [NSMutableArray array];
     for (NSInteger n = 1; n <= 10; n++) {
         BOOL directory = NO;
         if (![NSFileManager.defaultManager fileExistsAtPath:ProfilePath(n) isDirectory:&directory] || !directory) continue;
-        [accounts addItemWithTitle:[NSString stringWithFormat:@"账号 %02ld · %@",(long)n,self.processes[@(n)].count ? @"运行中，请先正常退出" : @"未运行"]];
-        accounts.lastItem.tag = n;
-        if (preferred < 0 && !self.processes[@(n)].count) preferred = accounts.numberOfItems-1;
+        BOOL running = self.processes[@(n)].count > 0;
+        NSButton *check = [NSButton checkboxWithTitle:[NSString stringWithFormat:L(@"账号 %02ld"),(long)n] target:nil action:nil];
+        check.frame = NSMakeRect((accounts.count%5)*124,(accounts.count/5)*26,120,22); check.tag = n; check.enabled = !running; check.state = NSControlStateValueOff;
+        check.toolTip = running ? L(@"运行中，请先正常退出") : L(@"未运行"); check.accessibilityLabel = [NSString stringWithFormat:L(@"同步到账号 %02ld"),(long)n];
+        [accounts addObject:check]; [form addSubview:check];
     }
-    if (preferred >= 0) [accounts selectItemAtIndex:preferred]; [form addSubview:accounts];
-    NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(0,42,620,298)]; scroll.hasVerticalScroller = YES; scroll.borderType = NSBezelBorder;
-    Canvas *rows = [[Canvas alloc] initWithFrame:NSMakeRect(0,0,598,MAX(298,projects.count*52))];
+    NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(0,60,620,280)]; scroll.hasVerticalScroller = YES; scroll.borderType = NSBezelBorder;
+    Canvas *rows = [[Canvas alloc] initWithFrame:NSMakeRect(0,0,598,MAX(280,projects.count*52))];
     NSMutableArray<NSButton *> *checks = [NSMutableArray array];
     for (NSUInteger i = 0; i < projects.count; i++) {
         NSDictionary *project = projects[i]; NSString *path = project[@"path"];
         NSButton *check = [NSButton checkboxWithTitle:project[@"name"] target:nil action:nil];
-        check.frame = NSMakeRect(10,i*52+4,578,24); check.toolTip = path; check.accessibilityLabel = [@"登记目录：" stringByAppendingString:path];
+        check.frame = NSMakeRect(10,i*52+4,578,24); check.toolTip = path; check.accessibilityLabel = [L(@"同步项目：") stringByAppendingString:path];
         check.enabled = [[self.projectStore statusForPath:path] isEqual:@"正常"] && !ProjectNeedsManualImport(path,NSHomeDirectory());
         check.state = check.enabled ? NSControlStateValueOn : NSControlStateValueOff; [checks addObject:check]; [rows addSubview:check];
         NSTextField *label = Text(path,NSMakeRect(30,i*52+28,558,20),[NSFont systemFontOfSize:11],Hex(0x6E655C));
         label.lineBreakMode = NSLineBreakByTruncatingMiddle; label.toolTip = path; [rows addSubview:label];
     }
     scroll.documentView = rows; [form addSubview:scroll]; choice.accessoryView = form;
-    choice.buttons.firstObject.enabled = accounts.numberOfItems > 0;
+    choice.buttons.firstObject.enabled = accounts.count > 0;
     if ([choice runModal] != NSAlertFirstButtonReturn) return;
-    NSInteger account = accounts.selectedItem.tag; NSNumber *key = @(account);
-    if (self.loginAccount || self.starting[key] || [self.checking containsObject:key]) { [self alert:@"账号正在处理中" detail:@"请先结束登录保护或等待检查／启动完成。"] ; return; }
+    NSMutableArray<NSNumber *> *keys = [NSMutableArray array];
+    for (NSButton *check in accounts) if (check.enabled && check.state == NSControlStateValueOn) [keys addObject:@(check.tag)];
+    for (NSNumber *key in keys)
+        if (self.loginAccount || self.starting[key] || [self.checking containsObject:key]) { [self alert:L(@"账号正在处理中") detail:L(@"请先结束登录保护或等待检查／启动完成。")] ; return; }
     NSMutableArray *paths = [NSMutableArray array];
     for (NSUInteger i = 0; i < checks.count; i++) if (checks[i].enabled && checks[i].state == NSControlStateValueOn) [paths addObject:projects[i][@"path"]];
-    if (!paths.count) { [self projectNotice:@"未选择可登记的目录，没有写入。"] ; return; }
-    self.registeringProjects = YES; [self.checking addObject:key]; [self refresh]; [self refreshProjects:nil];
-    [self projectNotice:@"正在校验目标账号并登记目录；请勿从 Dock 或终端启动目标账号。"];
+    if (!keys.count || !paths.count) { [self projectNotice:L(@"未选择账号或项目，没有写入。")] ; return; }
+    self.registeringProjects = YES; [self.checking addObjectsFromArray:keys]; [self refresh]; [self refreshProjects:nil];
+    [self projectNotice:L(@"正在校验目标账号并同步项目；请勿从 Dock 或终端启动目标账号。")];
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0), ^{
-        NSDictionary *result = RegisterForAccount(account,paths,YES);
+        NSMutableArray *lines = [NSMutableArray array]; BOOL failed = NO, added = NO;
+        for (NSNumber *key in keys) {
+            NSDictionary *result = RegisterForAccount(key.integerValue,paths,YES);
+            failed |= result[@"error"] != nil; added |= [result[@"added"] integerValue] > 0;
+            [lines addObject:[NSString stringWithFormat:L(@"账号 %02ld：新增 %@ 个项目，%@ 个已有未改动。%@"),(long)key.integerValue,result[@"added"],result[@"skipped"],result[@"error"] ?: @""]];
+        }
+        if (added) [lines addObject:L(@"请重新启动这些账号后生效。")];
         dispatch_async(dispatch_get_main_queue(), ^{
-            self.registeringProjects = NO; [self.checking removeObject:key]; [self refresh]; [self refreshProjects:nil];
-            NSString *summary = [NSString stringWithFormat:@"账号 %02ld：已登记 %@ 个目录，跳过 %@ 个已有目录。%@",(long)account,result[@"added"],result[@"skipped"],result[@"error"] ?: @"请启动该账号，并在 Claude 中开启“显示空分组”。"];
-            [self projectNotice:summary]; [self alert:result[@"error"] ? @"登记已停止" : @"目录登记完成" detail:summary];
+            self.registeringProjects = NO; [self.checking minusSet:[NSSet setWithArray:keys]]; [self refresh]; [self refreshProjects:nil];
+            [self projectNotice:[lines componentsJoinedByString:@" "]];
+            [self alert:failed ? L(@"同步未全部完成") : L(@"项目同步完成") detail:[lines componentsJoinedByString:@"\n"]];
         });
     });
 }
 - (void)addProject:(id)sender {
     if (!self.projectStore.writable) return;
-    NSOpenPanel *panel = [NSOpenPanel openPanel]; panel.title = @"添加已有项目目录";
-    panel.canChooseDirectories = YES; panel.canChooseFiles = NO; panel.allowsMultipleSelection = NO; panel.canCreateDirectories = NO; panel.prompt = @"选择目录";
+    NSOpenPanel *panel = [NSOpenPanel openPanel]; panel.title = L(@"添加已有项目目录");
+    panel.canChooseDirectories = YES; panel.canChooseFiles = NO; panel.allowsMultipleSelection = NO; panel.canCreateDirectories = NO; panel.prompt = L(@"选择目录");
     if ([panel runModal] != NSModalResponseOK) return;
     NSString *failure = nil, *path = [self.projectStore normalizeDirectory:panel.URL.path error:&failure];
-    if (!path) { [self alert:@"无法添加项目" detail:failure]; return; }
-    if ([self.projectStore containsDirectory:path]) { [self alert:@"项目已在清单中" detail:@"同一个真实目录只需添加一次，所有账号都可以使用。"] ; return; }
+    if (!path) { [self alert:L(@"无法添加项目") detail:failure]; return; }
+    if ([self.projectStore containsDirectory:path]) { [self alert:L(@"项目已在清单中") detail:L(@"同一个真实目录只需添加一次，所有账号都可以使用。")] ; return; }
     if ([path isEqual:@"/"] || [path isEqual:NSHomeDirectory().stringByResolvingSymlinksInPath]) {
-        NSAlert *confirm = [NSAlert new]; confirm.messageText = @"添加整个主目录或根目录？";
-        confirm.informativeText = @"这不是普通项目目录，范围很大。启动器只记录路径；之后交给 Claude 时，请自行确认文件访问范围。";
-        [confirm addButtonWithTitle:@"取消"]; [confirm addButtonWithTitle:@"仍然添加"];
+        NSAlert *confirm = [NSAlert new]; confirm.messageText = L(@"添加整个主目录或根目录？");
+        confirm.informativeText = L(@"这不是普通项目目录，范围很大。启动器只记录路径；之后交给 Claude 时，请自行确认文件访问范围。");
+        [confirm addButtonWithTitle:L(@"取消")]; [confirm addButtonWithTitle:L(@"仍然添加")];
         if ([confirm runModal] != NSAlertSecondButtonReturn) return;
     }
     NSDictionary *record = [self editProjectRecord:@{@"id":NSUUID.UUID.UUIDString,@"name":path.lastPathComponent,@"group":@"",@"path":path,@"lastAccount":@0}];
     if (!record) return;
-    if (![[self.projectStore statusForPath:path] isEqual:@"正常"]) { [self alert:@"目录状态已变化" detail:@"未添加，请重新选择已有目录。"] ; return; }
-    if ([self saveProjects:[self.projectStore.projects arrayByAddingObject:record]]) [self projectNotice:@"已添加项目入口，没有复制或读取目录中的文件。"];
+    if (![[self.projectStore statusForPath:path] isEqual:@"正常"]) { [self alert:L(@"目录状态已变化") detail:L(@"未添加，请重新选择已有目录。")] ; return; }
+    if ([self saveProjects:[self.projectStore.projects arrayByAddingObject:record]]) [self projectNotice:L(@"已添加项目入口，没有复制或读取目录中的文件。")];
 }
 - (void)projectMenu:(NSButton *)sender {
     if (![self projectForSender:sender]) return;
     NSMenu *menu = [NSMenu new]; menu.autoenablesItems = NO;
     BOOL usable = self.projectStore.writable && [[self.projectStore statusForPath:[self projectForSender:sender][@"path"]] isEqual:@"正常"];
-    NSArray *handoffItems = @[@[@"交接给其他账号…",NSStringFromSelector(@selector(handoffProject:))],@[@"复制“写交接文档”指令",NSStringFromSelector(@selector(copyHandoffWritePrompt:))],@[@"写入交接规则到 CLAUDE.md…",NSStringFromSelector(@selector(addHandoffRule:))]];
+    NSArray *handoffItems = @[@[L(@"交接给其他账号…"),NSStringFromSelector(@selector(handoffProject:))],@[L(@"复制“写交接文档”指令"),NSStringFromSelector(@selector(copyHandoffWritePrompt:))],@[L(@"写入交接规则到 CLAUDE.md…"),NSStringFromSelector(@selector(addHandoffRule:))]];
     for (NSArray *entry in handoffItems) {
         NSMenuItem *item = [menu addItemWithTitle:entry[0] action:NSSelectorFromString(entry[1]) keyEquivalent:@""]; item.target = self; item.tag = sender.tag;
         item.enabled = usable || [entry[1] isEqual:NSStringFromSelector(@selector(copyHandoffWritePrompt:))];
     }
     [menu addItem:NSMenuItem.separatorItem];
-    NSArray *titles = @[@"修改名称与分组…",@"上移",@"下移",@"在 Finder 中显示",@"复制路径",@"从清单移除…"];
+    NSArray *titles = @[L(@"修改名称与分组…"),L(@"上移"),L(@"下移"),L(@"在 Finder 中显示"),L(@"复制路径"),L(@"从清单移除…")];
     NSArray *actions = @[NSStringFromSelector(@selector(editProject:)),NSStringFromSelector(@selector(moveProjectUp:)),NSStringFromSelector(@selector(moveProjectDown:)),NSStringFromSelector(@selector(revealProject:)),NSStringFromSelector(@selector(copyProject:)),NSStringFromSelector(@selector(removeProject:))];
     for (NSUInteger i = 0; i < titles.count; i++) {
         if (i == 3 || i == 5) [menu addItem:NSMenuItem.separatorItem];
@@ -1168,19 +1178,19 @@ static const unsigned CardFill = 0xFFFCF7;
 }
 - (void)copyHandoffWritePrompt:(id)sender {
     [NSPasteboard.generalPasteboard clearContents]; [NSPasteboard.generalPasteboard setString:HandoffWritePrompt() forType:NSPasteboardTypeString];
-    [self projectNotice:@"已复制“写交接文档”指令。请在原会话中粘贴发送；启动器不会代你发送。"];
+    [self projectNotice:L(@"已复制“写交接文档”指令。请在原会话中粘贴发送；启动器不会代你发送。")];
 }
 - (void)addHandoffRule:(id)sender {
     NSDictionary *record = [self projectForSender:sender]; if (!record) return;
     NSString *path = record[@"path"];
-    if (![[self.projectStore statusForPath:path] isEqual:@"正常"]) { [self alert:@"项目目录不可用" detail:@"请检查目录是否存在、位置是否改变以及访问权限。"]; return; }
-    NSAlert *confirm = [NSAlert new]; confirm.messageText = [NSString stringWithFormat:@"在「%@」的 CLAUDE.md 末尾追加交接规则？",record[@"name"]];
-    confirm.informativeText = [NSString stringWithFormat:@"%@\n\n只在文件末尾追加以下内容（文件不存在则创建），不改动已有内容；已添加过则跳过。该文件被使用此项目的所有账号共享。\n\n%@",[path stringByAppendingPathComponent:@"CLAUDE.md"],HandoffRuleBlock()];
-    [confirm addButtonWithTitle:@"取消"]; [confirm addButtonWithTitle:@"追加"];
+    if (![[self.projectStore statusForPath:path] isEqual:@"正常"]) { [self alert:L(@"项目目录不可用") detail:L(@"请检查目录是否存在、位置是否改变以及访问权限。")]; return; }
+    NSAlert *confirm = [NSAlert new]; confirm.messageText = [NSString stringWithFormat:L(@"在「%@」的 CLAUDE.md 末尾追加交接规则？"),record[@"name"]];
+    confirm.informativeText = [NSString stringWithFormat:L(@"%@\n\n只在文件末尾追加以下内容（文件不存在则创建），不改动已有内容；已添加过则跳过。该文件被使用此项目的所有账号共享。\n\n%@"),[path stringByAppendingPathComponent:@"CLAUDE.md"],HandoffRuleBlock()];
+    [confirm addButtonWithTitle:L(@"取消")]; [confirm addButtonWithTitle:L(@"追加")];
     if ([confirm runModal] != NSAlertSecondButtonReturn) return;
     BOOL present = NO; NSString *failure = AppendHandoffRule(path, &present);
-    if (failure) { [self alert:@"未写入交接规则" detail:failure]; return; }
-    NSString *text = present ? @"CLAUDE.md 已有交接规则，未重复添加。" : [NSString stringWithFormat:@"已在「%@」的 CLAUDE.md 末尾追加交接规则。",record[@"name"]];
+    if (failure) { [self alert:L(@"未写入交接规则") detail:failure]; return; }
+    NSString *text = present ? L(@"CLAUDE.md 已有交接规则，未重复添加。") : [NSString stringWithFormat:L(@"已在「%@」的 CLAUDE.md 末尾追加交接规则。"),record[@"name"]];
     [self projectNotice:text]; [self addLog:text];
 }
 - (void)editProject:(id)sender {
@@ -1191,7 +1201,7 @@ static const unsigned CardFill = 0xFFFCF7;
     if (index == NSNotFound) return;
     // An account check may have finished while the editor's modal loop was open. Keep its lastAccount.
     NSMutableDictionary *latest = [projects[index] mutableCopy]; latest[@"name"] = edited[@"name"]; latest[@"group"] = edited[@"group"]; projects[index] = latest;
-    if ([self saveProjects:projects]) [self projectNotice:@"已修改显示信息，实际目录未改动。"];
+    if ([self saveProjects:projects]) [self projectNotice:L(@"已修改显示信息，实际目录未改动。")];
 }
 - (void)moveProject:(id)sender offset:(NSInteger)offset {
     NSInteger index = [sender tag], target = index+offset;
@@ -1204,45 +1214,45 @@ static const unsigned CardFill = 0xFFFCF7;
 - (void)copyProject:(id)sender {
     NSDictionary *record = [self projectForSender:sender]; if (!record) return;
     [NSPasteboard.generalPasteboard clearContents]; [NSPasteboard.generalPasteboard setString:record[@"path"] forType:NSPasteboardTypeString];
-    [self projectNotice:@"项目路径已复制。"];
+    [self projectNotice:L(@"项目路径已复制。")];
 }
 - (void)revealProject:(id)sender {
     NSDictionary *record = [self projectForSender:sender]; if (!record) return;
-    if (![[self.projectStore statusForPath:record[@"path"]] isEqual:@"正常"]) { [self refreshProjects:nil]; [self alert:@"无法显示目录" detail:@"目录不存在、已改变或无权限；未创建或替换路径。"] ; return; }
+    if (![[self.projectStore statusForPath:record[@"path"]] isEqual:@"正常"]) { [self refreshProjects:nil]; [self alert:L(@"无法显示目录") detail:L(@"目录不存在、已改变或无权限；未创建或替换路径。")] ; return; }
     [NSWorkspace.sharedWorkspace activateFileViewerSelectingURLs:@[[NSURL fileURLWithPath:record[@"path"]]]];
 }
 - (void)removeProject:(id)sender {
     NSDictionary *record = [self projectForSender:sender]; if (!record) return;
-    NSAlert *confirm = [NSAlert new]; confirm.messageText = @"从项目清单移除？";
-    confirm.informativeText = [NSString stringWithFormat:@"只移除“%@”的入口，不删除或移动任何文件。",record[@"name"]];
-    [confirm addButtonWithTitle:@"取消"]; [confirm addButtonWithTitle:@"移除记录"];
+    NSAlert *confirm = [NSAlert new]; confirm.messageText = L(@"从项目清单移除？");
+    confirm.informativeText = [NSString stringWithFormat:L(@"只移除“%@”的入口，不删除或移动任何文件。"),record[@"name"]];
+    [confirm addButtonWithTitle:L(@"取消")]; [confirm addButtonWithTitle:L(@"移除记录")];
     if ([confirm runModal] != NSAlertSecondButtonReturn) return;
     NSMutableArray *projects = self.projectStore.projects.mutableCopy;
     NSIndexSet *removed = [projects indexesOfObjectsPassingTest:^BOOL(NSDictionary *row, NSUInteger i, BOOL *stop) { return [row[@"id"] isEqual:record[@"id"]]; }];
     [projects removeObjectsAtIndexes:removed];
-    if ([self saveProjects:projects]) [self projectNotice:@"记录已移除，项目目录与文件保持原样。"];
+    if ([self saveProjects:projects]) [self projectNotice:L(@"记录已移除，项目目录与文件保持原样。")];
 }
 - (void)openProject:(id)sender { [self openProject:sender handoff:NO]; }
 - (void)handoffProject:(id)sender { [self openProject:sender handoff:YES]; }
 // Handoff reuses the open flow with another account; the launcher only copies a prompt, the user pastes and sends it.
 - (void)openProject:(id)sender handoff:(BOOL)handoff {
     NSDictionary *record = [self projectForSender:sender]; if (!record || !self.projectStore.writable) return;
-    if (![[self.projectStore statusForPath:record[@"path"]] isEqual:@"正常"]) { [self refreshProjects:nil]; [self alert:@"项目目录不可用" detail:@"请检查目录是否存在、位置是否改变以及访问权限。"] ; return; }
+    if (![[self.projectStore statusForPath:record[@"path"]] isEqual:@"正常"]) { [self refreshProjects:nil]; [self alert:L(@"项目目录不可用") detail:L(@"请检查目录是否存在、位置是否改变以及访问权限。")] ; return; }
     NSInteger last = [record[@"lastAccount"] integerValue];
     if (handoff && !HandoffModified(record[@"path"])) {
-        NSAlert *missing = [NSAlert new]; missing.messageText = @"项目里还没有 HANDOFF.md";
-        missing.informativeText = @"建议先在原会话中让 AI 写交接文档。点「复制写交接指令」后，到原会话粘贴发送，写完再回来交接。";
-        [missing addButtonWithTitle:@"复制写交接指令"]; [missing addButtonWithTitle:@"仍然交接"]; [missing addButtonWithTitle:@"取消"];
+        NSAlert *missing = [NSAlert new]; missing.messageText = L(@"项目里还没有 HANDOFF.md");
+        missing.informativeText = L(@"建议先在原会话中让 AI 写交接文档。点「复制写交接指令」后，到原会话粘贴发送，写完再回来交接。");
+        [missing addButtonWithTitle:L(@"复制写交接指令")]; [missing addButtonWithTitle:L(@"仍然交接")]; [missing addButtonWithTitle:L(@"取消")];
         NSModalResponse response = [missing runModal];
         if (response == NSAlertFirstButtonReturn) { [self copyHandoffWritePrompt:nil]; return; }
         if (response != NSAlertSecondButtonReturn) return;
     }
-    NSAlert *choice = [NSAlert new]; choice.messageText = handoff ? @"交接给哪个账号？" : @"选择打开项目的账号";
-    choice.informativeText = handoff ? @"通过账号检查后，接手指令（含项目路径）会复制到剪贴板，并在 Finder 中显示项目。请在 Claude 中选择此文件夹，粘贴指令并发送。启动器不会代你发送消息。"
-                                     : @"通过账号检查后，路径会复制到剪贴板，并在 Finder 中显示。请在 Claude 中选择此文件夹；不会自动加载或同步会话。";
+    NSAlert *choice = [NSAlert new]; choice.messageText = handoff ? L(@"交接给哪个账号？") : L(@"选择打开项目的账号");
+    choice.informativeText = handoff ? L(@"通过账号检查后，接手指令（含项目路径）会复制到剪贴板，并在 Finder 中显示项目。请在 Claude 中选择此文件夹，粘贴指令并发送。启动器不会代你发送消息。")
+                                     : L(@"通过账号检查后，路径会复制到剪贴板，并在 Finder 中显示。请在 Claude 中选择此文件夹；不会自动加载或同步会话。");
     NSPopUpButton *accounts = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(0,0,320,30) pullsDown:NO];
     [self refresh];
-    for (NSInteger n = 1; n <= 10; n++) [accounts addItemWithTitle:[NSString stringWithFormat:@"账号 %02ld · %@",(long)n,self.buttons[n-1].title]];
+    for (NSInteger n = 1; n <= 10; n++) [accounts addItemWithTitle:[NSString stringWithFormat:L(@"账号 %02ld · %@"),(long)n,self.buttons[n-1].title]];
     NSInteger preferred = last;
     if (handoff) { // Default to another existing account, preferring the lowest observed five-hour use.
         NSMutableArray *candidates = [NSMutableArray array];
@@ -1250,25 +1260,25 @@ static const unsigned CardFill = 0xFFFCF7;
         preferred = SuggestedAccount(candidates, last, 101);
         if (!preferred) for (NSArray *c in candidates) { preferred = [c[0] integerValue]; break; }
     }
-    [accounts selectItemAtIndex:preferred ? preferred-1 : 0]; accounts.accessibilityLabel = @"目标账号";
-    choice.accessoryView = accounts; [choice addButtonWithTitle:handoff ? @"交接给此账号" : @"用此账号打开"]; [choice addButtonWithTitle:@"取消"];
+    [accounts selectItemAtIndex:preferred ? preferred-1 : 0]; accounts.accessibilityLabel = L(@"目标账号");
+    choice.accessoryView = accounts; [choice addButtonWithTitle:handoff ? L(@"交接给此账号") : L(@"用此账号打开")]; [choice addButtonWithTitle:L(@"取消")];
     if ([choice runModal] != NSAlertFirstButtonReturn) return;
     NSInteger account = accounts.indexOfSelectedItem+1;
-    if (self.starting[@(account)] || [self.checking containsObject:@(account)]) { [self alert:@"账号正在处理中" detail:@"请等待本次检查或启动完成，再打开项目。"] ; return; }
+    if (self.starting[@(account)] || [self.checking containsObject:@(account)]) { [self alert:L(@"账号正在处理中") detail:L(@"请等待本次检查或启动完成，再打开项目。")] ; return; }
     NSString *identifier = record[@"id"];
     [self selectAccount:self.buttons[account-1] prepare:^BOOL{
         NSMutableArray *projects = self.projectStore.projects.mutableCopy;
         NSUInteger index = [projects indexOfObjectPassingTest:^BOOL(NSDictionary *row, NSUInteger i, BOOL *stop) { return [row[@"id"] isEqual:identifier]; }];
         if (index == NSNotFound || ![[self.projectStore statusForPath:projects[index][@"path"]] isEqual:@"正常"]) {
-            [self alert:@"项目状态已变化" detail:@"记录已移除或目录不可访问，未交接项目。"] ; [self refreshProjects:nil]; return NO;
+            [self alert:L(@"项目状态已变化") detail:L(@"记录已移除或目录不可访问，未交接项目。")] ; [self refreshProjects:nil]; return NO;
         }
         NSMutableDictionary *updated = [projects[index] mutableCopy]; updated[@"lastAccount"] = @(account); projects[index] = updated;
         if (![self saveProjects:projects]) return NO;
         [NSPasteboard.generalPasteboard clearContents]; [NSPasteboard.generalPasteboard setString:handoff ? HandoffContinuePrompt(updated[@"path"]) : updated[@"path"] forType:NSPasteboardTypeString];
         [NSWorkspace.sharedWorkspace activateFileViewerSelectingURLs:@[[NSURL fileURLWithPath:updated[@"path"]]]];
-        [self projectNotice:handoff ? [NSString stringWithFormat:@"已为账号 %02ld 复制接手指令并显示 Finder。请在 Claude 中选择此文件夹，粘贴指令后发送。",(long)account]
-                                    : [NSString stringWithFormat:@"已为账号 %02ld 复制路径并显示 Finder。请在 Claude 中选择此文件夹。",(long)account]];
-        if (handoff) [self addLog:[NSString stringWithFormat:@"项目「%@」交接给账号 %02ld（已复制接手指令）",updated[@"name"],(long)account]];
+        [self projectNotice:handoff ? [NSString stringWithFormat:L(@"已为账号 %02ld 复制接手指令并显示 Finder。请在 Claude 中选择此文件夹，粘贴指令后发送。"),(long)account]
+                                    : [NSString stringWithFormat:L(@"已为账号 %02ld 复制路径并显示 Finder。请在 Claude 中选择此文件夹。"),(long)account]];
+        if (handoff) [self addLog:[NSString stringWithFormat:L(@"项目「%@」交接给账号 %02ld（已复制接手指令）"),updated[@"name"],(long)account]];
         return YES;
     }];
 }
@@ -1287,7 +1297,7 @@ static const unsigned CardFill = 0xFFFCF7;
     return button;
 }
 - (NSView *)logsPage:(NSRect)frame {
-    Canvas *page = [self pageTitled:@"日志记录" subtitle:@"查看实例启动、关闭与异常信息，便于追踪运行情况和排查问题。" frame:frame];
+    Canvas *page = [self pageTitled:L(@"日志记录") subtitle:L(@"查看实例启动、关闭与异常信息，便于追踪运行情况和排查问题。") frame:frame];
     NSRect period = NSMakeRect(36,142,160,40), instance = NSMakeRect(206,142,144,40), level = NSMakeRect(360,142,130,40), search = NSMakeRect(520,142,252,40);
     page.paint = ^(NSRect bounds) {
         for (NSValue *box in @[[NSValue valueWithRect:period],[NSValue valueWithRect:instance],[NSValue valueWithRect:level],[NSValue valueWithRect:search]]) DrawPanel(box.rectValue, 12, 0.94);
@@ -1298,38 +1308,38 @@ static const unsigned CardFill = 0xFFFCF7;
         [NSGraphicsContext restoreGraphicsState];
         [Hex(0xEFE7DC) setFill]; NSRectFill(NSMakeRect(37,240,734,1)); NSRectFill(NSMakeRect(37,640,734,1));
         NSDictionary *head = @{NSFontAttributeName:[NSFont systemFontOfSize:13 weight:NSFontWeightSemibold],NSForegroundColorAttributeName:Hex(0x8A7A6A)};
-        NSArray *columns = @[@[@"时间",@20],@[@"级别",@194],@[@"实例",@294],@[@"事件内容",@414]];
+        NSArray *columns = @[@[L(@"时间"),@20],@[L(@"级别"),@194],@[L(@"实例"),@294],@[L(@"事件内容"),@414]];
         for (NSArray *column in columns) [column[0] drawAtPoint:NSMakePoint(37+[column[1] doubleValue],210) withAttributes:head];
     };
-    [page addSubview:[self toolButton:@"导出日志" symbol:@"square.and.arrow.down" frame:NSMakeRect(502,56,128,44) action:@selector(exportLogs:)]];
-    [page addSubview:[self toolButton:@"清空日志" symbol:@"trash" frame:NSMakeRect(640,56,132,44) action:@selector(clearLogs:)]];
-    self.logPeriod = [self logFilter:@[@"最近 7 天",@"最近 24 小时",@"最近 1 小时",@"最近 5 分钟",@"本次运行",@"全部时间"] box:period icon:@"calendar" label:@"日志时间范围" page:page];
-    NSMutableArray *instances = [@[@"全部实例",@"系统"] mutableCopy]; for (NSInteger n=1;n<=10;n++) [instances addObject:[NSString stringWithFormat:@"Claude %ld",(long)n]];
-    self.logInstance = [self logFilter:instances box:instance icon:nil label:@"日志实例" page:page];
-    self.logLevel = [self logFilter:@[@"全部级别",@"信息",@"警告",@"错误"] box:level icon:nil label:@"日志级别" page:page];
+    [page addSubview:[self toolButton:L(@"导出日志") symbol:@"square.and.arrow.down" frame:NSMakeRect(502,56,128,44) action:@selector(exportLogs:)]];
+    [page addSubview:[self toolButton:L(@"清空日志") symbol:@"trash" frame:NSMakeRect(640,56,132,44) action:@selector(clearLogs:)]];
+    self.logPeriod = [self logFilter:@[L(@"最近 7 天"),L(@"最近 24 小时"),L(@"最近 1 小时"),L(@"最近 5 分钟"),L(@"本次运行"),L(@"全部时间")] box:period icon:@"calendar" label:L(@"日志时间范围") page:page];
+    NSMutableArray *instances = [@[L(@"全部实例"),L(@"系统")] mutableCopy]; for (NSInteger n=1;n<=10;n++) [instances addObject:[NSString stringWithFormat:@"Claude %ld",(long)n]];
+    self.logInstance = [self logFilter:instances box:instance icon:nil label:L(@"日志实例") page:page];
+    self.logLevel = [self logFilter:@[L(@"全部级别"),L(@"信息"),L(@"警告"),L(@"错误")] box:level icon:nil label:L(@"日志级别") page:page];
     self.logSearch = [[NSSearchField alloc] initWithFrame:NSMakeRect(NSMinX(search)+8,NSMinY(search)+9,NSWidth(search)-16,24)]; self.logSearch.bezeled = NO; self.logSearch.drawsBackground = NO; self.logSearch.font = [NSFont systemFontOfSize:14];
-    self.logSearch.placeholderString = @"搜索日志内容…"; self.logSearch.accessibilityLabel = @"搜索日志"; self.logSearch.delegate = self; [page addSubview:self.logSearch];
+    self.logSearch.placeholderString = L(@"搜索日志内容…"); self.logSearch.accessibilityLabel = L(@"搜索日志"); self.logSearch.delegate = self; [page addSubview:self.logSearch];
     NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(37,241,734,399)];
     scroll.drawsBackground = NO; scroll.contentView.drawsBackground = NO; scroll.hasVerticalScroller = NO; scroll.hasHorizontalScroller = NO; scroll.borderType = NSNoBorder;
     self.logTable = [[NSTableView alloc] initWithFrame:scroll.bounds]; self.logTable.style = NSTableViewStylePlain; self.logTable.headerView = nil;
     self.logTable.rowHeight = 40; self.logTable.intercellSpacing = NSZeroSize; self.logTable.backgroundColor = NSColor.clearColor;
     self.logTable.gridStyleMask = NSTableViewSolidHorizontalGridLineMask; self.logTable.gridColor = Hex(0xEFE7DC); self.logTable.selectionHighlightStyle = NSTableViewSelectionHighlightStyleNone;
     self.logTable.dataSource = self; self.logTable.delegate = self;
-    NSArray *columns = @[@[@"time",@"时间",@174],@[@"level",@"级别",@100],@[@"instance",@"实例",@120],@[@"text",@"事件内容",@340]];
+    NSArray *columns = @[@[@"time",L(@"时间"),@174],@[@"level",L(@"级别"),@100],@[@"instance",L(@"实例"),@120],@[@"text",L(@"事件内容"),@340]];
     for (NSArray *column in columns) { NSTableColumn *c = [[NSTableColumn alloc] initWithIdentifier:column[0]]; c.title = column[1]; c.width = [column[2] doubleValue]; [self.logTable addTableColumn:c]; }
     scroll.documentView = self.logTable; [page addSubview:scroll];
     self.logEmpty = Text(@"",NSMakeRect(37,420,734,20),[NSFont systemFontOfSize:13],Hex(0xA59B90)); self.logEmpty.alignment = NSTextAlignmentCenter; [page addSubview:self.logEmpty];
-    self.previousLogs = [self toolButton:@"" symbol:@"chevron.left" frame:NSMakeRect(57,652,32,32) action:@selector(previousLogPage:)]; self.previousLogs.accessibilityLabel = @"上一页"; self.previousLogs.toolTip = @"上一页"; [page addSubview:self.previousLogs];
-    self.nextLogs = [self toolButton:@"" symbol:@"chevron.right" frame:NSMakeRect(97,652,32,32) action:@selector(nextLogPage:)]; self.nextLogs.accessibilityLabel = @"下一页"; self.nextLogs.toolTip = @"下一页"; [page addSubview:self.nextLogs];
+    self.previousLogs = [self toolButton:@"" symbol:@"chevron.left" frame:NSMakeRect(57,652,32,32) action:@selector(previousLogPage:)]; self.previousLogs.accessibilityLabel = L(@"上一页"); self.previousLogs.toolTip = L(@"上一页"); [page addSubview:self.previousLogs];
+    self.nextLogs = [self toolButton:@"" symbol:@"chevron.right" frame:NSMakeRect(97,652,32,32) action:@selector(nextLogPage:)]; self.nextLogs.accessibilityLabel = L(@"下一页"); self.nextLogs.toolTip = L(@"下一页"); [page addSubview:self.nextLogs];
     self.logPageButtons = [NSMutableArray array];
-    self.logSummary = Text(@"暂无日志",NSMakeRect(400,659,352,20),[NSFont systemFontOfSize:13],Hex(0x8A8178)); self.logSummary.alignment = NSTextAlignmentRight; [page addSubview:self.logSummary];
+    self.logSummary = Text(L(@"暂无日志"),NSMakeRect(400,659,352,20),[NSFont systemFontOfSize:13],Hex(0x8A8178)); self.logSummary.alignment = NSTextAlignmentRight; [page addSubview:self.logSummary];
     [self reloadLogs]; return page;
 }
 - (NSArray *)filteredLogEntries {
     NSInteger period = self.logPeriod.indexOfSelectedItem;
     NSArray *spans = @[@(7*86400),@86400,@3600,@300];
     NSDate *since = period >= 0 && period < (NSInteger)spans.count ? [NSDate dateWithTimeIntervalSinceNow:-[spans[period] doubleValue]] : period == 4 ? self.launchDate : nil;
-    return FilteredLogs(self.logEntries,self.logSearch.stringValue,self.logInstance.indexOfSelectedItem > 0 ? self.logInstance.titleOfSelectedItem : nil,self.logLevel.indexOfSelectedItem > 0 ? self.logLevel.titleOfSelectedItem : nil,since);
+    return FilteredLogs(self.logEntries,self.logSearch.stringValue,self.logInstance.indexOfSelectedItem == 1 ? @"系统" : self.logInstance.indexOfSelectedItem > 1 ? self.logInstance.titleOfSelectedItem : nil,self.logLevel.indexOfSelectedItem > 0 ? @[@"信息",@"警告",@"错误"][self.logLevel.indexOfSelectedItem-1] : nil,since);
 }
 - (void)trimLogs {
     NSUInteger limit = [self.settings[@"logLimit"] unsignedIntegerValue];
@@ -1357,20 +1367,20 @@ static const unsigned CardFill = 0xFFFCF7;
             [self.previousLogs.superview addSubview:gap]; [self.logPageButtons addObject:gap]; x += 32;
         }
         ActionButton *button = [self toolButton:@(i+1).stringValue symbol:nil frame:NSMakeRect(x,652,32,32) action:@selector(goLogPage:)];
-        button.tag = i; button.fontSize = 13; button.primary = i == self.logPage; button.accessibilityLabel = [NSString stringWithFormat:@"第 %ld 页",(long)i+1];
+        button.tag = i; button.fontSize = 13; button.primary = i == self.logPage; button.accessibilityLabel = [NSString stringWithFormat:L(@"第 %ld 页"),(long)i+1];
         [self.previousLogs.superview addSubview:button]; [self.logPageButtons addObject:button]; x += 40; last = i;
     }
     [self.nextLogs setFrameOrigin:NSMakePoint(x,652)];
-    self.logEmpty.stringValue = filtered.count ? @"" : self.logEntries.count ? @"没有匹配的日志，可清除搜索或切换筛选条件" : @"暂无日志";
-    self.logSummary.stringValue = !filtered.count ? [NSString stringWithFormat:@"共 %lu 条日志 · 每页显示 10 条",(unsigned long)self.logEntries.count] : filtered.count == self.logEntries.count ? [NSString stringWithFormat:@"共 %lu 条日志 · 每页显示 10 条",(unsigned long)filtered.count] : [NSString stringWithFormat:@"匹配 %lu 条 / 共 %lu 条日志 · 每页显示 10 条",(unsigned long)filtered.count,(unsigned long)self.logEntries.count];
+    self.logEmpty.stringValue = filtered.count ? @"" : self.logEntries.count ? L(@"没有匹配的日志，可清除搜索或切换筛选条件") : L(@"暂无日志");
+    self.logSummary.stringValue = !filtered.count ? [NSString stringWithFormat:L(@"共 %lu 条日志 · 每页显示 10 条"),(unsigned long)self.logEntries.count] : filtered.count == self.logEntries.count ? [NSString stringWithFormat:L(@"共 %lu 条日志 · 每页显示 10 条"),(unsigned long)filtered.count] : [NSString stringWithFormat:L(@"匹配 %lu 条 / 共 %lu 条日志 · 每页显示 10 条"),(unsigned long)filtered.count,(unsigned long)self.logEntries.count];
 }
 - (NSInteger)numberOfRowsInTableView:(NSTableView *)tableView { return self.visibleLogs.count; }
 - (NSView *)tableView:(NSTableView *)tableView viewForTableColumn:(NSTableColumn *)column row:(NSInteger)row {
-    NSString *text = self.visibleLogs[row][column.identifier];
+    NSString *value = self.visibleLogs[row][column.identifier], *text = [@[@"level",@"instance"] containsObject:column.identifier] ? L(value) : value;
     NSView *cell = [[NSView alloc] initWithFrame:NSMakeRect(0,0,column.width,40)];
     if ([column.identifier isEqual:@"level"]) {
         NSDictionary *colors = @{@"信息":@[@0xDDF0E6,@0x3C8A68],@"警告":@[@0xFCEBD2,@0xC07A2A],@"错误":@[@0xFCE3DD,@0xC75F47]};
-        NSArray *pair = colors[text] ?: colors[@"信息"];
+        NSArray *pair = colors[value] ?: colors[@"信息"];
         Canvas *pill = [[Canvas alloc] initWithFrame:NSMakeRect(20,9,46,22)];
         pill.paint = ^(NSRect bounds) {
             [Hex([pair[0] unsignedIntValue]) setFill]; [[NSBezierPath bezierPathWithRoundedRect:bounds xRadius:6 yRadius:6] fill];
@@ -1391,12 +1401,12 @@ static const unsigned CardFill = 0xFFFCF7;
     if (note.object == self.accountSearch) [self accountFilterChanged:nil];
 }
 - (NSView *)settingsPage:(NSRect)frame {
-    Canvas *page = [self pageTitled:@"系统设置" subtitle:@"只管理本地启动器。更改不会修改 Claude 登录、会话或账号配置。" frame:frame];
+    Canvas *page = [self pageTitled:L(@"系统设置") subtitle:L(@"只管理本地启动器。更改不会修改 Claude 登录、会话或账号配置。") frame:frame];
     page.paint = ^(NSRect bounds) {
         DrawPanel(NSMakeRect(36,140,736,40),12,0.75);
         DrawPanel(NSMakeRect(36,192,736,504),16,0.9);
     };
-    NSArray *titles = @[@"常规",@"启动行为",@"外观",@"数据与存储",@"通知",@"关于"];
+    NSArray *titles = @[L(@"常规"),L(@"启动行为"),L(@"外观"),L(@"数据与存储"),L(@"通知"),L(@"关于")];
     NSMutableArray *tabs = [NSMutableArray array];
     CGFloat width = 728.0/titles.count;
     for (NSInteger i=0;i<(NSInteger)titles.count;i++) {
@@ -1405,8 +1415,8 @@ static const unsigned CardFill = 0xFFFCF7;
     }
     self.settingsTabs = tabs;
     self.settingsContent = [[Canvas alloc] initWithFrame:NSMakeRect(56,208,696,428)]; [page addSubview:self.settingsContent];
-    self.settingsFeedback = Text(@"更改即时保存并生效",NSMakeRect(58,656,540,20),[NSFont systemFontOfSize:12],Hex(0x6E655C)); [page addSubview:self.settingsFeedback];
-    [page addSubview:[self toolButton:@"恢复默认…" symbol:nil frame:NSMakeRect(652,648,104,34) action:@selector(resetSettings:)]];
+    self.settingsFeedback = Text(L(@"更改即时保存并生效"),NSMakeRect(58,656,540,20),[NSFont systemFontOfSize:12],Hex(0x6E655C)); [page addSubview:self.settingsFeedback];
+    [page addSubview:[self toolButton:L(@"恢复默认…") symbol:nil frame:NSMakeRect(652,648,104,34) action:@selector(resetSettings:)]];
     [self renderSettings]; return page;
 }
 - (void)settingsTabChanged:(NSButton *)sender { self.settingsSection = sender.tag; [self renderSettings]; }
@@ -1482,57 +1492,63 @@ static const unsigned CardFill = 0xFFFCF7;
     for (ActionButton *tab in self.settingsTabs) { tab.primary = tab.tag == self.settingsSection; tab.needsDisplay = YES; }
     switch (self.settingsSection) {
         case 0:
-            [self settingsHeader:@"窗口与启动"];
-            [self settingToggle:@"closeToBackground" title:@"关闭窗口后继续运行" detail:@"关闭窗口后仍可从 Dock 重新打开；退出启动器不退出 Claude。" icon:@"macwindow"];
-            [self settingToggle:@"showMenuBar" title:@"显示菜单栏图标" detail:@"从 macOS 菜单栏查看账号状态、显示启动器窗口。" icon:@"menubar.rectangle"];
-            [self settingsHeader:@"权限"];
-            self.accessibilityStatus = [self settingsAction:@"打开辅助功能设置" action:@selector(openAccessibility:) title:@"辅助功能权限"
-                detail:AXIsProcessTrusted() ? @"已授权：可恢复窗口、只读界面用量。" : @"未授权：仍可激活账号，无法恢复窗口或读取界面用量。" icon:@"lock.shield"];
-            [self settingsNote:@"权限由你在系统设置中管理，启动器不会自动授权。"]; break;
+            [self settingsHeader:L(@"窗口与启动")];
+            [self settingToggle:@"closeToBackground" title:L(@"关闭窗口后继续运行") detail:L(@"关闭窗口后仍可从 Dock 重新打开；退出启动器不退出 Claude。") icon:@"macwindow"];
+            [self settingToggle:@"showMenuBar" title:L(@"显示菜单栏图标") detail:L(@"从 macOS 菜单栏查看账号状态、显示启动器窗口。") icon:@"menubar.rectangle"];
+            [self settingsHeader:L(@"权限")];
+            self.accessibilityStatus = [self settingsAction:L(@"打开辅助功能设置") action:@selector(openAccessibility:) title:L(@"辅助功能权限")
+                detail:AXIsProcessTrusted() ? L(@"已授权：可恢复窗口、只读界面用量。") : L(@"未授权：仍可激活账号，无法恢复窗口或读取界面用量。") icon:@"lock.shield"];
+            [self settingsNote:L(@"权限由你在系统设置中管理，启动器不会自动授权。")]; break;
         case 1:
-            [self settingsHeader:@"启动与刷新"];
-            [self settingsAction:@"管理登录启动…" action:@selector(manageLoginItem:) title:@"登录时启动" detail:[self loginItemDescription] icon:@"power"];
-            [self settingToggle:@"rememberPage" title:@"恢复启动器上次页面" detail:@"只恢复本管理器的页面，不自动启动或激活任何 Claude。" icon:@"arrow.uturn.backward"];
-            [self settingChoice:@"startPage" title:@"未恢复时的启动页面" choices:@[@"实例管理",@"账号管理",@"项目管理",@"日志记录",@"系统设置"] values:@[@0,@1,@2,@3,@4] icon:@"house"];
-            [self settingChoice:@"refreshInterval" title:@"本地进程状态刷新间隔" choices:@[@"1 秒",@"3 秒",@"5 秒"] values:@[@1,@3,@5] icon:@"arrow.clockwise"];
-            [self settingToggle:@"restoreMinimized" title:@"点击账号时恢复最小化窗口" detail:@"只处理经过核对的目标 PID；需辅助功能权限。" icon:@"macwindow.on.rectangle"];
-            [self settingsHeader:@"快捷键"];
-            [self settingToggle:@"globalHotkeys" title:@"全局快捷键 ⌃⌥1～⌃⌥0" detail:@"任何应用中按 ⌃⌥数字打开对应账号（0 为账号 10）；启动器在前台时 ⌘1～⌘0 始终可用。" icon:@"keyboard"]; break;
+            [self settingsHeader:L(@"启动与刷新")];
+            if (@available(macOS 13.0, *)) {
+                CGFloat y = [self settingsRow:L(@"登录时启动") detail:[self loginItemDescription] icon:@"power" detailLabel:nil];
+                ToggleSwitch *toggle = [ToggleSwitch buttonWithTitle:L(@"登录时启动") target:self action:@selector(manageLoginItem:)];
+                [toggle setButtonType:NSButtonTypeSwitch]; toggle.bordered = NO;
+                toggle.state = SMAppService.mainAppService.status == SMAppServiceStatusEnabled ? NSControlStateValueOn : NSControlStateValueOff;
+                toggle.frame = NSMakeRect(696-16-42,y+18,42,24); [self.settingsContent addSubview:toggle];
+            } else [self settingsAction:L(@"管理登录启动…") action:@selector(manageLoginItem:) title:L(@"登录时启动") detail:[self loginItemDescription] icon:@"power"];
+            [self settingToggle:@"rememberPage" title:L(@"恢复启动器上次页面") detail:L(@"只恢复本管理器的页面，不自动启动或激活任何 Claude。") icon:@"arrow.uturn.backward"];
+            [self settingChoice:@"startPage" title:L(@"未恢复时的启动页面") choices:@[L(@"实例管理"),L(@"账号管理"),L(@"项目管理"),L(@"日志记录"),L(@"系统设置")] values:@[@0,@1,@2,@3,@4] icon:@"house"];
+            [self settingChoice:@"refreshInterval" title:L(@"本地进程状态刷新间隔") choices:@[L(@"1 秒"),L(@"3 秒"),L(@"5 秒")] values:@[@1,@3,@5] icon:@"arrow.clockwise"];
+            [self settingToggle:@"restoreMinimized" title:L(@"点击账号时恢复最小化窗口") detail:L(@"只处理经过核对的目标 PID；需辅助功能权限。") icon:@"macwindow.on.rectangle"];
+            [self settingsHeader:L(@"快捷键")];
+            [self settingToggle:@"globalHotkeys" title:L(@"全局快捷键 ⌃⌥1～⌃⌥0") detail:L(@"任何应用中按 ⌃⌥数字打开对应账号（0 为账号 10）；启动器在前台时 ⌘1～⌘0 始终可用。") icon:@"keyboard"]; break;
         case 2:
-            [self settingsHeader:@"显示"];
-            [self settingToggle:@"showArtwork" title:@"显示水墨插画" detail:@"关闭后保留浅色纸张背景和原有文字布局。" icon:@"paintbrush"];
-            [self settingToggle:@"showUsageHistory" title:@"显示本地界面用量" detail:@"只读 Claude 已有控件；不点击、不查询，不读历史文件。" icon:@"chart.bar"];
-            [self settingsHeader:@"样式"];
-            [self settingChoice:@"theme" title:@"主题" choices:@[@"跟随系统",@"浅色水墨",@"深色水墨"] values:@[@0,@1,@2] icon:@"paintpalette"];
-            [self settingsValue:@"简体中文" title:@"界面语言" icon:@"globe"];
-            [self settingsNote:@"深色主题下插画降低亮度显示。主题只影响启动器；Claude 自身的外观、浏览器和登录方式由官方客户端管理。"]; break;
+            [self settingsHeader:L(@"显示")];
+            [self settingToggle:@"showArtwork" title:L(@"显示水墨插画") detail:L(@"关闭后保留浅色纸张背景和原有文字布局。") icon:@"paintbrush"];
+            [self settingToggle:@"showUsageHistory" title:L(@"显示本地界面用量") detail:L(@"只读 Claude 已有控件；不点击、不查询，不读历史文件。") icon:@"chart.bar"];
+            [self settingsHeader:L(@"样式")];
+            [self settingChoice:@"theme" title:L(@"主题") choices:@[L(@"跟随系统"),L(@"浅色水墨"),L(@"深色水墨")] values:@[@0,@1,@2] icon:@"paintpalette"];
+            [self settingChoice:@"language" title:L(@"界面语言") choices:@[@"简体中文",@"English"] values:@[@0,@1] icon:@"globe"];
+            [self settingsNote:L(@"深色主题下插画降低亮度显示。主题只影响启动器；Claude 自身的外观、浏览器和登录方式由官方客户端管理。")]; break;
         case 3:
-            [self settingsHeader:@"管理器数据"];
-            [self settingsAction:@"在 Finder 中显示" action:@selector(revealSupport:) title:@"项目清单、启动器日志与运行锁" detail:@"~/Library/Application Support/Claude Launcher" icon:@"folder"];
-            [self settingsAction:@"复制路径" action:@selector(copySupportPath:) title:@"复制管理器数据路径" detail:@"偏好与账号别名保存在本机用户偏好中。账号目录固定，不迁移、不合并。" icon:@"doc.on.doc"];
-            [self settingsAction:@"导出…" action:@selector(exportSettings:) title:@"导出已保存的设置" detail:@"导出位置由你选择。" icon:@"square.and.arrow.up"];
-            [self settingsAction:@"导入…" action:@selector(importSettings:) title:@"导入设置" detail:@"读取导出的设置文件，确认变更后立即生效；无效项保持当前值。" icon:@"square.and.arrow.down"];
-            [self settingsHeader:@"日志"];
-            [self settingChoice:@"logLimit" title:@"日志保留上限" choices:@[@"100 条",@"500 条",@"1000 条"] values:@[@100,@500,@1000] icon:@"list.bullet.rectangle"];
-            [self settingsNote:@"日志保存在上方启动器目录，重启和更新后保留，超出上限删除最旧记录。恢复默认只重置启动器偏好，保留项目、日志、别名和登录保护。"]; break;
+            [self settingsHeader:L(@"管理器数据")];
+            [self settingsAction:L(@"在 Finder 中显示") action:@selector(revealSupport:) title:L(@"项目清单、启动器日志与运行锁") detail:@"~/Library/Application Support/Claude Launcher" icon:@"folder"];
+            [self settingsAction:L(@"复制路径") action:@selector(copySupportPath:) title:L(@"复制管理器数据路径") detail:L(@"偏好与账号别名保存在本机用户偏好中。账号目录固定，不迁移、不合并。") icon:@"doc.on.doc"];
+            [self settingsAction:L(@"导出…") action:@selector(exportSettings:) title:L(@"导出已保存的设置") detail:L(@"导出位置由你选择。") icon:@"square.and.arrow.up"];
+            [self settingsAction:L(@"导入…") action:@selector(importSettings:) title:L(@"导入设置") detail:L(@"读取导出的设置文件，确认变更后立即生效；无效项保持当前值。") icon:@"square.and.arrow.down"];
+            [self settingsHeader:L(@"日志")];
+            [self settingChoice:@"logLimit" title:L(@"日志保留上限") choices:@[L(@"100 条"),L(@"500 条"),L(@"1000 条")] values:@[@100,@500,@1000] icon:@"list.bullet.rectangle"];
+            [self settingsNote:L(@"日志保存在上方启动器目录，重启和更新后保留，超出上限删除最旧记录。恢复默认只重置启动器偏好，保留项目、日志、别名和登录保护。")]; break;
         case 4:
-            [self settingsHeader:@"窗口内提示"];
-            [self settingToggle:@"localNotifications" title:@"显示窗口内提示" detail:@"在启动器中显示操作警告；不推送、不上传、不读取 Claude 消息。" icon:@"bell"];
-            [self settingToggle:@"notificationSound" title:@"警告时播放提示音" detail:@"仅在窗口内提示开启时生效，使用系统提示音。" icon:@"speaker.wave.2"];
-            [self settingsAction:@"测试" action:@selector(testNotification:) title:@"测试已保存的通知设置" detail:@"按已保存的设置显示一次提示。" icon:@"bell.badge"];
-            [self settingsHeader:@"用量提醒"];
-            [self settingChoice:@"usageAlert" title:@"五小时用量超过时提醒" choices:@[@"关闭",@"70%",@"80%",@"90%"] values:@[@0,@70,@80,@90] icon:@"gauge.with.dots.needle.67percent"];
-            [self settingsNote:@"只使用启动器已经观察到的界面用量，不额外查询。超过阈值时在实例页提示，并推荐当前观察到用量最低的账号；同一重置周期只提醒一次。"];
-            [self settingsNote:@"安全确认和错误弹窗始终保留，不受通知开关影响。"]; break;
+            [self settingsHeader:L(@"窗口内提示")];
+            [self settingToggle:@"localNotifications" title:L(@"显示窗口内提示") detail:L(@"在启动器中显示操作警告；不推送、不上传、不读取 Claude 消息。") icon:@"bell"];
+            [self settingToggle:@"notificationSound" title:L(@"警告时播放提示音") detail:L(@"仅在窗口内提示开启时生效，使用系统提示音。") icon:@"speaker.wave.2"];
+            [self settingsAction:L(@"测试") action:@selector(testNotification:) title:L(@"测试已保存的通知设置") detail:L(@"按已保存的设置显示一次提示。") icon:@"bell.badge"];
+            [self settingsHeader:L(@"用量提醒")];
+            [self settingChoice:@"usageAlert" title:L(@"五小时用量超过时提醒") choices:@[UIEnglish ? @"Off" : @"关闭",@"70%",@"80%",@"90%"] values:@[@0,@70,@80,@90] icon:@"gauge.with.dots.needle.67percent"];
+            [self settingsNote:L(@"只使用启动器已经观察到的界面用量，不额外查询。超过阈值时在实例页提示，并推荐当前观察到用量最低的账号；同一重置周期只提醒一次。")];
+            [self settingsNote:L(@"安全确认和错误弹窗始终保留，不受通知开关影响。")]; break;
         default:
-            [self settingsHeader:@"版本与更新"];
-            [self settingsValue:[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"开发版" title:@"Claude 启动器" icon:@"info.circle"];
-            [self settingToggle:@"allowUpdates" title:@"允许检查 GitHub 更新" detail:@"默认关闭。开启后每次打开启动器检查一次，也可手动检查；仅访问本项目 GitHub 下载地址。" icon:@"arrow.down.circle"];
-            [self settingsAction:@"检查更新…" action:@selector(checkForUpdates:) title:@"检查启动器更新" detail:@"非官方本地工具，与 Anthropic 无关联；不向 Claude 或 Anthropic 发请求。" icon:@"arrow.triangle.2.circlepath"];
-            [self settingsHeader:@"帮助与诊断"];
-            [self settingsAction:@"查看" action:@selector(localHelp:) title:@"本地使用帮助" detail:nil icon:@"questionmark.circle"];
-            [self settingsAction:@"复制" action:@selector(copyDiagnostics:) title:@"基础诊断信息" detail:@"仅包含版本、系统版本和权限状态，不包含账号、路径、日志或凭据。" icon:@"stethoscope"];
-            [self settingsNote:@"不会自动联网检查。不读取凭据，不修改官方应用。"]; break;
+            [self settingsHeader:L(@"版本与更新")];
+            [self settingsValue:[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: L(@"开发版") title:L(@"Claude 启动器") icon:@"info.circle"];
+            [self settingToggle:@"allowUpdates" title:L(@"允许检查 GitHub 更新") detail:L(@"默认关闭。开启后每次打开启动器检查一次，也可手动检查；仅访问本项目 GitHub 下载地址。") icon:@"arrow.down.circle"];
+            [self settingsAction:L(@"检查更新…") action:@selector(checkForUpdates:) title:L(@"检查启动器更新") detail:L(@"非官方本地工具，与 Anthropic 无关联；不向 Claude 或 Anthropic 发请求。") icon:@"arrow.triangle.2.circlepath"];
+            [self settingsHeader:L(@"帮助与诊断")];
+            [self settingsAction:L(@"查看") action:@selector(localHelp:) title:L(@"本地使用帮助") detail:nil icon:@"questionmark.circle"];
+            [self settingsAction:L(@"复制") action:@selector(copyDiagnostics:) title:L(@"基础诊断信息") detail:L(@"仅包含版本、系统版本和权限状态，不包含账号、路径、日志或凭据。") icon:@"stethoscope"];
+            [self settingsNote:L(@"不会自动联网检查。不读取凭据，不修改官方应用。")]; break;
     }
 }
 // Each change is saved at once; a refused or failed save restores the controls to the saved values.
@@ -1544,21 +1560,37 @@ static const unsigned CardFill = 0xFFFCF7;
 - (BOOL)saveSettings:(id)sender {
     NSDictionary *next = ValidatedSettings(self.settingsDraft);
     if (self.updating && [next[@"allowUpdates"] boolValue] != [self.settings[@"allowUpdates"] boolValue]) {
-        [self alert:@"更新正在进行" detail:@"请等待当前更新结束后再改变联网选项。"]; return NO;
+        [self alert:L(@"更新正在进行") detail:L(@"请等待当前更新结束后再改变联网选项。")]; return NO;
     }
     NSDictionary *previous = [self.preferences objectForKey:@"localSettings"];
     [self.preferences setObject:next forKey:@"localSettings"];
     if (![self.preferences synchronize]) {
         if (previous) [self.preferences setObject:previous forKey:@"localSettings"]; else [self.preferences removeObjectForKey:@"localSettings"];
-        [self alert:@"保存设置失败" detail:@"本机偏好未能写入，运行设置保持原样，请稍后重试。"]; return NO;
+        [self alert:L(@"保存设置失败") detail:L(@"本机偏好未能写入，运行设置保持原样，请稍后重试。")]; return NO;
     }
     self.settings = next; self.settingsDraft = next.mutableCopy; [self applySettings]; [self renderSettings];
-    self.settingsFeedback.stringValue = @"设置已保存并生效，仅作用于本地启动器"; [self addLog:@"本地设置已保存"]; return YES;
+    self.settingsFeedback.stringValue = L(@"设置已保存并生效，仅作用于本地启动器"); [self addLog:L(@"本地设置已保存")];
+    // The interface is built once per run, so a language change takes effect after the launcher reopens.
+    if (([next[@"language"] integerValue] == 1) != UIEnglish && !self.snapshotMode) {
+        NSAlert *alert = [NSAlert new]; alert.messageText = L(@"界面语言将在重新打开启动器后生效");
+        alert.informativeText = L(@"只重新打开本启动器，Claude 实例和账号不受影响。");
+        [alert addButtonWithTitle:L(@"立即重新打开")]; [alert addButtonWithTitle:L(@"稍后")];
+        if ([alert runModal] == NSAlertFirstButtonReturn) [self relaunch];
+    }
+    return YES;
+}
+// Waits for this process to exit, then opens the same app bundle again. Local only.
+- (void)relaunch {
+    NSTask *task = [NSTask new]; task.executableURL = [NSURL fileURLWithPath:@"/bin/sh"];
+    task.arguments = @[@"-c",@"while /bin/kill -0 \"$1\" 2>/dev/null; do /bin/sleep 0.2; done; /usr/bin/open \"$2\"",@"relaunch",@(getpid()).stringValue,NSBundle.mainBundle.bundlePath];
+    NSError *error = nil;
+    if ([task launchAndReturnError:&error]) [NSApp terminate:nil];
+    else [self alert:L(@"无法重新打开启动器") detail:error.localizedDescription ?: L(@"请手动退出并重新打开启动器。")];
 }
 - (void)resetSettings:(id)sender {
-    NSAlert *alert = [NSAlert new]; alert.messageText = @"恢复启动器默认设置？";
-    alert.informativeText = @"立即保存并生效。不会移除账号、项目、别名、登录保护或系统登录项。";
-    [alert addButtonWithTitle:@"取消"]; [alert addButtonWithTitle:@"恢复默认"];
+    NSAlert *alert = [NSAlert new]; alert.messageText = L(@"恢复启动器默认设置？");
+    alert.informativeText = L(@"立即保存并生效。不会移除账号、项目、别名、登录保护或系统登录项。");
+    [alert addButtonWithTitle:L(@"取消")]; [alert addButtonWithTitle:L(@"恢复默认")];
     if ([alert runModal] != NSAlertSecondButtonReturn) return;
     self.settingsDraft = DefaultSettings().mutableCopy;
     if (![self saveSettings:nil]) { self.settingsDraft = self.settings.mutableCopy; [self renderSettings]; }
@@ -1587,41 +1619,37 @@ static const unsigned CardFill = 0xFFFCF7;
 - (NSString *)loginItemDescription {
     if (@available(macOS 13.0, *)) {
         switch (SMAppService.mainAppService.status) {
-            case SMAppServiceStatusEnabled: return @"登录启动已启用，只打开启动器，不启动 Claude。";
-            case SMAppServiceStatusRequiresApproval: return @"等待系统批准，请到登录项设置中允许启动器。";
-            case SMAppServiceStatusNotFound: return @"系统未找到此应用的登录项，请使用已安装版本。";
-            default: return @"登录启动未启用。此项由 macOS 单独保存，立即生效。";
+            case SMAppServiceStatusEnabled: return L(@"登录启动已启用，只打开启动器，不启动 Claude。");
+            case SMAppServiceStatusRequiresApproval: return L(@"等待系统批准，请到登录项设置中允许启动器。");
+            case SMAppServiceStatusNotFound: return L(@"系统未找到此应用的登录项，请使用已安装版本。");
+            default: return L(@"登录启动未启用。此项由 macOS 单独保存，立即生效。");
         }
     }
-    return @"macOS 12 请在系统「用户与群组 → 登录项」中手动管理启动器。";
+    return L(@"macOS 12 请在系统「用户与群组 → 登录项」中手动管理启动器。");
 }
 - (void)manageLoginItem:(id)sender {
     if (@available(macOS 13.0, *)) {
-        if (SMAppService.mainAppService.status == SMAppServiceStatusRequiresApproval) { [SMAppService openSystemSettingsLoginItems]; return; }
+        if (SMAppService.mainAppService.status == SMAppServiceStatusRequiresApproval) { [SMAppService openSystemSettingsLoginItems]; [self renderSettings]; return; }
         NSString *path = NSBundle.mainBundle.bundlePath;
         if (![path isEqual:@"/Applications/Claude 启动器.app"] && ![path isEqual:[NSHomeDirectory() stringByAppendingPathComponent:@"Applications/Claude 启动器.app"]]) {
-            [self alert:@"请使用已安装的启动器" detail:@"登录启动只为应用程序文件夹中的正式副本启用，避免登录时运行临时开发版本。请安装后再设置。"]; return;
+            [self alert:L(@"请使用已安装的启动器") detail:L(@"登录启动只为应用程序文件夹中的正式副本启用，避免登录时运行临时开发版本。请安装后再设置。")]; [self renderSettings]; return;
         }
         BOOL enabled = SMAppService.mainAppService.status == SMAppServiceStatusEnabled;
-        NSAlert *alert = [NSAlert new]; alert.messageText = enabled ? @"关闭启动器登录启动？" : @"开启启动器登录启动？";
-        alert.informativeText = @"只更改本启动器在 macOS 中的登录项，立即生效。不自动启动任何 Claude 账号。";
-        [alert addButtonWithTitle:@"取消"]; [alert addButtonWithTitle:enabled ? @"关闭登录启动" : @"开启登录启动"];
-        if ([alert runModal] != NSAlertSecondButtonReturn) return;
         NSError *error = nil; BOOL ok = enabled ? [SMAppService.mainAppService unregisterAndReturnError:&error] : [SMAppService.mainAppService registerAndReturnError:&error];
-        if (!ok) [self alert:@"登录启动设置失败" detail:error.localizedDescription ?: @"请到 macOS 登录项中核对授权状态。"];
+        if (!ok) [self alert:L(@"登录启动设置失败") detail:error.localizedDescription ?: L(@"请到 macOS 登录项中核对授权状态。")];
         [self renderSettings]; self.settingsFeedback.stringValue = [self loginItemDescription];
     } else [NSWorkspace.sharedWorkspace openURL:[NSURL URLWithString:@"x-apple.systempreferences:com.apple.preferences.users"]];
 }
 - (void)copySupportPath:(id)sender {
     [NSPasteboard.generalPasteboard clearContents]; [NSPasteboard.generalPasteboard setString:[NSHomeDirectory() stringByAppendingPathComponent:@"Library/Application Support/Claude Launcher"] forType:NSPasteboardTypeString];
-    self.settingsFeedback.stringValue = @"管理器数据路径已复制";
+    self.settingsFeedback.stringValue = L(@"管理器数据路径已复制");
 }
 - (void)exportSettings:(id)sender {
-    NSSavePanel *panel = NSSavePanel.savePanel; panel.nameFieldStringValue = @"启动器设置.json";
+    NSSavePanel *panel = NSSavePanel.savePanel; panel.nameFieldStringValue = L(@"启动器设置.json");
     if ([panel runModal] != NSModalResponseOK) return;
     NSError *error = nil; NSData *data = [NSJSONSerialization dataWithJSONObject:@{@"version":@1,@"settings":self.settings} options:NSJSONWritingPrettyPrinted|NSJSONWritingSortedKeys error:&error];
-    if (!data || ![data writeToURL:panel.URL options:NSDataWritingAtomic error:&error]) [self alert:@"导出失败" detail:error.localizedDescription ?: @"无法写入目标文件。"];
-    else self.settingsFeedback.stringValue = @"已导出保存的设置，不含账号或凭据";
+    if (!data || ![data writeToURL:panel.URL options:NSDataWritingAtomic error:&error]) [self alert:L(@"导出失败") detail:error.localizedDescription ?: L(@"无法写入目标文件。")];
+    else self.settingsFeedback.stringValue = L(@"已导出保存的设置，不含账号或凭据");
 }
 - (void)importSettings:(id)sender {
     NSOpenPanel *panel = NSOpenPanel.openPanel; panel.allowedContentTypes = @[UTTypeJSON]; panel.allowsMultipleSelection = NO;
@@ -1629,31 +1657,31 @@ static const unsigned CardFill = 0xFFFCF7;
     NSNumber *size = nil; [panel.URL getResourceValue:&size forKey:NSURLFileSizeKey error:nil];
     NSData *data = size.unsignedLongLongValue <= 65536 ? [NSData dataWithContentsOfURL:panel.URL] : nil;
     NSDictionary *next = ImportedSettings(data, self.settings);
-    if (!next) { [self alert:@"无法导入" detail:@"文件不是启动器导出的设置（需要 version 1，且不超过 64 KB）。当前设置未改变。"]; return; }
-    NSDictionary *names = @{@"closeToBackground":@"关闭窗口后继续运行",@"showMenuBar":@"菜单栏图标",@"rememberPage":@"恢复上次页面",@"startPage":@"启动页面",
-                            @"restoreMinimized":@"恢复最小化窗口",@"refreshInterval":@"刷新间隔",@"showArtwork":@"水墨插画",@"showUsageHistory":@"本地界面用量",
-                            @"logLimit":@"日志上限",@"localNotifications":@"窗口内提示",@"notificationSound":@"提示音",@"allowUpdates":@"检查 GitHub 更新（联网）",
-                            @"usageAlert":@"用量提醒阈值",@"globalHotkeys":@"全局快捷键",@"theme":@"主题"};
+    if (!next) { [self alert:L(@"无法导入") detail:L(@"文件不是启动器导出的设置（需要 version 1，且不超过 64 KB）。当前设置未改变。")]; return; }
+    NSDictionary *names = @{@"closeToBackground":L(@"关闭窗口后继续运行"),@"showMenuBar":L(@"菜单栏图标"),@"rememberPage":L(@"恢复上次页面"),@"startPage":L(@"启动页面"),
+                            @"restoreMinimized":L(@"恢复最小化窗口"),@"refreshInterval":L(@"刷新间隔"),@"showArtwork":L(@"水墨插画"),@"showUsageHistory":L(@"本地界面用量"),
+                            @"logLimit":L(@"日志上限"),@"localNotifications":L(@"窗口内提示"),@"notificationSound":L(@"提示音"),@"allowUpdates":L(@"检查 GitHub 更新（联网）"),
+                            @"usageAlert":L(@"用量提醒阈值"),@"globalHotkeys":L(@"全局快捷键"),@"theme":L(@"主题"),@"language":L(@"界面语言")};
     NSMutableArray *changes = [NSMutableArray array];
     for (NSString *key in [next.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
         if ([next[key] isEqual:self.settings[key]]) continue;
         [changes addObject:[NSString stringWithFormat:@"• %@：%@ → %@",names[key] ?: key,self.settings[key],next[key]]];
     }
-    if (!changes.count) { self.settingsFeedback.stringValue = @"导入的设置与当前一致，未改变"; return; }
-    NSAlert *confirm = [NSAlert new]; confirm.messageText = [NSString stringWithFormat:@"导入 %lu 项设置变更？",(unsigned long)changes.count];
-    confirm.informativeText = [[changes componentsJoinedByString:@"\n"] stringByAppendingString:@"\n\n（1 为开启、0 为关闭）确认后立即保存并生效，不涉及账号、别名、项目或登录保护。"];
-    [confirm addButtonWithTitle:@"取消"]; [confirm addButtonWithTitle:@"导入"];
+    if (!changes.count) { self.settingsFeedback.stringValue = L(@"导入的设置与当前一致，未改变"); return; }
+    NSAlert *confirm = [NSAlert new]; confirm.messageText = [NSString stringWithFormat:L(@"导入 %lu 项设置变更？"),(unsigned long)changes.count];
+    confirm.informativeText = [[changes componentsJoinedByString:@"\n"] stringByAppendingString:L(@"\n\n（1 为开启、0 为关闭）确认后立即保存并生效，不涉及账号、别名、项目或登录保护。")];
+    [confirm addButtonWithTitle:L(@"取消")]; [confirm addButtonWithTitle:L(@"导入")];
     if ([confirm runModal] != NSAlertSecondButtonReturn) return;
     self.settingsDraft = next.mutableCopy;
     if (![self saveSettings:nil]) { self.settingsDraft = self.settings.mutableCopy; [self renderSettings]; return; }
-    self.settingsFeedback.stringValue = [NSString stringWithFormat:@"已导入 %lu 项设置",(unsigned long)changes.count];
+    self.settingsFeedback.stringValue = [NSString stringWithFormat:L(@"已导入 %lu 项设置"),(unsigned long)changes.count];
 }
 - (void)localHelp:(id)sender {
-    [self alert:@"本地使用帮助" detail:@"实例管理：手动启动或打开指定账号；更多菜单可复制路径及管理登录保护。\n账号管理：搜索、筛选、设置本地别名，勾选后复制路径。\n项目管理：维护公共目录入口；所有写入均需明确操作。\n日志记录：筛选、搜索、翻页、导出当前结果；重启和更新后保留。\n系统设置：更改即时保存并生效，恢复默认不会处理账号数据。\n\n启动器不查询 Claude 服务、不读取凭据，不控制官方客户端自身正常联网。"];
+    [self alert:L(@"本地使用帮助") detail:L(@"实例管理：手动启动或打开指定账号；更多菜单可复制路径及管理登录保护。\n账号管理：搜索、筛选、设置本地别名，勾选后复制路径。\n项目管理：维护公共目录入口；所有写入均需明确操作。\n日志记录：筛选、搜索、翻页、导出当前结果；重启和更新后保留。\n系统设置：更改即时保存并生效，恢复默认不会处理账号数据。\n\n启动器不查询 Claude 服务、不读取凭据，不控制官方客户端自身正常联网。")];
 }
 - (void)copyDiagnostics:(id)sender {
     NSString *text = [NSString stringWithFormat:@"Claude Launcher %@ (%@)\nmacOS %@\nAccessibility: %@\nNetwork: manual GitHub updates %@\nClaude/Anthropic requests: prohibited",[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"],[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleVersion"],NSProcessInfo.processInfo.operatingSystemVersionString,AXIsProcessTrusted() ? @"granted" : @"not granted",[self.settings[@"allowUpdates"] boolValue] ? @"enabled" : @"disabled"];
-    [NSPasteboard.generalPasteboard clearContents]; [NSPasteboard.generalPasteboard setString:text forType:NSPasteboardTypeString]; self.settingsFeedback.stringValue = @"基础诊断已复制，不含账号、路径或日志";
+    [NSPasteboard.generalPasteboard clearContents]; [NSPasteboard.generalPasteboard setString:text forType:NSPasteboardTypeString]; self.settingsFeedback.stringValue = L(@"基础诊断已复制，不含账号、路径或日志");
 }
 - (void)showLocalNotice:(NSString *)text {
     if (![self.settings[@"localNotifications"] boolValue]) return;
@@ -1663,36 +1691,37 @@ static const unsigned CardFill = 0xFFFCF7;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW,5*NSEC_PER_SEC),dispatch_get_main_queue(),^{ if (generation == self.toastGeneration) self.toast.hidden = YES; });
 }
 - (void)testNotification:(id)sender {
-    [self showLocalNotice:@"本地通知测试：设置已生效，没有发送网络请求。"];
-    self.settingsFeedback.stringValue = [self.settings[@"localNotifications"] boolValue] ? @"已按当前设置显示提示" : @"窗口内提示已关闭；开启后可测试";
+    [self showLocalNotice:L(@"本地通知测试：设置已生效，没有发送网络请求。")];
+    self.settingsFeedback.stringValue = [self.settings[@"localNotifications"] boolValue] ? L(@"已按当前设置显示提示") : L(@"窗口内提示已关闭；开启后可测试");
 }
 - (void)addLog:(NSString *)text {
     if (self.headless) printf("[log] %s\n",text.UTF8String);
     if (!self.logEntries) self.logEntries = [NSMutableArray array];
     NSDateFormatter *clock = [NSDateFormatter new]; clock.dateFormat = @"yyyy-MM-dd HH:mm:ss";
     NSString *level = @"信息";
-    for (NSString *word in @[@"失败",@"错误",@"未通过",@"无法"]) if ([text containsString:word]) level = @"错误";
-    if ([level isEqual:@"信息"]) for (NSString *word in @[@"超时",@"保护",@"未确认",@"已变化",@"多个"]) if ([text containsString:word]) level = @"警告";
+    // Stored level and instance stay as fixed Chinese codes; keywords cover both interface languages.
+    for (NSString *word in @[@"失败",@"错误",@"未通过",@"无法",@"fail",@"error",@"cannot",@"could not",@"not passed"]) if ([text localizedCaseInsensitiveContainsString:word]) level = @"错误";
+    if ([level isEqual:@"信息"]) for (NSString *word in @[@"超时",@"保护",@"未确认",@"已变化",@"多个",@"timed out",@"protection",@"unconfirmed",@"changed",@"multiple"]) if ([text localizedCaseInsensitiveContainsString:word]) level = @"警告";
     NSString *instance = @"系统";
-    NSRange match = [text rangeOfString:@"账号 [0-9]{2}" options:NSRegularExpressionSearch];
-    if (match.location != NSNotFound) instance = [NSString stringWithFormat:@"Claude %ld",(long)[text substringWithRange:NSMakeRange(match.location+3,2)].integerValue];
+    NSTextCheckingResult *match = [[NSRegularExpression regularExpressionWithPattern:@"(?:账号|Account) ([0-9]{2})" options:0 error:nil] firstMatchInString:text options:0 range:NSMakeRange(0,text.length)];
+    if (match) instance = [NSString stringWithFormat:@"Claude %ld",(long)[text substringWithRange:[match rangeAtIndex:1]].integerValue];
     [self.logEntries insertObject:@{@"date":NSDate.date,@"time":[clock stringFromDate:[NSDate date]],@"level":level,@"instance":instance,@"text":text} atIndex:0];
     [self trimLogs]; [self saveLogs]; [self reloadLogs];
     if (![level isEqual:@"信息"]) [self showLocalNotice:text];
 }
 - (void)clearLogs:(id)sender {
-    NSAlert *alert = [NSAlert new]; alert.messageText = @"清空启动器日志？"; alert.informativeText = @"仅清空启动器自己保存的记录（Claude Launcher 目录中的 launcher-log.json），不读取或删除 Claude 日志。";
-    [alert addButtonWithTitle:@"取消"]; [alert addButtonWithTitle:@"清空"];
+    NSAlert *alert = [NSAlert new]; alert.messageText = L(@"清空启动器日志？"); alert.informativeText = L(@"仅清空启动器自己保存的记录（Claude Launcher 目录中的 launcher-log.json），不读取或删除 Claude 日志。");
+    [alert addButtonWithTitle:L(@"取消")]; [alert addButtonWithTitle:L(@"清空")];
     if ([alert runModal] != NSAlertSecondButtonReturn) return;
     [self.logEntries removeAllObjects]; [self saveLogs]; self.logPage = 0; [self reloadLogs];
 }
 - (void)exportLogs:(id)sender {
-    NSSavePanel *panel = [NSSavePanel savePanel]; panel.nameFieldStringValue = @"Claude 启动器日志.txt";
+    NSSavePanel *panel = [NSSavePanel savePanel]; panel.nameFieldStringValue = L(@"Claude 启动器日志.txt");
     if ([panel runModal] != NSModalResponseOK) return;
     NSMutableString *out = [NSMutableString string];
     for (NSDictionary *entry in [self filteredLogEntries].reverseObjectEnumerator) [out appendFormat:@"%@\t%@\t%@\t%@\n",entry[@"time"],entry[@"level"],entry[@"instance"],entry[@"text"]];
     NSError *error = nil;
-    if (![out writeToURL:panel.URL atomically:YES encoding:NSUTF8StringEncoding error:&error]) [self alert:@"导出失败" detail:error.localizedDescription];
+    if (![out writeToURL:panel.URL atomically:YES encoding:NSUTF8StringEncoding error:&error]) [self alert:L(@"导出失败") detail:error.localizedDescription];
 }
 // ---- Updates: explicit opt-in, fixed GitHub source, then manual download. ----
 - (NSArray<NSDictionary *> *)updateSources {
@@ -1703,10 +1732,10 @@ static const unsigned CardFill = 0xFFFCF7;
 }
 - (void)runUpdateCheck:(BOOL)manual {
     if (!NetworkEnabled) {
-        if (manual) [self alert:@"联网更新未启用" detail:@"如需检查启动器更新，请在系统设置 → 关于中启用 GitHub 更新并保存，然后再次点击检查更新。不会访问 Claude 或 Anthropic。"];
+        if (manual) [self alert:L(@"联网更新未启用") detail:L(@"如需检查启动器更新，请在系统设置 → 关于中启用 GitHub 更新并保存，然后再次点击检查更新。不会访问 Claude 或 Anthropic。")];
         return;
     }
-    if (self.updating) { if (manual) [self alert:@"正在检查更新" detail:@"请稍候。"]; return; }
+    if (self.updating) { if (manual) [self alert:L(@"正在检查更新") detail:L(@"请稍候。")]; return; }
     self.updating = YES; self.updateCancelled = NO;
     [NSUserDefaults.standardUserDefaults setObject:[NSDate date] forKey:@"lastUpdateCheck"];
     [self checkAllSources:manual];
@@ -1716,13 +1745,13 @@ static const unsigned CardFill = 0xFFFCF7;
     if (self.headless) return;
     [self closeUpdateProgress];
     NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,460,212) styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable backing:NSBackingStoreBuffered defer:NO];
-    window.title = [NSString stringWithFormat:@"更新到 %@",version]; window.releasedWhenClosed = NO; window.delegate = self;
+    window.title = [NSString stringWithFormat:L(@"更新到 %@"),version]; window.releasedWhenClosed = NO; window.delegate = self;
     Canvas *content = [[Canvas alloc] initWithFrame:NSMakeRect(0,0,460,212)];
     content.paint = ^(NSRect bounds) { [Hex(0xFAF6F0) setFill]; NSRectFill(bounds); };
     window.contentView = content;
-    [content addSubview:Text([NSString stringWithFormat:@"正在更新 Claude 启动器到 %@",version], NSMakeRect(24,20,412,24), [NSFont systemFontOfSize:16 weight:NSFontWeightSemibold], Hex(0x2B2622))];
+    [content addSubview:Text([NSString stringWithFormat:L(@"正在更新 Claude 启动器到 %@"),version], NSMakeRect(24,20,412,24), [NSFont systemFontOfSize:16 weight:NSFontWeightSemibold], Hex(0x2B2622))];
     NSMutableArray *steps = [NSMutableArray array];
-    NSArray *names = @[@"① 下载",@"② 校验",@"③ 安装"];
+    NSArray *names = @[L(@"① 下载"),L(@"② 校验"),L(@"③ 安装")];
     for (NSUInteger i = 0; i < names.count; i++) {
         NSTextField *step = Text(names[i], NSMakeRect(24+i*140,58,130,20), [NSFont systemFontOfSize:13 weight:NSFontWeightMedium], Hex(0xA59B90));
         [content addSubview:step]; [steps addObject:step];
@@ -1734,7 +1763,7 @@ static const unsigned CardFill = 0xFFFCF7;
     self.updateDetail = Text(@"", NSMakeRect(24,116,412,40), [NSFont systemFontOfSize:12], Hex(0x6E655C));
     self.updateDetail.maximumNumberOfLines = 2; self.updateDetail.lineBreakMode = NSLineBreakByWordWrapping;
     [content addSubview:self.updateDetail];
-    self.updateCancel = [NSButton buttonWithTitle:@"取消" target:self action:@selector(cancelUpdate:)];
+    self.updateCancel = [NSButton buttonWithTitle:L(@"取消") target:self action:@selector(cancelUpdate:)];
     self.updateCancel.frame = NSMakeRect(356,164,80,30); [content addSubview:self.updateCancel];
     self.updateWindow = window; [window center];
     if (!self.snapshotMode) { [window makeKeyAndOrderFront:nil]; [NSApp activateIgnoringOtherApps:YES]; }
@@ -1763,7 +1792,7 @@ static const unsigned CardFill = 0xFFFCF7;
     self.updateCancelled = YES; self.updating = NO;
     [self.updateTask cancel]; self.updateTask = nil;
     [self closeUpdateProgress];
-    [self addLog:@"已取消更新，未做任何改动。"];
+    [self addLog:L(@"已取消更新，未做任何改动。")];
 }
 - (BOOL)windowShouldClose:(NSWindow *)sender {
     if (sender != self.updateWindow) return YES;
@@ -1774,12 +1803,12 @@ static const unsigned CardFill = 0xFFFCF7;
     self.updating = NO;
     [self closeUpdateProgress];
     NSString *detail = [failures componentsJoinedByString:@"\n"];
-    [self addLog:[@"检查更新失败：" stringByAppendingString:[failures componentsJoinedByString:@"；"]]];
+    [self addLog:[L(@"检查更新失败：") stringByAppendingString:[failures componentsJoinedByString:@"；"]]];
     if (self.headless) exit(1);
     if (!manual) return;
-    NSAlert *alert = [NSAlert new]; alert.messageText = @"自动更新失败";
-    alert.informativeText = [detail stringByAppendingString:@"\n\n可以前往 GitHub 手动下载最新版本。"];
-    [alert addButtonWithTitle:@"前往 GitHub 下载"]; [alert addButtonWithTitle:@"关闭"];
+    NSAlert *alert = [NSAlert new]; alert.messageText = L(@"自动更新失败");
+    alert.informativeText = [detail stringByAppendingString:L(@"\n\n可以前往 GitHub 手动下载最新版本。")];
+    [alert addButtonWithTitle:L(@"前往 GitHub 下载")]; [alert addButtonWithTitle:L(@"关闭")];
     if ([alert runModal] == NSAlertFirstButtonReturn) [NSWorkspace.sharedWorkspace openURL:[NSURL URLWithString:ReleasesPage]];
 }
 // Ask every source at once and compare: a lagging self-hosted copy must not hide a newer release on GitHub.
@@ -1794,7 +1823,7 @@ static const unsigned CardFill = 0xFFFCF7;
         Fetch([NSURL URLWithString:[source[@"base"] stringByAppendingString:@"latest-macos.json"]], [source[@"github"] boolValue], 16384, 30, nil, ^(NSData *data, NSString *failure) {
             NSString *invalid = failure;
             NSDictionary *manifest = data ? VerifyManifest(data, ReleaseKeys(), &invalid) : nil;
-            results[i] = manifest ? @{@"source":source,@"manifest":manifest} : @{@"source":source,@"failure":invalid ?: @"未知错误"};
+            results[i] = manifest ? @{@"source":source,@"manifest":manifest} : @{@"source":source,@"failure":invalid ?: L(@"未知错误")};
             dispatch_group_leave(group);
         });
     }
@@ -1814,21 +1843,21 @@ static const unsigned CardFill = 0xFFFCF7;
         NSString *current = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"0";
         if (CompareVersions(manifest[@"version"],current) != NSOrderedDescending) {
             self.updating = NO;
-            if (manual) [self alert:@"已是最新版本" detail:[NSString stringWithFormat:@"当前版本 %@。",current]];
+            if (manual) [self alert:L(@"已是最新版本") detail:[NSString stringWithFormat:L(@"当前版本 %@。"),current]];
             return;
         }
         NSArray *minimum = [manifest[@"minimumOS"] componentsSeparatedByString:@"."];
         NSOperatingSystemVersion need = {[minimum[0] integerValue], minimum.count > 1 ? [minimum[1] integerValue] : 0, minimum.count > 2 ? [minimum[2] integerValue] : 0};
         if (![NSProcessInfo.processInfo isOperatingSystemAtLeastVersion:need]) {
             self.updating = NO;
-            if (manual) [self alert:@"新版本需要更高的系统版本" detail:[NSString stringWithFormat:@"%@ 需要 macOS %@ 及以上。",manifest[@"version"],manifest[@"minimumOS"]]];
+            if (manual) [self alert:L(@"新版本需要更高的系统版本") detail:[NSString stringWithFormat:L(@"%@ 需要 macOS %@ 及以上。"),manifest[@"version"],manifest[@"minimumOS"]]];
             return;
         }
         NSString *blocker = InstallBlocker(NSBundle.mainBundle.bundlePath);
         NSAlert *offer = [NSAlert new];
-        offer.messageText = [NSString stringWithFormat:@"发现新版本 %@",manifest[@"version"]];
-        offer.informativeText = blocker ?: [NSString stringWithFormat:@"当前版本 %@。更新会先校验安装包，再退出启动器、替换旧版并重新打开；Claude 实例和账号数据不受影响。",current];
-        [offer addButtonWithTitle:blocker ? @"前往 GitHub 下载" : @"立即更新"]; [offer addButtonWithTitle:@"稍后"];
+        offer.messageText = [NSString stringWithFormat:L(@"发现新版本 %@"),manifest[@"version"]];
+        offer.informativeText = blocker ?: [NSString stringWithFormat:L(@"当前版本 %@。更新会先校验安装包，再退出启动器、替换旧版并重新打开；Claude 实例和账号数据不受影响。"),current];
+        [offer addButtonWithTitle:blocker ? L(@"前往 GitHub 下载") : L(@"立即更新")]; [offer addButtonWithTitle:L(@"稍后")];
         if (self.headless) { if (blocker) { printf("[result] %s\n",blocker.UTF8String); exit(4); } printf("[offer] %s from %s, accepted\n",[manifest[@"version"] UTF8String],[source[@"name"] UTF8String]); }
         else if ([offer runModal] != NSAlertFirstButtonReturn) { self.updating = NO; return; }
         if (blocker) { self.updating = NO; [NSWorkspace.sharedWorkspace openURL:[NSURL URLWithString:ReleasesPage]]; return; }
@@ -1840,10 +1869,10 @@ static const unsigned CardFill = 0xFFFCF7;
     if (self.updateCancelled) return;
     if (index >= offers.count) { [self updateFailed:failures manual:YES]; return; }
     NSDictionary *source = offers[index][@"source"], *manifest = offers[index][@"manifest"];
-    [self addLog:[NSString stringWithFormat:@"正在从%@下载 %@",source[@"name"],manifest[@"file"]]];
+    [self addLog:[NSString stringWithFormat:L(@"正在从%@下载 %@"),source[@"name"],manifest[@"file"]]];
     if (index == 0) [self showUpdateProgress:manifest[@"version"]];
     double total = [manifest[@"size"] doubleValue];
-    [self updateStep:0 detail:[NSString stringWithFormat:@"从 %@ 下载 · 0 / %.1f MB",source[@"name"],total/1048576] progress:0];
+    [self updateStep:0 detail:[NSString stringWithFormat:L(@"从 %@ 下载 · 0 / %.1f MB"),source[@"name"],total/1048576] progress:0];
     self.updateTask = Fetch([NSURL URLWithString:[source[@"base"] stringByAppendingString:[manifest[@"file"] stringByAddingPercentEncodingWithAllowedCharacters:NSCharacterSet.URLPathAllowedCharacterSet]]], [source[@"github"] boolValue], UpdateSizeLimit, 300, ^(long long received, long long expected) {
         if (self.updateCancelled) return;
         if (self.headless && self.testCancel) {
@@ -1851,11 +1880,11 @@ static const unsigned CardFill = 0xFFFCF7;
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(2*NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ exit(0); }); return;
         }
         double size = expected > 0 ? expected : total;
-        [self updateStep:0 detail:[NSString stringWithFormat:@"从 %@ 下载 · %.1f / %.1f MB · %.0f%%",source[@"name"],received/1048576.0,size/1048576,size > 0 ? 100.0*received/size : 0] progress:size > 0 ? received/size : 0];
+        [self updateStep:0 detail:[NSString stringWithFormat:L(@"从 %@ 下载 · %.1f / %.1f MB · %.0f%%"),source[@"name"],received/1048576.0,size/1048576,size > 0 ? 100.0*received/size : 0] progress:size > 0 ? received/size : 0];
     }, ^(NSData *package, NSString *downloadFailure) {
         self.updateTask = nil;
         if (self.updateCancelled) return;
-        NSString *problem = downloadFailure ?: (long long)package.length != [manifest[@"size"] longLongValue] || ![SHA256Hex(package) isEqual:manifest[@"sha256"]] ? @"安装包大小或 SHA-256 不匹配，已拒绝。" : nil;
+        NSString *problem = downloadFailure ?: (long long)package.length != [manifest[@"size"] longLongValue] || ![SHA256Hex(package) isEqual:manifest[@"sha256"]] ? L(@"安装包大小或 SHA-256 不匹配，已拒绝。") : nil;
         if (problem) { [self downloadOffer:offers index:index+1 failures:[failures arrayByAddingObject:[NSString stringWithFormat:@"%@：%@",source[@"name"],problem]]]; return; }
         [self installPackage:package version:manifest[@"version"]];
     });
@@ -1866,18 +1895,18 @@ static const unsigned CardFill = 0xFFFCF7;
     NSString *staged = [folder stringByAppendingPathComponent:[NSString stringWithFormat:@".%@-update-%@.app",current.lastPathComponent.stringByDeletingPathExtension,token]];
     NSString *backup = [folder stringByAppendingPathComponent:[NSString stringWithFormat:@".%@-backup-%@.app",current.lastPathComponent.stringByDeletingPathExtension,token]];
     NSString *helper = [NSBundle.mainBundle pathForResource:@"update-helper" ofType:@"sh"];
-    [self updateStep:1 detail:@"正在校验安装包：签名、版本与证书…" progress:-1];
+    [self updateStep:1 detail:L(@"正在校验安装包：签名、版本与证书…") progress:-1];
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0), ^{
         NSFileManager *fm = NSFileManager.defaultManager;
         NSString *work = [NSTemporaryDirectory() stringByAppendingPathComponent:[@"claude-launcher-update-" stringByAppendingString:token]];
         NSString *dmg = [work stringByAppendingPathComponent:@"update.dmg"], *mount = [work stringByAppendingPathComponent:@"mount"], *script = [work stringByAppendingPathComponent:@"update-helper.sh"];
         NSString *failure = nil; BOOL mounted = NO;
-        if (!helper || ![fm createDirectoryAtPath:mount withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions:@0700} error:nil] || ![package writeToFile:dmg atomically:YES] || ![fm copyItemAtPath:helper toPath:script error:nil]) failure = @"无法准备临时文件。";
+        if (!helper || ![fm createDirectoryAtPath:mount withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions:@0700} error:nil] || ![package writeToFile:dmg atomically:YES] || ![fm copyItemAtPath:helper toPath:script error:nil]) failure = L(@"无法准备临时文件。");
         if (!failure) { failure = RunTool(@"/usr/bin/hdiutil", @[@"attach",@"-nobrowse",@"-readonly",@"-noautoopen",@"-mountpoint",mount,dmg], NULL); mounted = !failure; }
         NSString *candidate = [mount stringByAppendingPathComponent:current.lastPathComponent];
         if (!failure) {
             NSDictionary *info = [NSDictionary dictionaryWithContentsOfFile:[candidate stringByAppendingPathComponent:@"Contents/Info.plist"]];
-            if (![info[@"CFBundleIdentifier"] isEqual:BundleID] || ![info[@"CFBundleShortVersionString"] isEqual:version]) failure = @"安装包中的应用标识或版本与清单不符。";
+            if (![info[@"CFBundleIdentifier"] isEqual:BundleID] || ![info[@"CFBundleShortVersionString"] isEqual:version]) failure = L(@"安装包中的应用标识或版本与清单不符。");
         }
         if (!failure) failure = SameSigner(candidate);
         if (!failure) failure = RunTool(@"/usr/bin/ditto", @[candidate,staged], NULL);
@@ -1888,15 +1917,15 @@ static const unsigned CardFill = 0xFFFCF7;
             if (self.updateCancelled) { [fm removeItemAtPath:staged error:nil]; [fm removeItemAtPath:work error:nil]; return; }
             if (failure) { [fm removeItemAtPath:work error:nil]; [self updateFailed:@[failure] manual:YES]; return; }
             // Point of no return: cancel is disabled, the launcher quits and the helper replaces it.
-            [self updateStep:2 detail:@"校验通过。启动器即将关闭，安装完成后会自动重新打开。Claude 不受影响。" progress:-1];
+            [self updateStep:2 detail:L(@"校验通过。启动器即将关闭，安装完成后会自动重新打开。Claude 不受影响。") progress:-1];
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)((self.headless ? 0 : 2)*NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
                 NSTask *task = [NSTask new]; task.executableURL = [NSURL fileURLWithPath:@"/bin/zsh"];
                 task.arguments = @[script,[NSString stringWithFormat:@"%d",getpid()],current,staged,backup];
                 NSError *error = nil;
-                if (![task launchAndReturnError:&error]) { [fm removeItemAtPath:staged error:nil]; [self updateFailed:@[error.localizedDescription ?: @"无法启动安装步骤。"] manual:YES]; return; }
+                if (![task launchAndReturnError:&error]) { [fm removeItemAtPath:staged error:nil]; [self updateFailed:@[error.localizedDescription ?: L(@"无法启动安装步骤。")] manual:YES]; return; }
                 [NSUserDefaults.standardUserDefaults setObject:backup forKey:@"updateBackupPath"];
                 [NSUserDefaults.standardUserDefaults synchronize];
-                [self addLog:[NSString stringWithFormat:@"更新包校验通过，退出并安装 %@",version]];
+                [self addLog:[NSString stringWithFormat:L(@"更新包校验通过，退出并安装 %@"),version]];
                 [NSApp terminate:nil];
             });
         });
@@ -1911,12 +1940,12 @@ static const unsigned CardFill = 0xFFFCF7;
     NSString *prefix = [NSString stringWithFormat:@".%@-backup-",current.lastPathComponent.stringByDeletingPathExtension];
     if (![backup.stringByDeletingLastPathComponent isEqual:current.stringByDeletingLastPathComponent] || ![backup.lastPathComponent hasPrefix:prefix] || ![backup.pathExtension isEqual:@"app"]) return;
     if ([NSFileManager.defaultManager fileExistsAtPath:backup] && [NSFileManager.defaultManager trashItemAtURL:[NSURL fileURLWithPath:backup] resultingItemURL:nil error:nil])
-        [self addLog:[NSString stringWithFormat:@"已更新到 %@，旧版本已移到废纸篓",[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"]]];
+        [self addLog:[NSString stringWithFormat:L(@"已更新到 %@，旧版本已移到废纸篓"),[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"]]];
 }
 - (void)makeWindow {
     [self applyTheme];
     self.window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,1080,720) styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskFullSizeContentView backing:NSBackingStoreBuffered defer:NO];
-    self.window.title = @"Claude 多开启动器"; self.window.titlebarAppearsTransparent = YES; self.window.titleVisibility = NSWindowTitleHidden;
+    self.window.title = L(@"Claude 多开启动器"); self.window.titlebarAppearsTransparent = YES; self.window.titleVisibility = NSWindowTitleHidden;
     self.window.movableByWindowBackground = YES; self.window.delegate = self; self.window.releasedWhenClosed = NO; [self.window center];
     NSColor *paper = Hex(0xFAF6F0), *ink = Hex(0x2B2622), *muted = Hex(0x6E655C);
     Canvas *root = [[Canvas alloc] initWithFrame:NSMakeRect(0,0,1080,720)];
@@ -1944,11 +1973,11 @@ static const unsigned CardFill = 0xFFFCF7;
     [root addSubview:sidebar]; self.sidebar = sidebar;
     NSImageView *logo = [[NSImageView alloc] initWithFrame:NSMakeRect(32,54,58,58)]; logo.image = icon; [sidebar addSubview:logo];
     [sidebar addSubview:Text(@"Claude", NSMakeRect(98,48,170,48), SerifFont(40), ink)];
-    [sidebar addSubview:Text(@"多开启动器", NSMakeRect(100,96,160,24), [NSFont systemFontOfSize:17 weight:NSFontWeightMedium], ink)];
+    [sidebar addSubview:Text(L(@"多开启动器"), NSMakeRect(100,96,160,24), [NSFont systemFontOfSize:17 weight:NSFontWeightMedium], ink)];
     NSTextField *edition = Text(@"", NSMakeRect(101,124,170,14), [NSFont systemFontOfSize:9], muted);
     edition.attributedStringValue = [[NSAttributedString alloc] initWithString:[NSString stringWithFormat:@"DESKTOP · V%@",[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"DEV"] attributes:@{NSKernAttributeName:@2,NSFontAttributeName:[NSFont systemFontOfSize:9],NSForegroundColorAttributeName:muted}];
     [sidebar addSubview:edition];
-    NSArray *nav = @[@[@"实例管理",@"briefcase"],@[@"账号管理",@"person.2"],@[@"项目管理",@"folder"],@[@"日志记录",@"doc.text"],@[@"系统设置",@"gearshape"]];
+    NSArray *nav = @[@[L(@"实例管理"),@"briefcase"],@[L(@"账号管理"),@"person.2"],@[L(@"项目管理"),@"folder"],@[L(@"日志记录"),@"doc.text"],@[L(@"系统设置"),@"gearshape"]];
     NSMutableArray *items = [NSMutableArray array];
     for (NSUInteger i = 0; i < nav.count; i++) { NSView *item = [self navItem:nav[i][0] symbol:nav[i][1] index:i]; [sidebar addSubview:item]; [items addObject:item]; }
     self.navItems = items;
@@ -1975,10 +2004,10 @@ static const unsigned CardFill = 0xFFFCF7;
         tail.lineWidth = 1.4; tail.lineCapStyle = NSLineCapStyleRound; [[Hex(0xEE9A63) colorWithAlphaComponent:0.5] setStroke]; [tail stroke];
     };
     [main addSubview:instances];
-    NSTextField *slogan = Text(@"让多个 Claude，服务你的不同灵感", NSMakeRect(40,56,420,40), BrushFont(26), Hex(0x3A332D));
+    NSTextField *slogan = Text(L(@"让多个 Claude，服务你的不同灵感"), NSMakeRect(40,56,420,40), BrushFont(26), Hex(0x3A332D));
     slogan.frameCenterRotation = 1.5; [instances addSubview:slogan];
-    self.summaryLabel = Text(@"正在读取状态", NSMakeRect(44,114,300,18), [NSFont systemFontOfSize:12], muted); [instances addSubview:self.summaryLabel];
-    self.createButton = [ActionButton buttonWithTitle:@"+  新建实例" target:self action:@selector(newInstance:)];
+    self.summaryLabel = Text(L(@"正在读取状态"), NSMakeRect(44,114,300,18), [NSFont systemFontOfSize:12], muted); [instances addSubview:self.summaryLabel];
+    self.createButton = [ActionButton buttonWithTitle:L(@"+  新建实例") target:self action:@selector(newInstance:)];
     self.createButton.frame = NSMakeRect(612,52,160,48); self.createButton.bordered = NO; [instances addSubview:self.createButton];
     NSScrollView *list = [[NSScrollView alloc] initWithFrame:NSMakeRect(16,140,776,528)];
     list.drawsBackground = NO; list.contentView.drawsBackground = NO; list.hasVerticalScroller = YES; list.autohidesScrollers = YES; list.scrollerStyle = NSScrollerStyleOverlay;
@@ -1991,11 +2020,11 @@ static const unsigned CardFill = 0xFFFCF7;
         [cardsView addSubview:card]; [self.cards addObject:card]; [self.buttons addObject:card.button]; [self.statuses addObject:card.status];
     }
     list.documentView = cardsView; [instances addSubview:list]; self.cardsView = cardsView;
-    self.emptyHint = Text(@"本机还没有 Claude 账号目录。点击右上角「+ 新建实例」创建第一个。", NSMakeRect(40,180,700,22), [NSFont systemFontOfSize:15], muted);
+    self.emptyHint = Text(L(@"本机还没有 Claude 账号目录。点击右上角「+ 新建实例」创建第一个。"), NSMakeRect(40,180,700,22), [NSFont systemFontOfSize:15], muted);
     self.emptyHint.hidden = YES; [instances addSubview:self.emptyHint];
     self.message = Text(@"", NSMakeRect(24,678,580,32), [NSFont systemFontOfSize:12], muted);
     self.message.maximumNumberOfLines = 2; self.message.lineBreakMode = NSLineBreakByWordWrapping; [instances addSubview:self.message];
-    self.endLoginButton = [NSButton buttonWithTitle:@"结束登录保护" target:self action:@selector(endLogin:)];
+    self.endLoginButton = [NSButton buttonWithTitle:L(@"结束登录保护") target:self action:@selector(endLogin:)];
     self.endLoginButton.frame = NSMakeRect(640,680,140,28); self.endLoginButton.bezelStyle = NSBezelStyleRounded;
     [instances addSubview:self.endLoginButton];
     self.suggestButton = [NSButton buttonWithTitle:@"" target:self action:@selector(switchToSuggested:)];
@@ -2010,19 +2039,19 @@ static const unsigned CardFill = 0xFFFCF7;
     self.pages = @[instances,accounts,projects,logs,settings];
     self.toast = Text(@"",NSMakeRect(308,20,736,26),[NSFont systemFontOfSize:12 weight:NSFontWeightMedium],Hex(0x795539));
     self.toast.hidden = YES; [root addSubview:self.toast];
-    [self addLog:@"启动器已完成初始化"];
+    [self addLog:L(@"启动器已完成初始化")];
     self.message.accessibilityIdentifier = @"launcher-feedback";
     [self showPage:self.page];
     NSMenu *menu = [NSMenu new]; NSMenuItem *appItem = [NSMenuItem new]; [menu addItem:appItem];
     NSMenu *appMenu = [NSMenu new]; appItem.submenu = appMenu;
-    NSMenuItem *show = [appMenu addItemWithTitle:@"显示账号窗口" action:@selector(show:) keyEquivalent:@""]; show.target = self;
-    NSMenuItem *update = [appMenu addItemWithTitle:@"检查更新…" action:@selector(checkForUpdates:) keyEquivalent:@""]; update.target = self;
+    NSMenuItem *show = [appMenu addItemWithTitle:L(@"显示账号窗口") action:@selector(show:) keyEquivalent:@""]; show.target = self;
+    NSMenuItem *update = [appMenu addItemWithTitle:L(@"检查更新…") action:@selector(checkForUpdates:) keyEquivalent:@""]; update.target = self;
     [appMenu addItem:NSMenuItem.separatorItem];
-    [appMenu addItemWithTitle:@"退出 Claude 启动器" action:@selector(terminate:) keyEquivalent:@"q"];
+    [appMenu addItemWithTitle:L(@"退出 Claude 启动器") action:@selector(terminate:) keyEquivalent:@"q"];
     NSMenuItem *accountsItem = [NSMenuItem new]; [menu addItem:accountsItem];
-    NSMenu *accountsMenu = [[NSMenu alloc] initWithTitle:@"账号"]; accountsItem.submenu = accountsMenu;
+    NSMenu *accountsMenu = [[NSMenu alloc] initWithTitle:L(@"账号")]; accountsItem.submenu = accountsMenu;
     for (NSInteger n = 1; n <= 10; n++) {
-        NSMenuItem *item = [accountsMenu addItemWithTitle:[NSString stringWithFormat:@"打开账号 %02ld",(long)n] action:@selector(openFromMenu:) keyEquivalent:[NSString stringWithFormat:@"%ld",(long)(n % 10)]];
+        NSMenuItem *item = [accountsMenu addItemWithTitle:[NSString stringWithFormat:L(@"打开账号 %02ld"),(long)n] action:@selector(openFromMenu:) keyEquivalent:[NSString stringWithFormat:@"%ld",(long)(n % 10)]];
         item.target = self; item.tag = n;
     }
     NSApp.mainMenu = menu;
@@ -2064,7 +2093,7 @@ static const unsigned CardFill = 0xFFFCF7;
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(0.2*NSEC_PER_SEC)),dispatch_get_main_queue(),^{ [weak readNextUsagePopover]; });
         });
         self.usagePopoverObservers[pid] = observer ?: NSNull.null; // Unsupported notifications are not retried by the process timer.
-        if (!observer) [self addLog:[NSString stringWithFormat:@"PID %@ 未提供用量展开通知；仍可在实例页主动读取。",pid]];
+        if (!observer) [self addLog:[NSString stringWithFormat:L(@"PID %@ 未提供用量展开通知；仍可在实例页主动读取。"),pid]];
     }
 }
 - (void)readUsageForPID:(pid_t)triggerPID {
@@ -2082,12 +2111,12 @@ static const unsigned CardFill = 0xFFFCF7;
                 NSArray *pids = processes[@(n)];
                 if (triggerPID && [pids.firstObject intValue] != triggerPID) continue;
                 NSArray *before = UsageIdentity(n,pids);
-                if (!before) { if (pids.count) results[@(n)] = @{@"status":@"账号状态待核对"}; continue; }
+                if (!before) { if (pids.count) results[@(n)] = @{@"status":L(@"账号状态待核对")}; continue; }
                 NSDictionary *result = ReadUsageInterface([pids.firstObject intValue]); observedTimes[@(n)] = NSDate.date;
                 NSString *scanFailure = nil; NSDictionary *afterProcesses = Scan(&scanFailure);
                 NSArray *after = scanFailure ? nil : UsageIdentity(n,afterProcesses[@(n)]);
                 if ([before isEqual:after]) { results[@(n)] = result; identities[@(n)] = after; }
-                else results[@(n)] = @{@"status":@"账号状态变化，待读取"};
+                else results[@(n)] = @{@"status":L(@"账号状态变化，待读取")};
             }
             dispatch_async(dispatch_get_main_queue(), ^{
                 self.readingUsageInterface = NO;
@@ -2117,21 +2146,21 @@ static const unsigned CardFill = 0xFFFCF7;
             NSArray *identity = record[@"identity"]; struct proc_bsdinfo process = {0};
             pid_t pid = [self.processes[@(card.number)].firstObject intValue];
             if (pid != [identity[1] intValue] || proc_pidinfo(pid,PROC_PIDTBSDINFO,0,&process,sizeof(process)) != sizeof(process) ||
-                process.pbi_start_tvsec != [identity[2] unsignedLongLongValue] || process.pbi_start_tvusec != [identity[3] unsignedLongLongValue]) status = @"账号进程变化，待读取";
+                process.pbi_start_tvsec != [identity[2] unsignedLongLongValue] || process.pbi_start_tvusec != [identity[3] unsignedLongLongValue]) status = L(@"账号进程变化，待读取");
         }
-        if (!self.snapshotMode && !self.processes[@(card.number)].count) status = @"Claude 未运行";
-        else if (!self.snapshotMode && !AXIsProcessTrusted()) status = @"需辅助功能权限";
-        if (self.processes[@(card.number)].count > 1) status = @"多个主进程，待核对";
-        if (self.loginAccount) status = @"登录保护中";
-        if (self.scanError) status = @"进程待核对";
-        if (![self.settings[@"showUsageHistory"] boolValue]) status = @"本地用量显示已关闭";
+        if (!self.snapshotMode && !self.processes[@(card.number)].count) status = L(@"Claude 未运行");
+        else if (!self.snapshotMode && !AXIsProcessTrusted()) status = L(@"需辅助功能权限");
+        if (self.processes[@(card.number)].count > 1) status = L(@"多个主进程，待核对");
+        if (self.loginAccount) status = L(@"登录保护中");
+        if (self.scanError) status = L(@"进程待核对");
+        if (![self.settings[@"showUsageHistory"] boolValue]) status = L(@"本地用量显示已关闭");
         // After Claude quits, keep showing this account's last saved observation instead of blanking it.
-        NSDictionary *last = [status isEqual:@"Claude 未运行"] ? self.savedUsageInterface[@(card.number)] : nil;
+        NSDictionary *last = [status isEqual:L(@"Claude 未运行")] ? self.savedUsageInterface[@(card.number)] : nil;
         if (last) record = last;
         BOOL available = [status isEqual:@"界面已读取"] || last;
         card.usageValues = @[(available ? record[@"fh"][@"percent"] : nil) ?: NSNull.null,(available ? record[@"sd"][@"percent"] : nil) ?: NSNull.null];
-        NSString *detail = @"在实例页聚焦／点击，或你手动展开官方 Code 用量弹窗时，读取一次已有控件并记录。不定时轮询、不代点、不调用用量查询，不读官方历史或登录信息。必要时仅启用该官方进程的本机网页辅助功能树，不更改系统权限。弹窗关闭后保留最近周记录和原时间；重启后核对归属再恢复。卡片上的时间是本机观察时间，不是服务器实时额度，两项时间独立；账号或组织变化不沿用缓存。";
-        card.usageSource.stringValue = last ? @"Claude 未运行 · 上次记录" : available ? @"" : status;
+        NSString *detail = L(@"在实例页聚焦／点击，或你手动展开官方 Code 用量弹窗时，读取一次已有控件并记录。不定时轮询、不代点、不调用用量查询，不读官方历史或登录信息。必要时仅启用该官方进程的本机网页辅助功能树，不更改系统权限。弹窗关闭后保留最近周记录和原时间；重启后核对归属再恢复。卡片上的时间是本机观察时间，不是服务器实时额度，两项时间独立；账号或组织变化不沿用缓存。");
+        card.usageSource.stringValue = last ? L(@"Claude 未运行 · 上次记录") : available ? @"" : L(status);
         NSInteger threshold = [self.settings[@"usageAlert"] integerValue];
         if (threshold && available && !last && !card.hidden && [card.usageValues[0] isKindOfClass:NSNumber.class])
             [readings addObject:@[@(card.number),card.usageValues[0],[record[@"fh"][@"reset"] isKindOfClass:NSString.class] ? record[@"fh"][@"reset"] : @""]];
@@ -2140,10 +2169,10 @@ static const unsigned CardFill = 0xFFFCF7;
             NSString *key = row == 0 ? @"fh" : @"sd"; NSDictionary *metric = available ? record[key] : nil;
             id value = card.usageValues[row];
             card.usageLabels[row].stringValue = [value isKindOfClass:NSNumber.class] ? [NSString stringWithFormat:@"%.0f%%",[value doubleValue]] : @"—";
-            card.usageTimes[row].stringValue = UsageInterfaceTimeLabel(metric,now);
-            NSString *specific = metric ? [NSString stringWithFormat:@"%@\n观察时间：%@\n官方重置说明：%@",detail,[NSDateFormatter localizedStringFromDate:metric[@"observedAt"] dateStyle:NSDateFormatterMediumStyle timeStyle:NSDateFormatterMediumStyle],[metric[@"reset"] length] ? metric[@"reset"] : @"未提供"] : detail;
+            card.usageTimes[row].stringValue = L(UsageInterfaceTimeLabel(metric,now));
+            NSString *specific = metric ? [NSString stringWithFormat:L(@"%@\n观察时间：%@\n官方重置说明：%@"),detail,[NSDateFormatter localizedStringFromDate:metric[@"observedAt"] dateStyle:NSDateFormatterMediumStyle timeStyle:NSDateFormatterMediumStyle],[metric[@"reset"] length] ? metric[@"reset"] : L(@"未提供")] : detail;
             card.usageLabels[row].toolTip = specific; card.usageTimes[row].toolTip = specific;
-            card.usageLabels[row].accessibilityLabel = [NSString stringWithFormat:@"%@，%@，观察时间 %@%@",row == 0 ? @"5小时已使用" : @"每周已使用",card.usageLabels[row].stringValue,card.usageTimes[row].stringValue,available ? @"" : [@"，" stringByAppendingString:status]];
+            card.usageLabels[row].accessibilityLabel = [NSString stringWithFormat:L(@"%@，%@，观察时间 %@%@"),row == 0 ? L(@"5小时已使用") : L(@"每周已使用"),card.usageLabels[row].stringValue,card.usageTimes[row].stringValue,available ? @"" : [L(@"，") stringByAppendingString:L(status)]];
         }
         card.needsDisplay = YES;
     }
@@ -2189,19 +2218,19 @@ NSInteger SuggestedAccount(NSArray<NSArray *> *candidates, NSInteger exclude, do
     for (AccountCard *card in self.cards) if (!card.hidden && self.buttons[card.number-1].enabled) [candidates addObject:@[@(card.number),card.usageValues.firstObject ?: NSNull.null]];
     NSInteger best = SuggestedAccount(candidates, account, threshold);
     // Logged text uses account numbers only: names may be the Code display name, which must never be persisted.
-    NSString *text = [NSString stringWithFormat:@"账号 %02ld 五小时已用 %.0f%%（提醒阈值 %.0f%%）。",(long)account,percent,threshold];
-    if (best) text = [text stringByAppendingFormat:@"推荐切换到账号 %02ld（观察到已用 %.0f%%）。",(long)best,[self.cards[best-1].usageValues.firstObject doubleValue]];
-    else text = [text stringByAppendingString:@"其他账号暂无低于阈值的观察记录。"];
+    NSString *text = [NSString stringWithFormat:L(@"账号 %02ld 五小时已用 %.0f%%（提醒阈值 %.0f%%）。"),(long)account,percent,threshold];
+    if (best) text = [text stringByAppendingFormat:L(@"推荐切换到账号 %02ld（观察到已用 %.0f%%）。"),(long)best,[self.cards[best-1].usageValues.firstObject doubleValue]];
+    else text = [text stringByAppendingString:L(@"其他账号暂无低于阈值的观察记录。")];
     for (NSDictionary *project in [self projectRecords]) {
         if ([project[@"lastAccount"] integerValue] != account) continue;
         NSDate *handoff = self.snapshotProjects ? project[@"previewHandoff"] : HandoffModified(project[@"path"]);
-        text = [text stringByAppendingString:handoff ? [NSString stringWithFormat:@"项目「%@」交接文档 %@更新，可在项目页「交接给其他账号」。",project[@"name"],HandoffAge(handoff,NSDate.date)]
-                                                    : [NSString stringWithFormat:@"项目「%@」还没有交接文档，可先让当前会话写 HANDOFF.md。",project[@"name"]]];
+        text = [text stringByAppendingString:handoff ? [NSString stringWithFormat:L(@"项目「%@」交接文档 %@更新，可在项目页「交接给其他账号」。"),project[@"name"],HandoffAge(handoff,NSDate.date)]
+                                                    : [NSString stringWithFormat:L(@"项目「%@」还没有交接文档，可先让当前会话写 HANDOFF.md。"),project[@"name"]]];
         break;
     }
     self.message.stringValue = text; [self addLog:text]; [self showLocalNotice:text];
     self.suggestButton.tag = best; self.suggestButton.hidden = !best;
-    if (best) self.suggestButton.title = [NSString stringWithFormat:@"切换到账号 %02ld",(long)best];
+    if (best) self.suggestButton.title = [NSString stringWithFormat:L(@"切换到账号 %02ld"),(long)best];
 }
 - (void)switchToSuggested:(NSButton *)sender {
     NSInteger account = sender.tag; sender.hidden = YES;
@@ -2211,41 +2240,41 @@ NSInteger SuggestedAccount(NSArray<NSArray *> *candidates, NSInteger exclude, do
 - (void)makeStatusItem {
     self.statusItem = [NSStatusBar.systemStatusBar statusItemWithLength:NSVariableStatusItemLength];
     NSString *path = [NSBundle.mainBundle pathForResource:@"menubar" ofType:@"png"];
-    NSImage *image = path ? [[NSImage alloc] initWithContentsOfFile:path] : [NSImage imageWithSystemSymbolName:@"square.stack.3d.up" accessibilityDescription:@"Claude 多开启动器"];
+    NSImage *image = path ? [[NSImage alloc] initWithContentsOfFile:path] : [NSImage imageWithSystemSymbolName:@"square.stack.3d.up" accessibilityDescription:L(@"Claude 多开启动器")];
     image.size = NSMakeSize(18,18); image.template = YES;
-    self.statusItem.button.image = image; self.statusItem.button.toolTip = @"Claude 多开启动器";
+    self.statusItem.button.image = image; self.statusItem.button.toolTip = L(@"Claude 多开启动器");
     NSMenu *menu = [NSMenu new]; menu.delegate = self; menu.autoenablesItems = NO;
     self.statusItem.menu = menu;
 }
 // Rebuilt on every open after a fresh scan, so the account states are never stale.
 - (void)menuNeedsUpdate:(NSMenu *)menu {
     [menu removeAllItems];
-    NSMenuItem *show = [menu addItemWithTitle:@"显示启动器窗口" action:@selector(show:) keyEquivalent:@""]; show.target = self;
+    NSMenuItem *show = [menu addItemWithTitle:L(@"显示启动器窗口") action:@selector(show:) keyEquivalent:@""]; show.target = self;
     [menu addItem:NSMenuItem.separatorItem];
     [self refresh];
     if (self.scanError) [menu addItemWithTitle:self.scanError action:nil keyEquivalent:@""].enabled = NO;
     NSUInteger shown = 0;
     for (NSInteger n = 1; n <= 10; n++) {
         if (self.cards[n-1].hidden) continue;
-        NSMenuItem *item = [menu addItemWithTitle:[NSString stringWithFormat:@"账号 %02ld · %@",(long)n,self.statuses[n-1].stringValue] action:@selector(openFromMenu:) keyEquivalent:@""];
+        NSMenuItem *item = [menu addItemWithTitle:[NSString stringWithFormat:L(@"账号 %02ld · %@"),(long)n,self.statuses[n-1].stringValue] action:@selector(openFromMenu:) keyEquivalent:@""];
         item.target = self; item.tag = n; item.enabled = self.buttons[n-1].enabled; shown++;
         if ([self.settings[@"globalHotkeys"] boolValue]) { item.keyEquivalent = [NSString stringWithFormat:@"%ld",(long)(n % 10)]; item.keyEquivalentModifierMask = NSEventModifierFlagControl | NSEventModifierFlagOption; }
     }
-    if (!shown && !self.scanError) [menu addItemWithTitle:@"本机还没有账号" action:nil keyEquivalent:@""].enabled = NO;
+    if (!shown && !self.scanError) [menu addItemWithTitle:L(@"本机还没有账号") action:nil keyEquivalent:@""].enabled = NO;
     [menu addItem:NSMenuItem.separatorItem];
-    NSMenuItem *update = [menu addItemWithTitle:@"检查更新…" action:@selector(checkForUpdates:) keyEquivalent:@""]; update.target = self;
-    [menu addItemWithTitle:@"退出启动器" action:@selector(terminate:) keyEquivalent:@""];
+    NSMenuItem *update = [menu addItemWithTitle:L(@"检查更新…") action:@selector(checkForUpdates:) keyEquivalent:@""]; update.target = self;
+    [menu addItemWithTitle:L(@"退出启动器") action:@selector(terminate:) keyEquivalent:@""];
 }
 - (void)openFromMenu:(NSMenuItem *)item { [self selectAccount:self.buttons[item.tag-1]]; }
 // Shortcut items only open accounts that already exist; creating one stays an explicit button action.
 - (BOOL)validateMenuItem:(NSMenuItem *)item {
     if (item.action != @selector(openFromMenu:) || item.tag < 1 || item.tag > 10 || item.menu == self.statusItem.menu) return YES;
-    item.title = [NSString stringWithFormat:@"打开 %@",[self accountName:item.tag]];
+    item.title = [NSString stringWithFormat:L(@"打开 %@"),[self accountName:item.tag]];
     return self.buttons[item.tag-1].enabled && !self.cards[item.tag-1].hidden;
 }
 - (void)hotKeyPressed:(NSInteger)account {
     if (account < 1 || account > 10) return;
-    if (self.cards[account-1].hidden) { self.message.stringValue = [NSString stringWithFormat:@"全局快捷键：账号 %02ld 尚未创建。",(long)account]; return; }
+    if (self.cards[account-1].hidden) { self.message.stringValue = [NSString stringWithFormat:L(@"全局快捷键：账号 %02ld 尚未创建。"),(long)account]; return; }
     if (!self.processes[@(account)].count) [self show:nil]; // A new launch shows the environment dialog; keep it in front.
     [self selectAccount:self.buttons[account-1]];
 }
@@ -2271,7 +2300,7 @@ static OSStatus HotKeyHandler(EventHandlerCallRef next, EventRef event, void *co
         if (RegisterEventHotKey(codes[n-1],controlKey|optionKey,hotKey,GetApplicationEventTarget(),0,&ref) == noErr && ref) [keys addObject:[NSValue valueWithPointer:ref]]; else failed++;
     }
     self.hotKeys = keys;
-    if (failed) [self addLog:[NSString stringWithFormat:@"全局快捷键有 %lu 个被其他应用占用，未注册",(unsigned long)failed]];
+    if (failed) [self addLog:[NSString stringWithFormat:L(@"全局快捷键有 %lu 个被其他应用占用，未注册"),(unsigned long)failed]];
 }
 - (BOOL)applicationShouldHandleReopen:(NSApplication *)app hasVisibleWindows:(BOOL)visible { [self show:nil]; return YES; }
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)app {
@@ -2289,7 +2318,7 @@ static OSStatus HotKeyHandler(EventHandlerCallRef next, EventRef event, void *co
         NSRunningApplication *configured = self.configuredApps[key];
         BOOL knownLaunch = !failure && pids.count == 1 && configured && !configured.terminated && [pids.firstObject intValue] == configured.processIdentifier;
         if (!failure && !knownLaunch) [self.configuredApps removeObjectForKey:key];
-        NSString *codeNote = n == 1 ? @"01 沿用默认 Code 配置，与普通终端 CLI 共用。" : knownLaunch ? @"本次启动时已指定独立 Code 配置；尚未验证 Code 的实际写入位置。" : @"运行中实例的 Code 配置未确认。保存工作后正常退出该 Claude，再从这里启动；不会迁移或删除旧记录。";
+        NSString *codeNote = n == 1 ? L(@"01 沿用默认 Code 配置，与普通终端 CLI 共用。") : knownLaunch ? L(@"本次启动时已指定独立 Code 配置；尚未验证 Code 的实际写入位置。") : L(@"运行中实例的 Code 配置未确认。保存工作后正常退出该 Claude，再从这里启动；不会迁移或删除旧记录。");
         self.cards[n-1].toolTip = [NSString stringWithFormat:@"%@\n%@\n%@",ProfilePath(n),CodeStatus(n,pids.count > 0,knownLaunch),codeNote];
         NSDate *since = self.starting[key];
         BOOL launchPending = [self.pendingLaunches containsObject:key];
@@ -2297,21 +2326,21 @@ static OSStatus HotKeyHandler(EventHandlerCallRef next, EventRef event, void *co
         if (since && -since.timeIntervalSinceNow > 35) {
             // A timed-out LaunchServices request can still start an app later. Keep its account reserved until it returns.
             if (!launchPending) { [self.starting removeObjectForKey:key]; since = nil; }
-            self.errors[key] = launchPending ? @"启动请求超过 35 秒仍未返回，等待系统响应；暂不重复启动或进入其他账号的登录保护。" : pids.count ? @"进程已运行，但未发现可见窗口。请点击恢复。" : @"启动失败：35 秒内未发现主进程。请重试。";
-            self.message.stringValue = [NSString stringWithFormat:@"账号 %02ld：%@", (long)n, self.errors[key]];
+            self.errors[key] = launchPending ? L(@"启动请求超过 35 秒仍未返回，等待系统响应；暂不重复启动或进入其他账号的登录保护。") : pids.count ? L(@"进程已运行，但未发现可见窗口。请点击恢复。") : L(@"启动失败：35 秒内未发现主进程。请重试。");
+            self.message.stringValue = [NSString stringWithFormat:L(@"账号 %02ld：%@"), (long)n, self.errors[key]];
         }
         BOOL exists = [NSFileManager.defaultManager fileExistsAtPath:ProfilePath(n)];
-        NSString *state = failure ? @"状态读取失败" : checking ? @"正在检查…" : since ? (self.errors[key] ? @"启动响应超时" : @"正在启动…") : pids.count > 1 ? @"运行中 · 多个实例，请检查" : pids.count ? @"运行中" : @"未运行";
-        if (!failure && !checking && !since && !pids.count && self.errors[key]) state = @"未运行 · 操作失败";
+        NSString *state = failure ? L(@"状态读取失败") : checking ? L(@"正在检查…") : since ? (self.errors[key] ? L(@"启动响应超时") : L(@"正在启动…")) : pids.count > 1 ? L(@"运行中 · 多个实例，请检查") : pids.count ? L(@"运行中") : L(@"未运行");
+        if (!failure && !checking && !since && !pids.count && self.errors[key]) state = L(@"未运行 · 操作失败");
         BOOL broken = failure || self.errors[key];
         self.statuses[n-1].stringValue = state;
         self.statuses[n-1].textColor = broken ? NSColor.systemRedColor : Hex(0x6E655C);
-        self.statuses[n-1].toolTip = self.errors[key] ?: (pids.count ? [NSString stringWithFormat:@"主进程 PID：%@",[pids componentsJoinedByString:@"、"]] : ProfilePath(n));
+        self.statuses[n-1].toolTip = self.errors[key] ?: (pids.count ? [NSString stringWithFormat:L(@"主进程 PID：%@"),[pids componentsJoinedByString:@"、"]] : ProfilePath(n));
         self.cards[n-1].dot = broken ? NSColor.systemRedColor : since ? Hex(0xE0A23A) : pids.count ? Hex(0x3BAA6E) : Hex(0xB9B1A7);
         [self.cards[n-1] setNeedsDisplay:YES];
-        self.buttons[n-1].title = checking ? @"检查中" : since ? @"启动中" : pids.count ? @"打开" : exists ? @"启动" : @"创建";
+        self.buttons[n-1].title = checking ? L(@"检查中") : since ? L(@"启动中") : pids.count ? L(@"打开") : exists ? L(@"启动") : L(@"创建");
         self.buttons[n-1].enabled = !failure && !since && !checking && (!self.loginAccount || self.loginAccount == n);
-        self.buttons[n-1].accessibilityLabel = [NSString stringWithFormat:@"账号 %02ld，%@",(long)n,state];
+        self.buttons[n-1].accessibilityLabel = [NSString stringWithFormat:L(@"账号 %02ld，%@"),(long)n,state];
     }
     // Show only accounts present on this Mac (data directory, running or starting), packed top to bottom.
     CGFloat y = 0; NSUInteger shown = 0, running = 0;
@@ -2324,11 +2353,11 @@ static OSStatus HotKeyHandler(EventHandlerCallRef next, EventRef event, void *co
     }
     [self.cardsView setFrameSize:NSMakeSize(776,MAX(y-12,0))];
     self.emptyHint.hidden = shown > 0 || self.page != 0;
-    self.summaryLabel.stringValue = failure ? @"状态暂不可用" : [NSString stringWithFormat:@"本机 %lu 个账号 · %lu 个运行中",(unsigned long)shown,(unsigned long)running];
+    self.summaryLabel.stringValue = failure ? L(@"状态暂不可用") : [NSString stringWithFormat:L(@"本机 %lu 个账号 · %lu 个运行中"),(unsigned long)shown,(unsigned long)running];
     self.createButton.enabled = !failure && !self.loginAccount;
     if (failure) self.message.stringValue = failure;
-    else if (self.loginAccount) self.message.stringValue = [NSString stringWithFormat:@"账号 %02ld 登录保护中。%@",(long)self.loginAccount,LoginConflict(snapshot,self.loginAccount) ? @"检测到其他 Claude！请停止登录，并正常退出其他实例。" : @"完成登录并核对身份后，点「结束登录保护」恢复多开。"];
-    self.accessibilityStatus.stringValue = AXIsProcessTrusted() ? @"已授权：可恢复 Claude 窗口、只读界面用量。" : @"未授权：无法恢复窗口或读取界面用量，不自动更改权限。";
+    else if (self.loginAccount) self.message.stringValue = [NSString stringWithFormat:L(@"账号 %02ld 登录保护中。%@"),(long)self.loginAccount,LoginConflict(snapshot,self.loginAccount) ? L(@"检测到其他 Claude！请停止登录，并正常退出其他实例。") : L(@"完成登录并核对身份后，点「结束登录保护」恢复多开。")];
+    self.accessibilityStatus.stringValue = AXIsProcessTrusted() ? L(@"已授权：可恢复 Claude 窗口、只读界面用量。") : L(@"未授权：无法恢复窗口或读取界面用量，不自动更改权限。");
     NSString *text = self.message.stringValue;
     if (text.length && ![text isEqual:self.lastLogged]) {
         self.lastLogged = text; [self addLog:text];
@@ -2341,26 +2370,26 @@ static OSStatus HotKeyHandler(EventHandlerCallRef next, EventRef event, void *co
 - (void)refreshAccountTable {
     NSUInteger shown = 0, total = 0, running = 0, attention = 0, selected = 0; CGFloat y = 0;
     NSMutableArray<AccountRow *> *visible = [NSMutableArray array]; NSMutableDictionary *rank = [NSMutableDictionary dictionary], *used = [NSMutableDictionary dictionary];
-    NSDateFormatter *day = [NSDateFormatter new]; day.dateFormat = @"M 月 d 日";
+    NSDateFormatter *day = [NSDateFormatter new]; day.dateFormat = UIEnglish ? @"MMM d" : @"M 月 d 日";
     NSDateFormatter *clock = [NSDateFormatter new]; clock.dateFormat = @"HH:mm";
     for (NSInteger n = 1; n <= (NSInteger)self.rows.count; n++) {
         NSNumber *key = @(n); AccountRow *row = self.rows[n-1];
         BOOL exists = !self.cards[n-1].hidden;
         NSArray *pids = self.processes[key]; BOOL busy = self.starting[key] || [self.checking containsObject:key];
-        NSString *status = self.scanError ? @"未知" : self.errors[key] ? @"异常" : busy ? @"处理中" : pids.count ? @"运行中" : @"未运行";
+        NSString *status = self.scanError ? L(@"未知") : self.errors[key] ? L(@"异常") : busy ? L(@"处理中") : pids.count ? L(@"运行中") : L(@"未运行");
         if (exists) { total++; if (!self.scanError && pids.count) running++; if (self.errors[key] || self.scanError) attention++; }
-        NSString *searchable = [NSString stringWithFormat:@"%@ 账号 %02ld %@",[self accountName:n],(long)n,ProfilePath(n)];
+        NSString *searchable = [NSString stringWithFormat:L(@"%@ 账号 %02ld %@"),[self accountName:n],(long)n,ProfilePath(n)];
         BOOL matches = (!self.accountSearch.stringValue.length || [searchable localizedCaseInsensitiveContainsString:self.accountSearch.stringValue]) && (self.accountFilter.indexOfSelectedItem <= 0 || [status isEqual:self.accountFilter.titleOfSelectedItem]);
         row.hidden = !exists || !matches;
         if (row.hidden) { [self.selectedAccounts removeObject:key]; continue; }
         [visible addObject:row]; shown++;
-        rank[key] = @([@[@"异常",@"未知",@"处理中",@"运行中",@"未运行"] indexOfObject:status]);
+        rank[key] = @([@[L(@"异常"),L(@"未知"),L(@"处理中"),L(@"运行中"),L(@"未运行")] indexOfObject:status]);
         row.selection.state = [self.selectedAccounts containsObject:key] ? NSControlStateValueOn : NSControlStateValueOff; if (row.selection.state == NSControlStateValueOn) selected++;
         row.nameLabel.stringValue = [self accountName:n]; row.nameLabel.toolTip = row.nameLabel.stringValue;
         row.identity.stringValue = [self localName:n] ?: @"—";
-        row.identity.toolTip = @"本地 Claude Code 配置中的用户名（oauthAccount.displayName），可能不同于桌面端登录；不读取邮箱或凭据。";
+        row.identity.toolTip = L(@"本地 Claude Code 配置中的用户名（oauthAccount.displayName），可能不同于桌面端登录；不读取邮箱或凭据。");
         row.open.title = self.buttons[n-1].title; row.open.enabled = self.buttons[n-1].enabled;
-        row.open.accessibilityLabel = [NSString stringWithFormat:@"%@账号 %02ld",row.open.title,(long)n];
+        row.open.accessibilityLabel = [NSString stringWithFormat:L(@"%@账号 %02ld"),row.open.title,(long)n];
         row.status.stringValue = status;
         row.dot = self.errors[key] || self.scanError ? NSColor.systemRedColor : busy ? Hex(0xE0A23A) : pids.count ? Hex(0x3BAA6E) : Hex(0xB9B1A7);
         row.status.textColor = self.errors[key] || self.scanError ? NSColor.systemRedColor : busy ? Hex(0xB7832A) : pids.count ? Hex(0x3C8A68) : Hex(0x6E655C);
@@ -2368,9 +2397,9 @@ static OSStatus HotKeyHandler(EventHandlerCallRef next, EventRef event, void *co
         NSDate *recorded = [self lastUsed:n];
         NSDate *modified = recorded ?: self.snapshotMode ? nil : [NSFileManager.defaultManager attributesOfItemAtPath:ProfilePath(n) error:nil].fileModificationDate;
         if (modified) used[key] = modified;
-        row.recent.toolTip = recorded ? @"启动器最近一次启动或切换到该账号的时间。" : modified ? @"启动器尚无记录，显示账号目录修改时间（近似，Claude 后台写入也会更新）。" : nil;
+        row.recent.toolTip = recorded ? L(@"启动器最近一次启动或切换到该账号的时间。") : modified ? L(@"启动器尚无记录，显示账号目录修改时间（近似，Claude 后台写入也会更新）。") : nil;
         NSCalendar *calendar = NSCalendar.currentCalendar;
-        row.recent.stringValue = !modified ? @"—" : [calendar isDateInToday:modified] ? [@"今天 " stringByAppendingString:[clock stringFromDate:modified]] : [calendar isDateInYesterday:modified] ? [@"昨天 " stringByAppendingString:[clock stringFromDate:modified]] : [day stringFromDate:modified];
+        row.recent.stringValue = !modified ? @"—" : [calendar isDateInToday:modified] ? [L(@"今天 ") stringByAppendingString:[clock stringFromDate:modified]] : [calendar isDateInYesterday:modified] ? [L(@"昨天 ") stringByAppendingString:[clock stringFromDate:modified]] : [day stringFromDate:modified];
         row.needsDisplay = YES;
     }
     NSInteger sort = self.accountSort.indexOfSelectedItem;
@@ -2384,7 +2413,7 @@ static OSStatus HotKeyHandler(EventHandlerCallRef next, EventRef event, void *co
     [self.rowsView setFrameSize:NSMakeSize(734,MAX(y,1))];
     NSArray *values = @[@(total),@(running),@(attention)];
     for (NSUInteger i = 0; i < self.stats.count; i++) self.stats[i].stringValue = [NSString stringWithFormat:@"%02lu",[values[i] unsignedLongValue]];
-    self.tableFooter.stringValue = [NSString stringWithFormat:@"显示 %lu / %lu 个 · 选中 %lu 项",(unsigned long)shown,(unsigned long)total,(unsigned long)selected];
+    self.tableFooter.stringValue = [NSString stringWithFormat:L(@"显示 %lu / %lu 个 · 选中 %lu 项"),(unsigned long)shown,(unsigned long)total,(unsigned long)selected];
     self.selectedPathsButton.enabled = selected > 0; self.selectAllAccounts.enabled = shown > 0;
     self.selectAllAccounts.state = selected == 0 ? NSControlStateValueOff : selected == shown ? NSControlStateValueOn : NSControlStateValueMixed;
 }
@@ -2407,7 +2436,7 @@ static OSStatus HotKeyHandler(EventHandlerCallRef next, EventRef event, void *co
     [self.preferences setObject:all forKey:@"accountLastUsed"];
 }
 - (NSString *)accountName:(NSInteger)account {
-    return self.accountNames[@(account).stringValue] ?: [self localName:account] ?: [NSString stringWithFormat:@"账号 %02ld",(long)account];
+    return self.accountNames[@(account).stringValue] ?: [self localName:account] ?: [NSString stringWithFormat:L(@"账号 %02ld"),(long)account];
 }
 - (NSString *)localName:(NSInteger)account {
     if (self.snapshotMode) return nil; // Offscreen renders and UI tests never read real account files.
@@ -2439,22 +2468,22 @@ static OSStatus HotKeyHandler(EventHandlerCallRef next, EventRef event, void *co
     for (AccountRow *row in self.rows) if (!row.hidden && [self.selectedAccounts containsObject:@(row.number)]) [paths addObject:ProfilePath(row.number)];
     if (!paths.count) return;
     [NSPasteboard.generalPasteboard clearContents]; [NSPasteboard.generalPasteboard setString:[paths componentsJoinedByString:@"\n"] forType:NSPasteboardTypeString];
-    [self showLocalNotice:[NSString stringWithFormat:@"已复制 %lu 个账号的目录路径",(unsigned long)paths.count]];
+    [self showLocalNotice:[NSString stringWithFormat:L(@"已复制 %lu 个账号的目录路径"),(unsigned long)paths.count]];
 }
 - (void)editAccountName:(NSButton *)sender {
     NSInteger account = sender.tag; if (account < 1 || account > 10) return;
-    NSAlert *alert = [NSAlert new]; alert.messageText = [NSString stringWithFormat:@"账号 %02ld 的本地别名",(long)account];
-    alert.informativeText = @"只修改启动器内的显示名称，不改目录、邮箱或 Claude 身份。最多 24 字，留空恢复默认名称。";
-    NSTextField *field = [[NSTextField alloc] initWithFrame:NSMakeRect(0,0,360,28)]; field.stringValue = self.accountNames[@(account).stringValue] ?: @""; field.accessibilityLabel = @"本地账号别名";
-    alert.accessoryView = field; [alert addButtonWithTitle:@"保存别名"]; [alert addButtonWithTitle:@"取消"];
+    NSAlert *alert = [NSAlert new]; alert.messageText = [NSString stringWithFormat:L(@"账号 %02ld 的本地别名"),(long)account];
+    alert.informativeText = L(@"只修改启动器内的显示名称，不改目录、邮箱或 Claude 身份。最多 24 字，留空恢复默认名称。");
+    NSTextField *field = [[NSTextField alloc] initWithFrame:NSMakeRect(0,0,360,28)]; field.stringValue = self.accountNames[@(account).stringValue] ?: @""; field.accessibilityLabel = L(@"本地账号别名");
+    alert.accessoryView = field; [alert addButtonWithTitle:L(@"保存别名")]; [alert addButtonWithTitle:L(@"取消")];
     [alert.window setInitialFirstResponder:field];
     while ([alert runModal] == NSAlertFirstButtonReturn) {
         NSString *name = ValidatedAccountName(field.stringValue);
-        if (!name) { alert.informativeText = @"请输入不超过 24 字、不含换行或控制字符的别名；留空恢复默认。"; continue; }
+        if (!name) { alert.informativeText = L(@"请输入不超过 24 字、不含换行或控制字符的别名；留空恢复默认。"); continue; }
         NSMutableDictionary *names = self.accountNames.mutableCopy;
         if (name.length) names[@(account).stringValue] = name; else [names removeObjectForKey:@(account).stringValue];
         [self.preferences setObject:names forKey:@"accountDisplayNames"];
-        if (![self.preferences synchronize]) { [self.preferences setObject:self.accountNames forKey:@"accountDisplayNames"]; [self alert:@"别名保存失败" detail:@"本地偏好无法写入，原名称保持不变。"]; return; }
+        if (![self.preferences synchronize]) { [self.preferences setObject:self.accountNames forKey:@"accountDisplayNames"]; [self alert:L(@"别名保存失败") detail:L(@"本地偏好无法写入，原名称保持不变。")]; return; }
         self.accountNames = names;
         for (AccountCard *card in self.cards) card.nameLabel.stringValue = [self accountName:card.number];
         [self refreshAccountTable]; return;
@@ -2480,25 +2509,25 @@ static OSStatus HotKeyHandler(EventHandlerCallRef next, EventRef event, void *co
     for (NSInteger n = 1; n <= 10; n++) {
         if (!self.processes[@(n)].count && !self.starting[@(n)] && ![self.checking containsObject:@(n)] && ![NSFileManager.defaultManager fileExistsAtPath:ProfilePath(n)]) { [self selectAccount:self.buttons[n-1]]; return; }
     }
-    [self alert:@"10 个账号空间都已创建" detail:@"请直接在列表中启动或打开对应账号。"];
+    [self alert:L(@"10 个账号空间都已创建") detail:L(@"请直接在列表中启动或打开对应账号。")];
 }
 - (void)showMore:(NSButton *)sender {
     NSMenu *menu = [NSMenu new]; menu.autoenablesItems = NO;
-    NSMenuItem *details = [menu addItemWithTitle:@"查看账号详情…" action:@selector(showAccountDetails:) keyEquivalent:@""];
+    NSMenuItem *details = [menu addItemWithTitle:L(@"查看账号详情…") action:@selector(showAccountDetails:) keyEquivalent:@""];
     details.target = self; details.tag = sender.tag;
-    NSMenuItem *reveal = [menu addItemWithTitle:@"在 Finder 中显示账号目录" action:@selector(revealProfile:) keyEquivalent:@""];
+    NSMenuItem *reveal = [menu addItemWithTitle:L(@"在 Finder 中显示账号目录") action:@selector(revealProfile:) keyEquivalent:@""];
     reveal.target = self; reveal.tag = sender.tag; reveal.enabled = [NSFileManager.defaultManager fileExistsAtPath:ProfilePath(sender.tag)];
-    NSMenuItem *copy = [menu addItemWithTitle:@"复制账号目录路径" action:@selector(copyProfilePath:) keyEquivalent:@""];
+    NSMenuItem *copy = [menu addItemWithTitle:L(@"复制账号目录路径") action:@selector(copyProfilePath:) keyEquivalent:@""];
     copy.target = self; copy.tag = sender.tag;
-    NSMenuItem *login = [menu addItemWithTitle:@"登录 / 重新登录保护…" action:@selector(beginLogin:) keyEquivalent:@""];
+    NSMenuItem *login = [menu addItemWithTitle:L(@"登录 / 重新登录保护…") action:@selector(beginLogin:) keyEquivalent:@""];
     login.target = self; login.tag = sender.tag;
     login.enabled = !self.loginAccount && !self.starting[@(sender.tag)] && ![self.checking containsObject:@(sender.tag)];
     [menu addItem:NSMenuItem.separatorItem];
-    NSMenuItem *remove = [menu addItemWithTitle:@"删除该实例…" action:@selector(deleteProfile:) keyEquivalent:@""];
+    NSMenuItem *remove = [menu addItemWithTitle:L(@"删除该实例…") action:@selector(deleteProfile:) keyEquivalent:@""];
     remove.target = self; remove.tag = sender.tag;
-    remove.attributedTitle = [[NSAttributedString alloc] initWithString:@"删除该实例…" attributes:@{NSForegroundColorAttributeName:NSColor.systemRedColor,NSFontAttributeName:[NSFont menuFontOfSize:0]}];
+    remove.attributedTitle = [[NSAttributedString alloc] initWithString:L(@"删除该实例…") attributes:@{NSForegroundColorAttributeName:NSColor.systemRedColor,NSFontAttributeName:[NSFont menuFontOfSize:0]}];
     remove.enabled = sender.tag != 1 && self.loginAccount != sender.tag && !self.starting[@(sender.tag)] && ![self.checking containsObject:@(sender.tag)] && !self.processes[@(sender.tag)].count && [NSFileManager.defaultManager fileExistsAtPath:ProfilePath(sender.tag)];
-    if (sender.tag == 1) remove.toolTip = @"账号 01 是 Claude 默认目录，不能在启动器中删除。";
+    if (sender.tag == 1) remove.toolTip = L(@"账号 01 是 Claude 默认目录，不能在启动器中删除。");
     [menu popUpMenuPositioningItem:nil atLocation:NSMakePoint(0,-4) inView:sender];
 }
 // Local metadata only: directory size is summed from file attributes without opening any file; nothing is persisted.
@@ -2510,21 +2539,21 @@ static OSStatus HotKeyHandler(EventHandlerCallRef next, EventRef event, void *co
     NSDate *used = [self lastUsed:n];
     NSDateFormatter *format = [NSDateFormatter new]; format.dateFormat = @"yyyy-MM-dd HH:mm";
     NSArray *lines = @[
-        [@"名称：" stringByAppendingString:[self accountName:n]],
-        [@"Claude Code 用户名：" stringByAppendingString:[self localName:n] ?: @"未取得"],
-        [@"目录：" stringByAppendingString:ProfilePath(n)],
-        [@"状态：" stringByAppendingString:self.statuses[n-1].stringValue],
-        [@"主进程 PID：" stringByAppendingString:pids.count ? [pids componentsJoinedByString:@"、"] : @"—"],
-        [@"Code 配置：" stringByAppendingString:CodeStatus(n,pids.count > 0,self.configuredApps[key] != nil)],
-        [@"最近由启动器打开：" stringByAppendingString:used ? [format stringFromDate:used] : @"无记录"],
-        [@"登录保护：" stringByAppendingString:self.loginAccount == n ? @"保护中" : @"否"],
-        [@"最近错误：" stringByAppendingString:self.errors[key] ?: @"无"]];
+        [L(@"名称：") stringByAppendingString:[self accountName:n]],
+        [L(@"Claude Code 用户名：") stringByAppendingString:[self localName:n] ?: L(@"未取得")],
+        [L(@"目录：") stringByAppendingString:ProfilePath(n)],
+        [L(@"状态：") stringByAppendingString:self.statuses[n-1].stringValue],
+        [L(@"主进程 PID：") stringByAppendingString:pids.count ? [pids componentsJoinedByString:@"、"] : @"—"],
+        [L(@"Code 配置：") stringByAppendingString:CodeStatus(n,pids.count > 0,self.configuredApps[key] != nil)],
+        [L(@"最近由启动器打开：") stringByAppendingString:used ? [format stringFromDate:used] : L(@"无记录")],
+        [L(@"登录保护：") stringByAppendingString:self.loginAccount == n ? L(@"保护中") : L(@"否")],
+        [L(@"最近错误：") stringByAppendingString:self.errors[key] ?: L(@"无")]];
     NSAlert *alert = [NSAlert new];
-    alert.messageText = [NSString stringWithFormat:@"账号 %02ld 详情",(long)n];
+    alert.messageText = [NSString stringWithFormat:L(@"账号 %02ld 详情"),(long)n];
     alert.informativeText = [lines componentsJoinedByString:@"\n"];
-    NSTextField *size = Text(@"目录大小：计算中…", NSMakeRect(0,0,320,18), [NSFont systemFontOfSize:12], Hex(0x6E655C));
+    NSTextField *size = Text(L(@"目录大小：计算中…"), NSMakeRect(0,0,320,18), [NSFont systemFontOfSize:12], Hex(0x6E655C));
     alert.accessoryView = size;
-    [alert addButtonWithTitle:@"关闭"]; [alert addButtonWithTitle:@"在 Finder 中显示"];
+    [alert addButtonWithTitle:L(@"关闭")]; [alert addButtonWithTitle:L(@"在 Finder 中显示")];
     __block atomic_bool cancelled = false;
     NSString *path = ProfilePath(n);
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY,0), ^{
@@ -2537,7 +2566,7 @@ static OSStatus HotKeyHandler(EventHandlerCallRef next, EventRef event, void *co
             total += [values[NSURLTotalFileAllocatedSizeKey] unsignedLongLongValue]; files++;
         }
         if (!complete) return;
-        NSString *text = [NSString stringWithFormat:@"目录大小：%@（%llu 个项目）",[NSByteCountFormatter stringFromByteCount:(long long)total countStyle:NSByteCountFormatterCountStyleFile],files];
+        NSString *text = [NSString stringWithFormat:L(@"目录大小：%@（%llu 个项目）"),[NSByteCountFormatter stringFromByteCount:(long long)total countStyle:NSByteCountFormatterCountStyleFile],files];
         dispatch_async(dispatch_get_main_queue(), ^{ size.stringValue = text; });
     });
     NSModalResponse response = [alert runModal];
@@ -2552,12 +2581,12 @@ static OSStatus HotKeyHandler(EventHandlerCallRef next, EventRef event, void *co
     NSInteger account = item.tag; NSNumber *key = @(account);
     [self refresh];
     NSString *blocker = self.scanError ?: [self deletionBlocker:account];
-    if (blocker) { [self alert:@"暂时不能删除" detail:blocker]; return; }
+    if (blocker) { [self alert:L(@"暂时不能删除") detail:blocker]; return; }
     NSAlert *confirm = [NSAlert new]; confirm.alertStyle = NSAlertStyleWarning;
-    confirm.messageText = [NSString stringWithFormat:@"删除账号 %02ld？",(long)account];
-    confirm.informativeText = [NSString stringWithFormat:@"将把以下目录移到废纸篓，其中的登录状态、聊天缓存和 Claude Code 配置会一起移走：\n%@\n\n清空废纸篓前可以恢复。",ProfilePath(account)];
-    [confirm addButtonWithTitle:@"取消"];
-    NSButton *destroy = [confirm addButtonWithTitle:@"移到废纸篓"]; destroy.hasDestructiveAction = YES;
+    confirm.messageText = [NSString stringWithFormat:L(@"删除账号 %02ld？"),(long)account];
+    confirm.informativeText = [NSString stringWithFormat:L(@"将把以下目录移到废纸篓，其中的登录状态、聊天缓存和 Claude Code 配置会一起移走：\n%@\n\n清空废纸篓前可以恢复。"),ProfilePath(account)];
+    [confirm addButtonWithTitle:L(@"取消")];
+    NSButton *destroy = [confirm addButtonWithTitle:L(@"移到废纸篓")]; destroy.hasDestructiveAction = YES;
     [self.checking addObject:key]; // Reserve this account while the modal dialog runs its nested event loop.
     NSModalResponse response = [confirm runModal];
     [self.checking removeObject:key];
@@ -2565,22 +2594,22 @@ static OSStatus HotKeyHandler(EventHandlerCallRef next, EventRef event, void *co
     // State may have changed while the dialog was open; recheck identity, process state and path safety.
     [self refresh];
     blocker = self.scanError ?: [self deletionBlocker:account];
-    if (blocker) { [self alert:@"已取消删除" detail:blocker]; return; }
+    if (blocker) { [self alert:L(@"已取消删除") detail:blocker]; return; }
     [self checkAccount:account completion:^{
         [self refresh];
         NSString *failure = self.scanError ?: [self deletionBlocker:account] ?: ValidateProfileRoot(ProfilePath(account),ProfilePath(account));
-        if (failure) { [self alert:@"已取消删除" detail:failure]; return; }
+        if (failure) { [self alert:L(@"已取消删除") detail:failure]; return; }
         NSError *error = nil;
         if (![NSFileManager.defaultManager trashItemAtURL:[NSURL fileURLWithPath:ProfilePath(account) isDirectory:YES] resultingItemURL:nil error:&error]) {
-            [self alert:@"删除失败" detail:error.localizedDescription ?: @"未移动任何数据。"]; return;
+            [self alert:L(@"删除失败") detail:error.localizedDescription ?: L(@"未移动任何数据。")]; return;
         }
         [self.errors removeObjectForKey:key]; [self.configuredApps removeObjectForKey:key];
-        self.message.stringValue = [NSString stringWithFormat:@"账号 %02ld 已移到废纸篓。",(long)account];
+        self.message.stringValue = [NSString stringWithFormat:L(@"账号 %02ld 已移到废纸篓。"),(long)account];
         [self refresh];
     }];
 }
 - (NSString *)deletionBlocker:(NSInteger)account {
-    if (self.loginAccount == account) return @"该账号处于登录保护中，请先结束保护。";
+    if (self.loginAccount == account) return L(@"该账号处于登录保护中，请先结束保护。");
     return DeleteBlocker(account,self.processes[@(account)],self.starting[@(account)] != nil || [self.checking containsObject:@(account)]);
 }
 - (void)checkAccount:(NSInteger)account completion:(void (^)(void))completion {
@@ -2591,8 +2620,8 @@ static OSStatus HotKeyHandler(EventHandlerCallRef next, EventRef event, void *co
         [self.checking removeObject:key];
         if (failure) {
             self.errors[key] = failure;
-            self.message.stringValue = [NSString stringWithFormat:@"账号 %02ld：%@",(long)account,failure];
-            [self refresh]; [self alert:@"账号存储隔离检查未通过" detail:failure]; return;
+            self.message.stringValue = [NSString stringWithFormat:L(@"账号 %02ld：%@"),(long)account,failure];
+            [self refresh]; [self alert:L(@"账号存储隔离检查未通过") detail:failure]; return;
         }
         completion();
         [self refresh];
@@ -2608,16 +2637,16 @@ static OSStatus HotKeyHandler(EventHandlerCallRef next, EventRef event, void *co
 - (void)endLogin:(id)sender {
     if (!self.loginAccount || self.checking.count || self.starting.count) return;
     NSInteger account = self.loginAccount;
-    NSAlert *confirm = [NSAlert new]; confirm.messageText = @"结束登录保护？";
-    confirm.informativeText = @"请确认登录已完成并核对账号身份，或已取消浏览器中的登录流程。结束保护后可以打开其他账号；启动器无法验证登录结果或拦截浏览器回调。";
-    [confirm addButtonWithTitle:@"继续保护"]; [confirm addButtonWithTitle:@"结束保护"];
+    NSAlert *confirm = [NSAlert new]; confirm.messageText = L(@"结束登录保护？");
+    confirm.informativeText = L(@"请确认登录已完成并核对账号身份，或已取消浏览器中的登录流程。结束保护后可以打开其他账号；启动器无法验证登录结果或拦截浏览器回调。");
+    [confirm addButtonWithTitle:L(@"继续保护")]; [confirm addButtonWithTitle:L(@"结束保护")];
     [self.checking addObject:@(account)];
     NSModalResponse response = [confirm runModal];
     [self.checking removeObject:@(account)];
     if (response != NSAlertSecondButtonReturn) { [self refresh]; return; }
     self.loginAccount = 0;
     [NSUserDefaults.standardUserDefaults removeObjectForKey:@"loginProtectionAccount"];
-    self.message.stringValue = @"已结束登录保护。只有确认登录完成、身份正确后，才应同时打开其他账号。";
+    self.message.stringValue = L(@"已结束登录保护。只有确认登录完成、身份正确后，才应同时打开其他账号。");
     [self refresh];
 }
 - (NSString *)loginBlocker:(NSInteger)account {
@@ -2626,9 +2655,9 @@ static OSStatus HotKeyHandler(EventHandlerCallRef next, EventRef event, void *co
 - (NSString *)openingBlocker:(NSInteger)account expectedPID:(pid_t)expectedPID {
     if (self.scanError) return self.scanError;
     NSArray *pids = self.processes[@(account)];
-    if (expectedPID && (pids.count != 1 || [pids.firstObject intValue] != expectedPID)) return @"检查期间原实例已退出或被替换，未自动重启。请重新点击。";
-    if (self.loginAccount && (self.loginAccount != account || [self loginBlocker:account])) return @"登录保护中：请先完成目标账号登录并核对身份。外部启动的其他 Claude 需要你正常退出。";
-    if (pids.count > 1) return @"同一目录发现多个主进程，未激活或结束任何实例。请自行检查 Claude 窗口。";
+    if (expectedPID && (pids.count != 1 || [pids.firstObject intValue] != expectedPID)) return L(@"检查期间原实例已退出或被替换，未自动重启。请重新点击。");
+    if (self.loginAccount && (self.loginAccount != account || [self loginBlocker:account])) return L(@"登录保护中：请先完成目标账号登录并核对身份。外部启动的其他 Claude 需要你正常退出。");
+    if (pids.count > 1) return L(@"同一目录发现多个主进程，未激活或结束任何实例。请自行检查 Claude 窗口。");
     return nil;
 }
 - (void)beginLogin:(id)sender {
@@ -2636,11 +2665,11 @@ static OSStatus HotKeyHandler(EventHandlerCallRef next, EventRef event, void *co
     if (account < 1 || account > 10 || self.loginAccount || self.starting[key] || [self.checking containsObject:key]) return;
     [self refresh];
     NSString *failure = [self loginBlocker:account];
-    if (failure) { [self alert:@"暂时不能进入登录保护" detail:failure]; return; }
+    if (failure) { [self alert:L(@"暂时不能进入登录保护") detail:failure]; return; }
     NSAlert *confirm = [NSAlert new];
-    confirm.messageText = [NSString stringWithFormat:@"账号 %02ld：进入登录保护？",(long)account];
-    confirm.informativeText = @"保护期间，启动器只允许打开这个账号。随后由你在 Claude 中登录或重新登录，并核对浏览器和 Claude 中的身份。\n\n不会退出、登出其他账号或改写登录数据。请勿从 Dock、终端等外部入口打开其他 Claude；启动器不能拦截系统登录回调。新账号会在保护中创建目录。";
-    [confirm addButtonWithTitle:@"取消"]; [confirm addButtonWithTitle:@"保护并打开"];
+    confirm.messageText = [NSString stringWithFormat:L(@"账号 %02ld：进入登录保护？"),(long)account];
+    confirm.informativeText = L(@"保护期间，启动器只允许打开这个账号。随后由你在 Claude 中登录或重新登录，并核对浏览器和 Claude 中的身份。\n\n不会退出、登出其他账号或改写登录数据。请勿从 Dock、终端等外部入口打开其他 Claude；启动器不能拦截系统登录回调。新账号会在保护中创建目录。");
+    [confirm addButtonWithTitle:L(@"取消")]; [confirm addButtonWithTitle:L(@"保护并打开")];
     [self.checking addObject:key];
     NSModalResponse response = [confirm runModal];
     [self.checking removeObject:key];
@@ -2653,7 +2682,7 @@ static OSStatus HotKeyHandler(EventHandlerCallRef next, EventRef event, void *co
 }
 - (void)protectAndOpen:(NSInteger)account prepare:(BOOL (^)(void))prepare {
     NSString *failure = [self loginBlocker:account];
-    if (failure) { [self alert:@"状态已变化，未进入保护" detail:failure]; return; }
+    if (failure) { [self alert:L(@"状态已变化，未进入保护") detail:failure]; return; }
     self.loginAccount = account;
     [NSUserDefaults.standardUserDefaults setInteger:account forKey:@"loginProtectionAccount"];
     [self selectAccount:self.buttons[account-1] prepare:prepare];
@@ -2666,14 +2695,14 @@ static OSStatus HotKeyHandler(EventHandlerCallRef next, EventRef event, void *co
     if (sender.tag < 1 || sender.tag > 10 || self.starting[key] || [self.checking containsObject:key]) return;
     [self refresh];
     NSString *failure = [self openingBlocker:sender.tag expectedPID:0];
-    if (failure) { [self alert:@"暂时不能打开账号" detail:failure]; return; }
+    if (failure) { [self alert:L(@"暂时不能打开账号") detail:failure]; return; }
     NSInteger account = sender.tag;
     BOOL create = !self.loginAccount && !self.processes[key].count && ![NSFileManager.defaultManager fileExistsAtPath:ProfilePath(account)];
     if (create) {
         NSAlert *choice = [NSAlert new];
-        choice.messageText = [NSString stringWithFormat:@"创建账号 %02ld？",(long)account];
-        choice.informativeText = @"将创建独立的本地数据目录。\n\n直接创建：立即启动，其他 Claude 保持运行。登录时浏览器回调可能打开其他窗口，登录后请核对身份。\n\n进入登录保护：需先正常退出其他 Claude；保护期间只允许打开这个账号，登录更稳妥。";
-        [choice addButtonWithTitle:@"直接创建"]; [choice addButtonWithTitle:@"进入登录保护"]; [choice addButtonWithTitle:@"取消"];
+        choice.messageText = [NSString stringWithFormat:L(@"创建账号 %02ld？"),(long)account];
+        choice.informativeText = L(@"将创建独立的本地数据目录。\n\n直接创建：立即启动，其他 Claude 保持运行。登录时浏览器回调可能打开其他窗口，登录后请核对身份。\n\n进入登录保护：需先正常退出其他 Claude；保护期间只允许打开这个账号，登录更稳妥。");
+        [choice addButtonWithTitle:L(@"直接创建")]; [choice addButtonWithTitle:L(@"进入登录保护")]; [choice addButtonWithTitle:L(@"取消")];
         [self.checking addObject:key]; // Reserve this account while the modal dialog runs its nested event loop.
         NSModalResponse response = [choice runModal];
         [self.checking removeObject:key];
@@ -2681,7 +2710,7 @@ static OSStatus HotKeyHandler(EventHandlerCallRef next, EventRef event, void *co
         if (response == NSAlertSecondButtonReturn) { [self protectAndOpen:account prepare:prepare]; return; }
         if (response != NSAlertFirstButtonReturn) return;
         failure = [self openingBlocker:account expectedPID:0];
-        if (failure || self.processes[key].count) { [self alert:@"状态已变化，未创建" detail:failure ?: @"该账号已在运行，请重新点击。"]; return; }
+        if (failure || self.processes[key].count) { [self alert:L(@"状态已变化，未创建") detail:failure ?: L(@"该账号已在运行，请重新点击。")]; return; }
     }
     pid_t expectedPID = self.processes[key].count == 1 ? [self.processes[key].firstObject intValue] : 0;
     [self checkAccount:account completion:^{ [self openCheckedAccount:account expectedPID:expectedPID create:create prepare:prepare]; }];
@@ -2690,7 +2719,7 @@ static OSStatus HotKeyHandler(EventHandlerCallRef next, EventRef event, void *co
     NSNumber *key = @(account);
     if ([self.checking containsObject:key] || self.starting[key]) return;
     [self.checking addObject:key]; [self refresh];
-    self.message.stringValue = [NSString stringWithFormat:@"账号 %02ld：正在检测电脑网络环境…",(long)account];
+    self.message.stringValue = [NSString stringWithFormat:L(@"账号 %02ld：正在检测电脑网络环境…"),(long)account];
     NSMutableArray *apps = [NSMutableArray array];
     for (NSRunningApplication *app in NSWorkspace.sharedWorkspace.runningApplications) [apps addObject:@{@"bundle":app.bundleIdentifier ?: @"",@"name":app.localizedName ?: @""}];
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0), ^{
@@ -2699,19 +2728,19 @@ static OSStatus HotKeyHandler(EventHandlerCallRef next, EventRef event, void *co
             BOOL ok = [report[@"ok"] boolValue];
             NSAlert *alert = [NSAlert new];
             alert.alertStyle = ok ? NSAlertStyleInformational : NSAlertStyleWarning;
-            alert.messageText = ok ? @"网络环境检测：已检测到代理" : @"网络环境检测：未检测到可用代理";
+            alert.messageText = ok ? L(@"网络环境检测：已检测到代理") : L(@"网络环境检测：未检测到可用代理");
             NSArray *clients = report[@"clients"];
-            NSString *advice = ok ? @"请确认代理节点可用后继续启动。" : clients.count
-                ? [NSString stringWithFormat:@"%@ 正在运行，但未开启系统代理或 TUN 模式。请在 %@ 中打开「系统代理」或「TUN 模式」后再启动。",clients.firstObject,clients.firstObject]
-                : @"Claude 需要可用的代理才能正常连接。建议先开启代理软件的系统代理或 TUN 模式，再继续启动。";
-            alert.informativeText = [NSString stringWithFormat:@"%@\n\n%@\n\n仅读取本机系统代理设置、网络接口与正在运行的应用名称，不访问外部网络，无法确认出口 IP 所在地区。",
+            NSString *advice = ok ? L(@"请确认代理节点可用后继续启动。") : clients.count
+                ? [NSString stringWithFormat:L(@"%@ 正在运行，但未开启系统代理或 TUN 模式。请在 %@ 中打开「系统代理」或「TUN 模式」后再启动。"),clients.firstObject,clients.firstObject]
+                : L(@"Claude 需要可用的代理才能正常连接。建议先开启代理软件的系统代理或 TUN 模式，再继续启动。");
+            alert.informativeText = [NSString stringWithFormat:L(@"%@\n\n%@\n\n仅读取本机系统代理设置、网络接口与正在运行的应用名称，不访问外部网络，无法确认出口 IP 所在地区。"),
                 [report[@"lines"] componentsJoinedByString:@"\n"],advice];
             // Without a usable proxy, Return cancels; launching anyway needs an explicit click.
-            if (ok) { [alert addButtonWithTitle:@"确认启动"]; [alert addButtonWithTitle:@"取消"]; }
-            else { [alert addButtonWithTitle:@"取消"]; [alert addButtonWithTitle:@"仍然启动"]; }
+            if (ok) { [alert addButtonWithTitle:L(@"确认启动")]; [alert addButtonWithTitle:L(@"取消")]; }
+            else { [alert addButtonWithTitle:L(@"取消")]; [alert addButtonWithTitle:L(@"仍然启动")]; }
             BOOL confirmed = [alert runModal] == (ok ? NSAlertFirstButtonReturn : NSAlertSecondButtonReturn);
             [self.checking removeObject:key];
-            self.message.stringValue = confirmed ? @"" : [NSString stringWithFormat:@"账号 %02ld：已取消启动。",(long)account];
+            self.message.stringValue = confirmed ? @"" : [NSString stringWithFormat:L(@"账号 %02ld：已取消启动。"),(long)account];
             [self refresh];
             if (confirmed) completion();
         });
@@ -2723,9 +2752,9 @@ static OSStatus HotKeyHandler(EventHandlerCallRef next, EventRef event, void *co
     [self.environmentConfirmed removeObject:key];
     [self refresh]; // The background check may outlive a process or a login-protection change.
     NSString *failure = [self openingBlocker:account expectedPID:expectedPID];
-    if (failure) { [self alert:@"实例或保护状态已变化" detail:failure]; return; }
+    if (failure) { [self alert:L(@"实例或保护状态已变化") detail:failure]; return; }
     NSString *storageFailure = ValidateProfileRoot(ProfilePath(account),ProfilePath(account));
-    if (storageFailure) { [self alert:@"账号路径已变化" detail:storageFailure]; return; }
+    if (storageFailure) { [self alert:L(@"账号路径已变化") detail:storageFailure]; return; }
     NSArray *pids = self.processes[key];
     [self.errors removeObjectForKey:key];
     if (pids.count == 1) { [self activatePID:[pids.firstObject intValue] account:account prepare:prepare]; return; }
@@ -2733,7 +2762,7 @@ static OSStatus HotKeyHandler(EventHandlerCallRef next, EventRef event, void *co
     for (NSString *path in @[@"/Applications/Claude.app", [NSHomeDirectory() stringByAppendingPathComponent:@"Applications/Claude.app"]]) {
         if ([NSFileManager.defaultManager isExecutableFileAtPath:[path stringByAppendingPathComponent:@"Contents/MacOS/Claude"]]) { bundlePath = path; break; }
     }
-    if (!bundlePath) { [self alert:@"未找到官方 Claude.app" detail:@"请将官方 Claude.app 安装到 /Applications 或 ~/Applications 后重试。"] ; return; }
+    if (!bundlePath) { [self alert:L(@"未找到官方 Claude.app") detail:L(@"请将官方 Claude.app 安装到 /Applications 或 ~/Applications 后重试。")] ; return; }
     if (!environmentConfirmed) { // Every new launch shows the local proxy check; state is re-validated after confirmation.
         [self confirmEnvironment:account completion:^{
             [self.environmentConfirmed addObject:key];
@@ -2744,25 +2773,25 @@ static OSStatus HotKeyHandler(EventHandlerCallRef next, EventRef event, void *co
     NSError *error = nil; BOOL directory = NO;
     BOOL exists = [NSFileManager.defaultManager fileExistsAtPath:ProfilePath(account) isDirectory:&directory];
     if (!exists && !self.loginAccount && !create) {
-        self.message.stringValue = @"账号目录已变化，未创建新目录。请重新点击。"; return;
+        self.message.stringValue = L(@"账号目录已变化，未创建新目录。请重新点击。"); return;
     }
     if ((exists && !directory) || (!exists && ![NSFileManager.defaultManager createDirectoryAtPath:ProfilePath(account) withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions:@0700} error:&error])) {
-        [self alert:@"无法使用账号目录" detail:error.localizedDescription ?: @"该路径已存在且不是目录。未覆盖任何数据。"] ; return;
+        [self alert:L(@"无法使用账号目录") detail:error.localizedDescription ?: L(@"该路径已存在且不是目录。未覆盖任何数据。")] ; return;
     }
     NSString *codeConfig = CodeConfigPath(account);
     if (codeConfig && ![NSFileManager.defaultManager fileExistsAtPath:codeConfig] && ![NSFileManager.defaultManager createDirectoryAtPath:codeConfig withIntermediateDirectories:NO attributes:@{NSFilePosixPermissions:@0700} error:&error]) {
-        [self alert:@"无法创建 Claude Code 独立配置目录" detail:error.localizedDescription]; return;
+        [self alert:L(@"无法创建 Claude Code 独立配置目录") detail:error.localizedDescription]; return;
     }
     storageFailure = ValidateProfileRoot(ProfilePath(account),ProfilePath(account));
     if (!storageFailure && codeConfig) storageFailure = ValidateProfileRoot(codeConfig,codeConfig);
-    if (storageFailure) { [self alert:@"创建后隔离检查未通过" detail:storageFailure]; return; }
+    if (storageFailure) { [self alert:L(@"创建后隔离检查未通过") detail:storageFailure]; return; }
     [self refresh];
     if ([self openingBlocker:account expectedPID:0] || self.processes[key].count) {
-        self.message.stringValue = @"进程或登录保护状态已变化，未启动新实例，请重试。"; return;
+        self.message.stringValue = L(@"进程或登录保护状态已变化，未启动新实例，请重试。"); return;
     }
     if (prepare && !prepare()) return;
     self.starting[key] = [NSDate date]; [self refresh];
-    self.message.stringValue = [NSString stringWithFormat:@"正在启动账号 %02ld…",(long)account];
+    self.message.stringValue = [NSString stringWithFormat:L(@"正在启动账号 %02ld…"),(long)account];
     NSWorkspaceOpenConfiguration *config = [NSWorkspaceOpenConfiguration configuration];
     config.createsNewApplicationInstance = YES; config.activates = YES;
     config.arguments = account == 1 ? @[] : @[[ @"--user-data-dir=" stringByAppendingString:ProfilePath(account)]];
@@ -2773,7 +2802,7 @@ static OSStatus HotKeyHandler(EventHandlerCallRef next, EventRef event, void *co
         dispatch_async(dispatch_get_main_queue(), ^{
             [self.pendingLaunches removeObject:key];
             if (!launchError) { [self.errors removeObjectForKey:key]; [self markUsed:account]; }
-            if (launchError) { [self.starting removeObjectForKey:key]; self.errors[key] = launchError.localizedDescription; self.message.stringValue = [@"启动失败：" stringByAppendingString:launchError.localizedDescription]; }
+            if (launchError) { [self.starting removeObjectForKey:key]; self.errors[key] = launchError.localizedDescription; self.message.stringValue = [L(@"启动失败：") stringByAppendingString:launchError.localizedDescription]; }
             // A returned pre-existing app is not evidence that the requested environment took effect.
             if (!launchError && codeConfig && app.launchDate && [app.launchDate compare:requested] != NSOrderedAscending && !app.terminated) {
                 NSArray *args = Arguments(app.processIdentifier); char path[PROC_PIDPATHINFO_MAXSIZE] = {0};
@@ -2787,10 +2816,10 @@ static OSStatus HotKeyHandler(EventHandlerCallRef next, EventRef event, void *co
     // Revalidate the identity immediately before activating; never fall back to a bundle-wide open.
     NSArray *args = Arguments(pid); char path[PROC_PIDPATHINFO_MAXSIZE] = {0};
     if (!args || AccountForArguments(args) != account || proc_pidpath(pid,path,sizeof(path)) <= 0 || !IsMainExecutable(@(path))) {
-        [self alert:@"实例状态已改变" detail:@"无法核对该 PID。请稍后再次点击，未启动新实例。"] ; [self refresh]; return;
+        [self alert:L(@"实例状态已改变") detail:L(@"无法核对该 PID。请稍后再次点击，未启动新实例。")] ; [self refresh]; return;
     }
     NSRunningApplication *app = [NSRunningApplication runningApplicationWithProcessIdentifier:pid];
-    if (!app || app.terminated) { [self alert:@"实例已退出" detail:@"请再次点击启动。"] ; return; }
+    if (!app || app.terminated) { [self alert:L(@"实例已退出") detail:L(@"请再次点击启动。")] ; return; }
     if (prepare && !prepare()) return;
     [app unhide]; [self markUsed:account];
     if (@available(macOS 14.0, *)) {
@@ -2800,7 +2829,7 @@ static OSStatus HotKeyHandler(EventHandlerCallRef next, EventRef event, void *co
         [app activateWithOptions:NSApplicationActivateAllWindows | NSApplicationActivateIgnoringOtherApps];
     }
     if (![self.settings[@"restoreMinimized"] boolValue]) {
-        self.message.stringValue = [NSString stringWithFormat:@"已激活账号 %02ld；按设置保留窗口最小化状态。",(long)account]; return;
+        self.message.stringValue = [NSString stringWithFormat:L(@"已激活账号 %02ld；按设置保留窗口最小化状态。"),(long)account]; return;
     }
     if (AXIsProcessTrusted()) {
         AXUIElementRef target = AXUIElementCreateApplication(pid); CFTypeRef value = NULL;
@@ -2820,22 +2849,22 @@ static OSStatus HotKeyHandler(EventHandlerCallRef next, EventRef event, void *co
                 if (after) CFRelease(after);
             }
             AXUIElementSetAttributeValue(target, kAXFrontmostAttribute, kCFBooleanTrue);
-            self.message.stringValue = [NSString stringWithFormat:@"账号 %02ld · PID %d：发现 %lu 个窗口，%lu 个原为最小化，%lu 个已展开。",(long)account,pid,(unsigned long)windows.count,(unsigned long)minimizedCount,(unsigned long)restoredCount];
-            if (!windows.count) [self alert:@"Claude 在后台运行，但没有窗口" detail:@"已激活对应 PID。请使用 Claude 菜单尝试新建窗口；启动器不会强制结束或重复启动它。"];
-            else if (!restored) [self alert:@"未能恢复窗口" detail:@"已激活对应 PID，但系统拒绝提升窗口。请检查辅助功能权限或稍后重试。"];
-        } else [self alert:@"无法读取 Claude 窗口" detail:@"已激活对应 PID。请检查辅助功能权限，或稍后重试；未启动新实例。"];
+            self.message.stringValue = [NSString stringWithFormat:L(@"账号 %02ld · PID %d：发现 %lu 个窗口，%lu 个原为最小化，%lu 个已展开。"),(long)account,pid,(unsigned long)windows.count,(unsigned long)minimizedCount,(unsigned long)restoredCount];
+            if (!windows.count) [self alert:L(@"Claude 在后台运行，但没有窗口") detail:L(@"已激活对应 PID。请使用 Claude 菜单尝试新建窗口；启动器不会强制结束或重复启动它。")];
+            else if (!restored) [self alert:L(@"未能恢复窗口") detail:L(@"已激活对应 PID，但系统拒绝提升窗口。请检查辅助功能权限或稍后重试。")];
+        } else [self alert:L(@"无法读取 Claude 窗口") detail:L(@"已激活对应 PID。请检查辅助功能权限，或稍后重试；未启动新实例。")];
         if (value) CFRelease(value); CFRelease(target);
     } else {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.7*NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
             if (VisibleWindow(pid) && NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier == pid) return;
             [self show:nil];
-            NSAlert *alert = [NSAlert new]; alert.messageText = @"该账号运行中，但窗口尚未恢复";
-            alert.informativeText = @"窗口可能已最小化，或该进程没有窗口。恢复最小化窗口需要辅助功能权限，以读取并提升这个 PID 的窗口。请在系统设置 → 隐私与安全性 → 辅助功能中允许「Claude 启动器」，然后重新点击账号。不会修改系统权限或结束 Claude。";
-            [alert addButtonWithTitle:@"打开辅助功能设置"]; [alert addButtonWithTitle:@"稍后"];
+            NSAlert *alert = [NSAlert new]; alert.messageText = L(@"该账号运行中，但窗口尚未恢复");
+            alert.informativeText = L(@"窗口可能已最小化，或该进程没有窗口。恢复最小化窗口需要辅助功能权限，以读取并提升这个 PID 的窗口。请在系统设置 → 隐私与安全性 → 辅助功能中允许「Claude 启动器」，然后重新点击账号。不会修改系统权限或结束 Claude。");
+            [alert addButtonWithTitle:L(@"打开辅助功能设置")]; [alert addButtonWithTitle:L(@"稍后")];
             if ([alert runModal] == NSAlertFirstButtonReturn) [self openAccessibility:nil];
         });
     }
-    if (!AXIsProcessTrusted()) self.message.stringValue = [NSString stringWithFormat:@"已请求激活账号 %02ld（PID %d）；窗口恢复权限尚未启用。",(long)account,pid];
+    if (!AXIsProcessTrusted()) self.message.stringValue = [NSString stringWithFormat:L(@"已请求激活账号 %02ld（PID %d）；窗口恢复权限尚未启用。"),(long)account,pid];
 }
 @end
 
@@ -2848,6 +2877,7 @@ static int SelfTest(void) {
         TestUsageInterface();
         TestProxyCheck();
         TestHandoff();
+        TestLocalization();
         NSCAssert(SuggestedAccount(@[@[@1,@85],@[@2,@12],@[@3,NSNull.null],@[@4,@40]],1,80) == 2,@"lowest observed account suggested");
         NSCAssert(SuggestedAccount(@[@[@1,@85],@[@2,@92],@[@3,NSNull.null]],1,80) == 0 && SuggestedAccount(@[@[@1,@5]],1,80) == 0,@"no suggestion above threshold, unobserved or self");
         NSCAssert(AccountForArguments(@[@"Claude"]) == 1, @"default");
@@ -3223,6 +3253,7 @@ int main(int argc, const char *argv[]) {
             [NSApplication sharedApplication];
             Launcher *launcher = [Launcher new];
             launcher.snapshotMode = YES;
+            if (getenv("CLAUDE_LAUNCHER_SNAPSHOT_ENGLISH")) UIEnglish = YES; // Preview the English interface without changing saved settings.
             if (argc > 3) launcher.page = atoi(argv[3]);
             // Purely visual fixtures: do not load or write the user's project list.
             if (argc > 4 && strcmp(argv[4],"--projects-demo") == 0) launcher.snapshotProjects = @[

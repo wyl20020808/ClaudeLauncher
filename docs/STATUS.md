@@ -1,5 +1,12 @@
 # 项目状态
 
+## 登录启动开关、英文界面（2026-10-30，dev，未发布，macOS）
+
+- 登录时启动：设置页“管理登录启动…”按钮和确认弹窗改为开关，点击即注册／注销登录项；等待系统批准时打开登录项设置，开发副本仍提示并拒绝。macOS 12 保留系统设置入口。
+- 界面语言：设置 → 外观新增“界面语言”（简体中文／English，`language` 默认 0）。界面文字统一经 `L()` 查 `resources/i18n/english.strings`（约 690 条）；切换后提示立即重新打开启动器（等进程退出后 `open` 同一应用包），不影响 Claude。日志级别／实例仍按中文代码保存、显示时翻译，日志级别关键词兼容英文。交接规则与交接指令随界面语言。
+- 验证：`scripts/build.sh`（含 `--self-test`，新增 TestLocalization）、`--ui-self-test` 通过；英文离屏截图检查实例、账号、项目、日志、设置常规页，已缩短溢出文案。
+- 未验证：GUI 实际操作（开关注册登录项、切换语言并重新打开、各弹窗英文排版、设置其他分类页英文排版）；Windows 未实现英文界面。
+
 ## macOS 1.7.16 已发布（2026-10-30，macos-v1.7.16）
 
 - `scripts/publish-macos.sh` 退出 0：标签 macos-v1.7.16，目标 `03b6125`，已转正式并为 Latest（上一版 Latest 为 windows-v1.8.3）。附件 `ClaudeLauncher-1.7.16.dmg` 2308751 字节，SHA-256 `4ad880eec6349208eded2470d072559e9d84373863901725b5172263fd7b2fa7`；`latest-macos.json`；从 windows-v1.8.3 带入并核对的 Windows 清单与 `ClaudeLauncherSetup-1.8.3.exe`。草稿附件经 API 核对，latest/download 已复核。
