@@ -72,22 +72,27 @@ NSArray<NSDictionary *> *ConfigSyncItems(NSString *source, NSString *target) {
         NSString *state = SourceState(from,name,&kind);
         NSString *parent = to.stringByDeletingLastPathComponent; struct stat info;
         if (!state && ![parent isEqual:target] && Lstat(parent,&info) && !S_ISDIR(info.st_mode)) state = @"不安全";
-        if (!state) state = !Lstat(to,&info) ? @"缺少" : SameItem(from,to,kind) ? @"相同" : @"不同";
+        // A link to the source item, or a copied link with the same destination, already follows every change.
+        BOOL linked = !state && Lstat(to,&info) && S_ISLNK(info.st_mode) &&
+            ([kind isEqual:@"link"] ? SameItem(from,to,kind) : [[NSFileManager.defaultManager destinationOfSymbolicLinkAtPath:to error:nil] isEqual:from]);
+        if (!state) state = linked ? @"已链接" : !Lstat(to,&info) ? @"缺少" : SameItem(from,to,kind) ? @"相同" : @"不同";
         [items addObject:@{@"name":name,@"kind":kind,@"state":state}];
     }
     return items;
 }
 
-NSDictionary *ApplyConfigSync(NSString *source, NSString *target, NSArray<NSString *> *names, BOOL overwrite) {
+NSDictionary *ApplyConfigSync(NSString *source, NSString *target, NSArray<NSString *> *names, BOOL overwrite, BOOL link) {
     NSUInteger added = 0, replaced = 0, skipped = 0; NSString *failure = nil;
-    NSMutableDictionary *states = [NSMutableDictionary dictionary];
-    for (NSDictionary *item in ConfigSyncItems(source,target)) states[item[@"name"]] = item[@"state"];
+    NSMutableDictionary *states = [NSMutableDictionary dictionary], *kinds = [NSMutableDictionary dictionary];
+    for (NSDictionary *item in ConfigSyncItems(source,target)) { states[item[@"name"]] = item[@"state"]; kinds[item[@"name"]] = item[@"kind"]; }
     if (!states.count && names.count) failure = L(@"来源或目标配置目录不存在、是链接或相同，没有写入。");
     NSFileManager *files = NSFileManager.defaultManager;
     for (NSString *name in names) {
         if (failure) break;
         NSString *state = states[name];
-        BOOL replace = [state isEqual:@"不同"] && overwrite;
+        // Source items that are links stay links to the same place; everything else becomes a link to the source in link mode.
+        BOOL linkable = link && ![kinds[name] isEqual:@"link"];
+        BOOL replace = overwrite && ([state isEqual:@"不同"] || ([state isEqual:@"相同"] && linkable));
         if (!([state isEqual:@"缺少"] || replace)) { skipped++; continue; }
         if (!RealDirectory(target)) { failure = L(@"目标配置目录在同步期间变化，已停止。"); break; }
         NSString *from = [source stringByAppendingPathComponent:name], *to = [target stringByAppendingPathComponent:name];
@@ -97,7 +102,8 @@ NSDictionary *ApplyConfigSync(NSString *source, NSString *target, NSArray<NSStri
             failure = [NSString stringWithFormat:L(@"无法创建目录 %@，已停止。"),parent.lastPathComponent]; break;
         }
         NSString *temporary = [parent stringByAppendingPathComponent:[@".claude-launcher-sync-" stringByAppendingString:NSUUID.UUID.UUIDString]];
-        if (![files copyItemAtPath:from toPath:temporary error:nil]) { [files removeItemAtPath:temporary error:nil]; failure = [NSString stringWithFormat:L(@"复制 %@ 失败，已停止。"),name]; break; }
+        BOOL made = linkable ? [files createSymbolicLinkAtPath:temporary withDestinationPath:from error:nil] : [files copyItemAtPath:from toPath:temporary error:nil];
+        if (!made) { [files removeItemAtPath:temporary error:nil]; failure = [NSString stringWithFormat:L(@"复制 %@ 失败，已停止。"),name]; break; }
         if (replace && ![files trashItemAtURL:[NSURL fileURLWithPath:to] resultingItemURL:nil error:nil]) {
             [files removeItemAtPath:temporary error:nil]; failure = [NSString stringWithFormat:L(@"无法把旧的 %@ 移到废纸篓，已停止。"),name]; break;
         }
@@ -133,12 +139,12 @@ void TestConfigSync(void) {
     for (NSDictionary *item in ConfigSyncItems(source,target)) states[item[@"name"]] = item[@"state"];
     NSDictionary *expected = @{@"CLAUDE.md":@"缺少",@"RTK.md":@"相同",@"settings.json":@"缺少",@"skills/own":@"缺少",@"skills/linked":@"缺少",@"agents/reviewer.md":@"不同"};
     NSCAssert([states isEqual:expected],@"only allowlisted config is listed; .claude.json, history and projects never appear");
-    NSDictionary *result = ApplyConfigSync(source,target,states.allKeys,NO);
+    NSDictionary *result = ApplyConfigSync(source,target,states.allKeys,NO,NO);
     NSCAssert([result[@"added"] isEqual:@4] && [result[@"replaced"] isEqual:@0] && [result[@"skipped"] isEqual:@2] && !result[@"error"],@"missing items copied, existing kept");
     NSCAssert([[NSString stringWithContentsOfFile:[target stringByAppendingPathComponent:@"agents/reviewer.md"] encoding:NSUTF8StringEncoding error:nil] isEqual:@"local agent"],@"differing item untouched without overwrite");
     NSCAssert([[files destinationOfSymbolicLinkAtPath:[target stringByAppendingPathComponent:@"skills/linked"] error:nil] isEqual:@"/nonexistent/skill"],@"symlinks copied as links");
     NSCAssert(![files fileExistsAtPath:[target stringByAppendingPathComponent:@".claude.json"]] && ![files fileExistsAtPath:[target stringByAppendingPathComponent:@"history.jsonl"]],@"account state never copied");
-    NSCAssert([ApplyConfigSync(source,target,states.allKeys,NO)[@"added"] isEqual:@0],@"second run adds nothing");
+    NSCAssert([ApplyConfigSync(source,target,states.allKeys,NO,NO)[@"added"] isEqual:@0],@"second run adds nothing");
     write([source stringByAppendingPathComponent:@"settings.json"],@"{\"env\":{\"ANTHROPIC_AUTH_TOKEN\":\"x\"}}");
     write([source stringByAppendingPathComponent:@"evil.md"],@"x");
     [files removeItemAtPath:[target stringByAppendingPathComponent:@"settings.json"] error:nil];
@@ -147,10 +153,26 @@ void TestConfigSync(void) {
     states = [NSMutableDictionary dictionary];
     for (NSDictionary *item in ConfigSyncItems(source,target)) states[item[@"name"]] = item[@"state"];
     NSCAssert([states[@"settings.json"] isEqual:@"含凭据"] && [states[@"commands/run.md"] isEqual:@"不安全"],@"credentials and linked target folders refused");
-    result = ApplyConfigSync(source,target,@[@"settings.json",@"commands/run.md"],YES);
+    result = ApplyConfigSync(source,target,@[@"settings.json",@"commands/run.md"],YES,NO);
     NSCAssert([result[@"added"] isEqual:@0] && ![files fileExistsAtPath:[target stringByAppendingPathComponent:@"settings.json"]] &&
               ![files fileExistsAtPath:[root stringByAppendingPathComponent:@"run.md"]],@"refused items never written");
+    // Link mode: new items become links, identical copies become links with overwrite, and links follow later edits.
+    NSString *linkTarget = [root stringByAppendingPathComponent:@"c"];
+    write([linkTarget stringByAppendingPathComponent:@"CLAUDE.md"],@"rules");
+    result = ApplyConfigSync(source,linkTarget,@[@"CLAUDE.md",@"RTK.md",@"skills/linked",@"skills/own"],NO,YES);
+    NSCAssert([result[@"added"] isEqual:@3] && [result[@"skipped"] isEqual:@1],@"identical copy kept without overwrite");
+    result = ApplyConfigSync(source,linkTarget,@[@"CLAUDE.md"],YES,YES);
+    NSString *linkedRules = [linkTarget stringByAppendingPathComponent:@"CLAUDE.md"];
+    NSCAssert([result[@"replaced"] isEqual:@1] && [[files destinationOfSymbolicLinkAtPath:linkedRules error:nil] isEqual:[source stringByAppendingPathComponent:@"CLAUDE.md"]],@"identical copy converted to a link with overwrite");
+    NSCAssert([[files destinationOfSymbolicLinkAtPath:[linkTarget stringByAppendingPathComponent:@"skills/own"] error:nil] isEqual:[source stringByAppendingPathComponent:@"skills/own"]] &&
+              [[files destinationOfSymbolicLinkAtPath:[linkTarget stringByAppendingPathComponent:@"skills/linked"] error:nil] isEqual:@"/nonexistent/skill"],@"folders linked to source; source links keep their own destination");
+    write([source stringByAppendingPathComponent:@"CLAUDE.md"],@"rules v2");
+    NSCAssert([[NSString stringWithContentsOfFile:linkedRules encoding:NSUTF8StringEncoding error:nil] isEqual:@"rules v2"],@"linked target follows later source edits");
+    states = [NSMutableDictionary dictionary];
+    for (NSDictionary *item in ConfigSyncItems(source,linkTarget)) states[item[@"name"]] = item[@"state"];
+    NSCAssert([states[@"CLAUDE.md"] isEqual:@"已链接"] && [states[@"skills/own"] isEqual:@"已链接"] && [states[@"skills/linked"] isEqual:@"已链接"],@"launcher links and same-destination links reported as linked");
+    NSCAssert([ApplyConfigSync(source,linkTarget,@[@"CLAUDE.md",@"skills/own"],YES,YES)[@"replaced"] isEqual:@0],@"linked items never replaced");
     NSCAssert(!ConfigSyncItems(source,source).count && !ConfigSyncItems(source,[root stringByAppendingPathComponent:@"missing"]).count,@"same or missing target refused");
     [files removeItemAtPath:root error:nil];
-    puts("PASS: config sync allowlist (settings/md/skills/agents/commands/output-styles), add-only default, links kept as links, credentials and linked targets refused; temporary fixtures only");
+    puts("PASS: config sync allowlist (settings/md/skills/agents/commands/output-styles), add-only default, links kept as links, link mode follows source edits, credentials and linked targets refused; temporary fixtures only");
 }

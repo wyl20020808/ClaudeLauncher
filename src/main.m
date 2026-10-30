@@ -1128,9 +1128,9 @@ static BOOL ConfigFolderExists(NSInteger n) {
     }
     if (!names.count) { [self alert:L(@"没有可同步的配置") detail:L(@"来源账号的 Code 配置目录中没有可同步的条目。")]; return; }
     NSAlert *review = [NSAlert new]; review.messageText = [NSString stringWithFormat:L(@"从账号 %02ld 同步配置"),(long)from];
-    review.informativeText = L(@"勾选要同步的条目。“相同”无需同步；“不同”默认保留目标内容，勾选下方覆盖选项后才替换（旧内容移到废纸篓）。");
+    review.informativeText = L(@"勾选要同步的条目。默认以链接方式同步：目标指向来源账号的同一份文件，之后在任一账号修改都会同时生效，无需再次同步。“不同”默认保留目标内容，勾选覆盖后才替换（旧内容移到废纸篓）；覆盖时“相同”的拷贝也会改成链接。“已链接”无需处理。");
     [review addButtonWithTitle:L(@"同步")]; [review addButtonWithTitle:L(@"取消")];
-    Canvas *list = [[Canvas alloc] initWithFrame:NSMakeRect(0,0,560,330)];
+    Canvas *list = [[Canvas alloc] initWithFrame:NSMakeRect(0,0,560,356)];
     NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(0,0,560,296)]; scroll.hasVerticalScroller = YES; scroll.borderType = NSBezelBorder;
     Canvas *rows = [[Canvas alloc] initWithFrame:NSMakeRect(0,0,538,MAX(296,names.count*44))];
     NSMutableArray<NSButton *> *checks = [NSMutableArray array];
@@ -1138,7 +1138,7 @@ static BOOL ConfigFolderExists(NSInteger n) {
         NSString *name = names[i]; NSMutableArray *parts = [NSMutableArray array]; BOOL missing = NO, actionable = NO;
         for (NSNumber *n in chosen) {
             NSString *state = states[n][name] ?: @"不安全";
-            missing |= [state isEqual:@"缺少"]; actionable |= [state isEqual:@"缺少"] || [state isEqual:@"不同"];
+            missing |= [state isEqual:@"缺少"]; actionable |= [@[@"缺少",@"不同",@"相同"] containsObject:state]; // 相同 can still become a link.
             [parts addObject:[NSString stringWithFormat:L(@"%02ld %@"),(long)n.integerValue,L(state)]];
         }
         NSButton *check = [NSButton checkboxWithTitle:name target:nil action:nil];
@@ -1149,16 +1149,18 @@ static BOOL ConfigFolderExists(NSInteger n) {
     scroll.documentView = rows; [list addSubview:scroll];
     NSButton *overwrite = [NSButton checkboxWithTitle:L(@"覆盖目标中内容不同的条目（旧内容移到废纸篓）") target:nil action:nil];
     overwrite.frame = NSMakeRect(0,304,560,22); overwrite.state = NSControlStateValueOff; [list addSubview:overwrite];
+    NSButton *linkMode = [NSButton checkboxWithTitle:L(@"以链接方式同步（之后修改来源，目标自动跟随）") target:nil action:nil];
+    linkMode.frame = NSMakeRect(0,330,560,22); linkMode.state = NSControlStateValueOn; [list addSubview:linkMode];
     review.accessoryView = list;
     if ([review runModal] != NSAlertFirstButtonReturn) return;
     NSMutableArray *selected = [NSMutableArray array];
     for (NSUInteger i = 0; i < checks.count; i++) if (checks[i].enabled && checks[i].state == NSControlStateValueOn) [selected addObject:names[i]];
     if (!selected.count) { [self showLocalNotice:L(@"未选择条目，没有写入。")]; return; }
-    BOOL replace = overwrite.state == NSControlStateValueOn;
+    BOOL replace = overwrite.state == NSControlStateValueOn, link = linkMode.state == NSControlStateValueOn;
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0), ^{
         NSMutableArray *lines = [NSMutableArray array]; BOOL failed = NO, changed = NO;
         for (NSNumber *n in chosen) {
-            NSDictionary *result = ApplyConfigSync(CodeConfigFolder(from),CodeConfigFolder(n.integerValue),selected,replace);
+            NSDictionary *result = ApplyConfigSync(CodeConfigFolder(from),CodeConfigFolder(n.integerValue),selected,replace,link);
             failed |= result[@"error"] != nil; changed |= [result[@"added"] integerValue]+[result[@"replaced"] integerValue] > 0;
             [lines addObject:[NSString stringWithFormat:L(@"账号 %02ld：新增 %@ 项，替换 %@ 项，跳过 %@ 项。%@"),(long)n.integerValue,result[@"added"],result[@"replaced"],result[@"skipped"],result[@"error"] ?: @""]];
         }

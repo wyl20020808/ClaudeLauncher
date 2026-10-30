@@ -731,3 +731,6 @@
 "无法把旧的 %@ 移到废纸篓，已停止。" = "Cannot move the old %@ to the Trash; stopped.";
 "%@ 在同步期间出现，未覆盖，已停止。" = "%@ appeared during sync and was not overwritten; stopped.";
 "账号 %02ld 近 7 天用量趋势" = "Account %02ld usage trend, last 7 days";
+"勾选要同步的条目。默认以链接方式同步：目标指向来源账号的同一份文件，之后在任一账号修改都会同时生效，无需再次同步。“不同”默认保留目标内容，勾选覆盖后才替换（旧内容移到废纸篓）；覆盖时“相同”的拷贝也会改成链接。“已链接”无需处理。" = "Check the items to sync. By default items are linked: the target points to the source account's file, so later edits in either account apply to both without syncing again. “Different” keeps the target's version unless overwrite is on (the old version goes to the Trash); with overwrite, “Same” copies also become links. “Linked” needs nothing.";
+"以链接方式同步（之后修改来源，目标自动跟随）" = "Sync as links (later source edits apply to targets)";
+"已链接" = "Linked";
