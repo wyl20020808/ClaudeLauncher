@@ -14,6 +14,7 @@
 #import "UsageInterface.h"
 #import "Settings.h"
 #import "ProxyCheck.h"
+#import "Handoff.h"
 #import <ServiceManagement/ServiceManagement.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import <Carbon/Carbon.h>
@@ -975,9 +976,15 @@ static const unsigned CardFill = 0xFFFCF7;
         NSInteger last = [project[@"lastAccount"] integerValue];
         NSArray *values = @[project[@"name"], [project[@"group"] length] ? project[@"group"] : @"未分组",path,status,last ? [NSString stringWithFormat:@"账号 %02ld",(long)last] : @"未使用"];
         CGFloat xs[] = {18,140,224,442,508}, widths[] = {112,74,204,58,88};
+        NSDate *handoff = self.snapshotProjects ? project[@"previewHandoff"] : [status isEqual:@"正常"] ? HandoffModified(path) : nil;
+        if (handoff) {
+            NSTextField *age = Text([@"交接 " stringByAppendingString:HandoffAge(handoff,NSDate.date)],NSMakeRect(18,36,112,16),[NSFont systemFontOfSize:11],Hex(0x9A6447));
+            age.toolTip = [NSString stringWithFormat:@"HANDOFF.md 最后修改：%@",[NSDateFormatter localizedStringFromDate:handoff dateStyle:NSDateFormatterMediumStyle timeStyle:NSDateFormatterShortStyle]];
+            [row addSubview:age];
+        }
         for (NSUInteger i = 0; i < values.count; i++) {
             NSColor *color = i == 3 ? ([status isEqual:@"正常"] ? Hex(0x3C8A68) : Hex(0xB46A45)) : Hex(0x6E655C);
-            NSTextField *field = Text(values[i],NSMakeRect(xs[i],22,widths[i],20),[NSFont systemFontOfSize:i == 0 ? 13 : 12],color);
+            NSTextField *field = Text(values[i],NSMakeRect(xs[i],i == 0 && handoff ? 14 : 22,widths[i],20),[NSFont systemFontOfSize:i == 0 ? 13 : 12],color);
             field.lineBreakMode = i == 2 ? NSLineBreakByTruncatingMiddle : NSLineBreakByTruncatingTail;
             field.toolTip = values[i]; field.accessibilityLabel = values[i]; [row addSubview:field];
         }
@@ -1142,6 +1149,13 @@ static const unsigned CardFill = 0xFFFCF7;
 - (void)projectMenu:(NSButton *)sender {
     if (![self projectForSender:sender]) return;
     NSMenu *menu = [NSMenu new]; menu.autoenablesItems = NO;
+    BOOL usable = self.projectStore.writable && [[self.projectStore statusForPath:[self projectForSender:sender][@"path"]] isEqual:@"正常"];
+    NSArray *handoffItems = @[@[@"交接给其他账号…",NSStringFromSelector(@selector(handoffProject:))],@[@"复制“写交接文档”指令",NSStringFromSelector(@selector(copyHandoffWritePrompt:))],@[@"写入交接规则到 CLAUDE.md…",NSStringFromSelector(@selector(addHandoffRule:))]];
+    for (NSArray *entry in handoffItems) {
+        NSMenuItem *item = [menu addItemWithTitle:entry[0] action:NSSelectorFromString(entry[1]) keyEquivalent:@""]; item.target = self; item.tag = sender.tag;
+        item.enabled = usable || [entry[1] isEqual:NSStringFromSelector(@selector(copyHandoffWritePrompt:))];
+    }
+    [menu addItem:NSMenuItem.separatorItem];
     NSArray *titles = @[@"修改名称与分组…",@"上移",@"下移",@"在 Finder 中显示",@"复制路径",@"从清单移除…"];
     NSArray *actions = @[NSStringFromSelector(@selector(editProject:)),NSStringFromSelector(@selector(moveProjectUp:)),NSStringFromSelector(@selector(moveProjectDown:)),NSStringFromSelector(@selector(revealProject:)),NSStringFromSelector(@selector(copyProject:)),NSStringFromSelector(@selector(removeProject:))];
     for (NSUInteger i = 0; i < titles.count; i++) {
@@ -1152,6 +1166,23 @@ static const unsigned CardFill = 0xFFFCF7;
         if (i == 2 && sender.tag+1 == (NSInteger)self.projectStore.projects.count) item.enabled = NO;
     }
     [menu popUpMenuPositioningItem:nil atLocation:NSMakePoint(0,NSHeight(sender.bounds)) inView:sender];
+}
+- (void)copyHandoffWritePrompt:(id)sender {
+    [NSPasteboard.generalPasteboard clearContents]; [NSPasteboard.generalPasteboard setString:HandoffWritePrompt() forType:NSPasteboardTypeString];
+    [self projectNotice:@"已复制“写交接文档”指令。请在原会话中粘贴发送；启动器不会代你发送。"];
+}
+- (void)addHandoffRule:(id)sender {
+    NSDictionary *record = [self projectForSender:sender]; if (!record) return;
+    NSString *path = record[@"path"];
+    if (![[self.projectStore statusForPath:path] isEqual:@"正常"]) { [self alert:@"项目目录不可用" detail:@"请检查目录是否存在、位置是否改变以及访问权限。"]; return; }
+    NSAlert *confirm = [NSAlert new]; confirm.messageText = [NSString stringWithFormat:@"在「%@」的 CLAUDE.md 末尾追加交接规则？",record[@"name"]];
+    confirm.informativeText = [NSString stringWithFormat:@"%@\n\n只在文件末尾追加以下内容（文件不存在则创建），不改动已有内容；已添加过则跳过。该文件被使用此项目的所有账号共享。\n\n%@",[path stringByAppendingPathComponent:@"CLAUDE.md"],HandoffRuleBlock()];
+    [confirm addButtonWithTitle:@"取消"]; [confirm addButtonWithTitle:@"追加"];
+    if ([confirm runModal] != NSAlertSecondButtonReturn) return;
+    BOOL present = NO; NSString *failure = AppendHandoffRule(path, &present);
+    if (failure) { [self alert:@"未写入交接规则" detail:failure]; return; }
+    NSString *text = present ? @"CLAUDE.md 已有交接规则，未重复添加。" : [NSString stringWithFormat:@"已在「%@」的 CLAUDE.md 末尾追加交接规则。",record[@"name"]];
+    [self projectNotice:text]; [self addLog:text];
 }
 - (void)editProject:(id)sender {
     NSDictionary *record = [self projectForSender:sender]; if (!record) return;
@@ -1192,16 +1223,36 @@ static const unsigned CardFill = 0xFFFCF7;
     [projects removeObjectsAtIndexes:removed];
     if ([self saveProjects:projects]) [self projectNotice:@"记录已移除，项目目录与文件保持原样。"];
 }
-- (void)openProject:(id)sender {
+- (void)openProject:(id)sender { [self openProject:sender handoff:NO]; }
+- (void)handoffProject:(id)sender { [self openProject:sender handoff:YES]; }
+// Handoff reuses the open flow with another account; the launcher only copies a prompt, the user pastes and sends it.
+- (void)openProject:(id)sender handoff:(BOOL)handoff {
     NSDictionary *record = [self projectForSender:sender]; if (!record || !self.projectStore.writable) return;
     if (![[self.projectStore statusForPath:record[@"path"]] isEqual:@"正常"]) { [self refreshProjects:nil]; [self alert:@"项目目录不可用" detail:@"请检查目录是否存在、位置是否改变以及访问权限。"] ; return; }
-    NSAlert *choice = [NSAlert new]; choice.messageText = @"选择打开项目的账号";
-    choice.informativeText = @"通过账号检查后，路径会复制到剪贴板，并在 Finder 中显示。请在 Claude 中选择此文件夹；不会自动加载或同步会话。";
+    NSInteger last = [record[@"lastAccount"] integerValue];
+    if (handoff && !HandoffModified(record[@"path"])) {
+        NSAlert *missing = [NSAlert new]; missing.messageText = @"项目里还没有 HANDOFF.md";
+        missing.informativeText = @"建议先在原会话中让 AI 写交接文档。点「复制写交接指令」后，到原会话粘贴发送，写完再回来交接。";
+        [missing addButtonWithTitle:@"复制写交接指令"]; [missing addButtonWithTitle:@"仍然交接"]; [missing addButtonWithTitle:@"取消"];
+        NSModalResponse response = [missing runModal];
+        if (response == NSAlertFirstButtonReturn) { [self copyHandoffWritePrompt:nil]; return; }
+        if (response != NSAlertSecondButtonReturn) return;
+    }
+    NSAlert *choice = [NSAlert new]; choice.messageText = handoff ? @"交接给哪个账号？" : @"选择打开项目的账号";
+    choice.informativeText = handoff ? @"通过账号检查后，接手指令（含项目路径）会复制到剪贴板，并在 Finder 中显示项目。请在 Claude 中选择此文件夹，粘贴指令并发送。启动器不会代你发送消息。"
+                                     : @"通过账号检查后，路径会复制到剪贴板，并在 Finder 中显示。请在 Claude 中选择此文件夹；不会自动加载或同步会话。";
     NSPopUpButton *accounts = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(0,0,320,30) pullsDown:NO];
     [self refresh];
     for (NSInteger n = 1; n <= 10; n++) [accounts addItemWithTitle:[NSString stringWithFormat:@"账号 %02ld · %@",(long)n,self.buttons[n-1].title]];
-    NSInteger last = [record[@"lastAccount"] integerValue]; [accounts selectItemAtIndex:last ? last-1 : 0]; accounts.accessibilityLabel = @"目标账号";
-    choice.accessoryView = accounts; [choice addButtonWithTitle:@"用此账号打开"]; [choice addButtonWithTitle:@"取消"];
+    NSInteger preferred = last;
+    if (handoff) { // Default to another existing account, preferring the lowest observed five-hour use.
+        NSMutableArray *candidates = [NSMutableArray array];
+        for (AccountCard *card in self.cards) if (!card.hidden && card.number != last) [candidates addObject:@[@(card.number),card.usageValues.firstObject ?: NSNull.null]];
+        preferred = SuggestedAccount(candidates, last, 101);
+        if (!preferred) for (NSArray *c in candidates) { preferred = [c[0] integerValue]; break; }
+    }
+    [accounts selectItemAtIndex:preferred ? preferred-1 : 0]; accounts.accessibilityLabel = @"目标账号";
+    choice.accessoryView = accounts; [choice addButtonWithTitle:handoff ? @"交接给此账号" : @"用此账号打开"]; [choice addButtonWithTitle:@"取消"];
     if ([choice runModal] != NSAlertFirstButtonReturn) return;
     NSInteger account = accounts.indexOfSelectedItem+1;
     if (self.starting[@(account)] || [self.checking containsObject:@(account)]) { [self alert:@"账号正在处理中" detail:@"请等待本次检查或启动完成，再打开项目。"] ; return; }
@@ -1214,9 +1265,11 @@ static const unsigned CardFill = 0xFFFCF7;
         }
         NSMutableDictionary *updated = [projects[index] mutableCopy]; updated[@"lastAccount"] = @(account); projects[index] = updated;
         if (![self saveProjects:projects]) return NO;
-        [NSPasteboard.generalPasteboard clearContents]; [NSPasteboard.generalPasteboard setString:updated[@"path"] forType:NSPasteboardTypeString];
+        [NSPasteboard.generalPasteboard clearContents]; [NSPasteboard.generalPasteboard setString:handoff ? HandoffContinuePrompt(updated[@"path"]) : updated[@"path"] forType:NSPasteboardTypeString];
         [NSWorkspace.sharedWorkspace activateFileViewerSelectingURLs:@[[NSURL fileURLWithPath:updated[@"path"]]]];
-        [self projectNotice:[NSString stringWithFormat:@"已为账号 %02ld 复制路径并显示 Finder。请在 Claude 中选择此文件夹。",(long)account]];
+        [self projectNotice:handoff ? [NSString stringWithFormat:@"已为账号 %02ld 复制接手指令并显示 Finder。请在 Claude 中选择此文件夹，粘贴指令后发送。",(long)account]
+                                    : [NSString stringWithFormat:@"已为账号 %02ld 复制路径并显示 Finder。请在 Claude 中选择此文件夹。",(long)account]];
+        if (handoff) [self addLog:[NSString stringWithFormat:@"项目「%@」交接给账号 %02ld（已复制接手指令）",updated[@"name"],(long)account]];
         return YES;
     }];
 }
@@ -2121,6 +2174,13 @@ NSInteger SuggestedAccount(NSArray<NSArray *> *candidates, NSInteger exclude, do
     NSString *text = [NSString stringWithFormat:@"%@ 五小时已用 %.0f%%（提醒阈值 %.0f%%）。",[self accountName:account],percent,threshold];
     if (best) text = [text stringByAppendingFormat:@"推荐切换到 %@（观察到已用 %.0f%%）。",[self accountName:best],[self.cards[best-1].usageValues.firstObject doubleValue]];
     else text = [text stringByAppendingString:@"其他账号暂无低于阈值的观察记录。"];
+    for (NSDictionary *project in [self projectRecords]) {
+        if ([project[@"lastAccount"] integerValue] != account) continue;
+        NSDate *handoff = self.snapshotProjects ? project[@"previewHandoff"] : HandoffModified(project[@"path"]);
+        text = [text stringByAppendingString:handoff ? [NSString stringWithFormat:@"项目「%@」交接文档 %@更新，可在项目页「交接给其他账号」。",project[@"name"],HandoffAge(handoff,NSDate.date)]
+                                                    : [NSString stringWithFormat:@"项目「%@」还没有交接文档，可先让当前会话写 HANDOFF.md。",project[@"name"]]];
+        break;
+    }
     self.message.stringValue = text; [self addLog:text]; [self showLocalNotice:text];
     self.suggestButton.tag = best; self.suggestButton.hidden = !best;
     if (best) self.suggestButton.title = [NSString stringWithFormat:@"切换到账号 %02ld",(long)best];
@@ -2769,6 +2829,7 @@ static int SelfTest(void) {
         TestProjectRegistration();
         TestUsageInterface();
         TestProxyCheck();
+        TestHandoff();
         NSCAssert(SuggestedAccount(@[@[@1,@85],@[@2,@12],@[@3,NSNull.null],@[@4,@40]],1,80) == 2,@"lowest observed account suggested");
         NSCAssert(SuggestedAccount(@[@[@1,@85],@[@2,@92],@[@3,NSNull.null]],1,80) == 0 && SuggestedAccount(@[@[@1,@5]],1,80) == 0,@"no suggestion above threshold, unobserved or self");
         NSCAssert(AccountForArguments(@[@"Claude"]) == 1, @"default");
@@ -3138,7 +3199,7 @@ int main(int argc, const char *argv[]) {
             if (argc > 3) launcher.page = atoi(argv[3]);
             // Purely visual fixtures: do not load or write the user's project list.
             if (argc > 4 && strcmp(argv[4],"--projects-demo") == 0) launcher.snapshotProjects = @[
-                @{@"name":@"网站项目",@"group":@"工作",@"path":@"/Users/example/Projects/Website",@"lastAccount":@2,@"previewStatus":@"正常"},
+                @{@"name":@"网站项目",@"group":@"工作",@"path":@"/Users/example/Projects/Website",@"lastAccount":@2,@"previewStatus":@"正常",@"previewHandoff":[NSDate dateWithTimeIntervalSinceNow:-720]},
                 @{@"name":@"较长的项目名称用于检查表格截断",@"group":@"个人学习资料",@"path":@"/Users/example/Documents/一个很长的目录名称/研究项目/Notes",@"lastAccount":@1,@"previewStatus":@"不存在"},
                 @{@"name":@"归档资料",@"group":@"",@"path":@"/Volumes/Archive/Research",@"lastAccount":@0,@"previewStatus":@"无权限"}];
             [launcher makeWindow]; [launcher applySettings]; [launcher refresh];
