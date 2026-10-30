@@ -654,7 +654,6 @@ static const unsigned CardFill = 0xFFFCF7;
 @property NSUserDefaults *preferences;
 @property NSView *settingsContent, *mainCanvas;
 @property NSArray<NSButton *> *settingsTabs;
-@property ActionButton *saveSettingsButton;
 @property NSMutableArray<AccountRow *> *rows;
 @property NSView *rowsView;
 @property NSArray<NSTextField *> *stats;
@@ -1309,11 +1308,8 @@ static const unsigned CardFill = 0xFFFCF7;
     }
     self.settingsTabs = tabs;
     self.settingsContent = [[Canvas alloc] initWithFrame:NSMakeRect(56,208,696,428)]; [page addSubview:self.settingsContent];
-    self.settingsFeedback = Text(@"更改后点击保存设置",NSMakeRect(58,656,350,20),[NSFont systemFontOfSize:12],Hex(0x6E655C)); [page addSubview:self.settingsFeedback];
-    [page addSubview:[self toolButton:@"恢复默认…" symbol:nil frame:NSMakeRect(424,648,104,34) action:@selector(resetSettings:)]];
-    [page addSubview:[self toolButton:@"撤销更改" symbol:nil frame:NSMakeRect(536,648,104,34) action:@selector(discardSettings:)]];
-    self.saveSettingsButton = [self toolButton:@"保存设置" symbol:nil frame:NSMakeRect(648,648,108,34) action:@selector(saveSettings:)];
-    self.saveSettingsButton.primary = YES; [page addSubview:self.saveSettingsButton];
+    self.settingsFeedback = Text(@"更改即时保存并生效",NSMakeRect(58,656,540,20),[NSFont systemFontOfSize:12],Hex(0x6E655C)); [page addSubview:self.settingsFeedback];
+    [page addSubview:[self toolButton:@"恢复默认…" symbol:nil frame:NSMakeRect(652,648,104,34) action:@selector(resetSettings:)]];
     [self renderSettings]; return page;
 }
 - (void)settingsTabChanged:(NSButton *)sender { self.settingsSection = sender.tag; [self renderSettings]; }
@@ -1435,38 +1431,34 @@ static const unsigned CardFill = 0xFFFCF7;
             [self settingsAction:@"复制" action:@selector(copyDiagnostics:) title:@"基础诊断信息" detail:@"仅包含版本、系统版本和权限状态，不包含账号、路径、日志或凭据。" icon:@"stethoscope"];
             [self settingsNote:@"不会自动联网检查。不读取凭据，不修改官方应用。"]; break;
     }
-    self.saveSettingsButton.enabled = ![self.settingsDraft isEqual:self.settings];
 }
+// Each change is saved at once; a refused or failed save restores the controls to the saved values.
 - (void)settingChanged:(NSControl *)sender {
     id value = [sender isKindOfClass:NSPopUpButton.class] ? [(NSPopUpButton *)sender selectedItem].representedObject : @([(NSButton *)sender state] == NSControlStateValueOn);
     self.settingsDraft[sender.identifier] = value;
-    if ([sender.identifier isEqual:@"rememberPage"]) for (NSView *view in self.settingsContent.subviews) if ([view.identifier isEqual:@"startPage"]) [(NSControl *)view setEnabled:![value boolValue]];
-    self.saveSettingsButton.enabled = ![self.settingsDraft isEqual:self.settings];
-    self.settingsFeedback.stringValue = self.saveSettingsButton.enabled ? @"有未保存的更改" : @"与已保存设置一致";
+    if (![self saveSettings:nil]) { self.settingsDraft = self.settings.mutableCopy; [self renderSettings]; }
 }
-- (void)discardSettings:(id)sender {
-    self.settingsDraft = self.settings.mutableCopy; [self renderSettings]; self.settingsFeedback.stringValue = @"已撤销未保存更改";
-}
-- (void)saveSettings:(id)sender {
+- (BOOL)saveSettings:(id)sender {
     NSDictionary *next = ValidatedSettings(self.settingsDraft);
     if (self.updating && [next[@"allowUpdates"] boolValue] != [self.settings[@"allowUpdates"] boolValue]) {
-        [self alert:@"更新正在进行" detail:@"请等待当前更新结束后再改变联网选项。其余更改仍保留在草稿中。"]; return;
+        [self alert:@"更新正在进行" detail:@"请等待当前更新结束后再改变联网选项。"]; return NO;
     }
     NSDictionary *previous = [self.preferences objectForKey:@"localSettings"];
     [self.preferences setObject:next forKey:@"localSettings"];
     if (![self.preferences synchronize]) {
         if (previous) [self.preferences setObject:previous forKey:@"localSettings"]; else [self.preferences removeObjectForKey:@"localSettings"];
-        [self alert:@"保存设置失败" detail:@"本机偏好未能写入，运行设置保持原样，请稍后重试。"]; return;
+        [self alert:@"保存设置失败" detail:@"本机偏好未能写入，运行设置保持原样，请稍后重试。"]; return NO;
     }
     self.settings = next; self.settingsDraft = next.mutableCopy; [self applySettings]; [self renderSettings];
-    self.settingsFeedback.stringValue = @"设置已保存并生效，仅作用于本地启动器"; [self addLog:@"本地设置已保存"];
+    self.settingsFeedback.stringValue = @"设置已保存并生效，仅作用于本地启动器"; [self addLog:@"本地设置已保存"]; return YES;
 }
 - (void)resetSettings:(id)sender {
     NSAlert *alert = [NSAlert new]; alert.messageText = @"恢复启动器默认设置？";
-    alert.informativeText = @"将默认值填入草稿，点击保存后生效。不会移除账号、项目、别名、登录保护或系统登录项。";
-    [alert addButtonWithTitle:@"取消"]; [alert addButtonWithTitle:@"恢复到草稿"];
+    alert.informativeText = @"立即保存并生效。不会移除账号、项目、别名、登录保护或系统登录项。";
+    [alert addButtonWithTitle:@"取消"]; [alert addButtonWithTitle:@"恢复默认"];
     if ([alert runModal] != NSAlertSecondButtonReturn) return;
-    self.settingsDraft = DefaultSettings().mutableCopy; [self renderSettings]; self.settingsFeedback.stringValue = @"默认值已填入，请保存或撤销";
+    self.settingsDraft = DefaultSettings().mutableCopy;
+    if (![self saveSettings:nil]) { self.settingsDraft = self.settings.mutableCopy; [self renderSettings]; }
 }
 - (void)applySettings {
     if (!self.snapshotMode) {
@@ -1523,7 +1515,7 @@ static const unsigned CardFill = 0xFFFCF7;
     else self.settingsFeedback.stringValue = @"已导出保存的设置，不含账号或凭据";
 }
 - (void)localHelp:(id)sender {
-    [self alert:@"本地使用帮助" detail:@"实例管理：手动启动或打开指定账号；更多菜单可复制路径及管理登录保护。\n账号管理：搜索、筛选、设置本地别名，勾选后复制路径。\n项目管理：维护公共目录入口；所有写入均需明确操作。\n日志记录：筛选、搜索、翻页、导出当前结果；仅保留本次运行。\n系统设置：编辑后保存，恢复默认不会处理账号数据。\n\n启动器不查询 Claude 服务、不读取凭据，不控制官方客户端自身正常联网。"];
+    [self alert:@"本地使用帮助" detail:@"实例管理：手动启动或打开指定账号；更多菜单可复制路径及管理登录保护。\n账号管理：搜索、筛选、设置本地别名，勾选后复制路径。\n项目管理：维护公共目录入口；所有写入均需明确操作。\n日志记录：筛选、搜索、翻页、导出当前结果；仅保留本次运行。\n系统设置：更改即时保存并生效，恢复默认不会处理账号数据。\n\n启动器不查询 Claude 服务、不读取凭据，不控制官方客户端自身正常联网。"];
 }
 - (void)copyDiagnostics:(id)sender {
     NSString *text = [NSString stringWithFormat:@"Claude Launcher %@ (%@)\nmacOS %@\nAccessibility: %@\nNetwork: manual GitHub updates %@\nClaude/Anthropic requests: prohibited",[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"],[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleVersion"],NSProcessInfo.processInfo.operatingSystemVersionString,AXIsProcessTrusted() ? @"granted" : @"not granted",[self.settings[@"allowUpdates"] boolValue] ? @"enabled" : @"disabled"];
@@ -1538,7 +1530,7 @@ static const unsigned CardFill = 0xFFFCF7;
 }
 - (void)testNotification:(id)sender {
     [self showLocalNotice:@"本地通知测试：设置已生效，没有发送网络请求。"];
-    self.settingsFeedback.stringValue = [self.settings[@"localNotifications"] boolValue] ? @"已按保存的设置显示提示" : @"窗口内提示已关闭；启用并保存后可测试";
+    self.settingsFeedback.stringValue = [self.settings[@"localNotifications"] boolValue] ? @"已按当前设置显示提示" : @"窗口内提示已关闭；开启后可测试";
 }
 - (void)addLog:(NSString *)text {
     if (self.headless) printf("[log] %s\n",text.UTF8String);
@@ -1573,7 +1565,6 @@ static const unsigned CardFill = 0xFFFCF7;
     return @[@{@"name":@"GitHub",@"base":GitHubDownloads,@"github":@YES}];
 }
 - (void)checkForUpdates:(id)sender {
-    if (![self.settingsDraft isEqual:self.settings]) { [self showPage:4]; [self alert:@"请先处理未保存设置" detail:@"保存或撤销设置后，再检查启动器更新。"]; return; }
     [self runUpdateCheck:YES];
 }
 - (void)runUpdateCheck:(BOOL)manual {
@@ -1762,10 +1753,6 @@ static const unsigned CardFill = 0xFFFCF7;
         dispatch_async(dispatch_get_main_queue(), ^{
             if (self.updateCancelled) { [fm removeItemAtPath:staged error:nil]; [fm removeItemAtPath:work error:nil]; return; }
             if (failure) { [fm removeItemAtPath:work error:nil]; [self updateFailed:@[failure] manual:YES]; return; }
-            if (![self.settingsDraft isEqual:self.settings]) {
-                [fm removeItemAtPath:staged error:nil]; [fm removeItemAtPath:work error:nil]; self.updating = NO; [self closeUpdateProgress];
-                [self alert:@"更新安装已取消" detail:@"下载期间设置发生了更改。请先保存或撤销，再重新检查更新；当前应用保持原样。"]; return;
-            }
             // Point of no return: cancel is disabled, the launcher quits and the helper replaces it.
             [self updateStep:2 detail:@"校验通过。启动器即将关闭，安装完成后会自动重新打开。Claude 不受影响。" progress:-1];
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)((self.headless ? 0 : 2)*NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
@@ -1995,10 +1982,13 @@ static const unsigned CardFill = 0xFFFCF7;
         if (self.loginAccount) status = @"登录保护中";
         if (self.scanError) status = @"进程待核对";
         if (![self.settings[@"showUsageHistory"] boolValue]) status = @"本地用量显示已关闭";
-        BOOL available = [status isEqual:@"界面已读取"];
+        // After Claude quits, keep showing this account's last saved observation instead of blanking it.
+        NSDictionary *last = [status isEqual:@"Claude 未运行"] ? self.savedUsageInterface[@(card.number)] : nil;
+        if (last) record = last;
+        BOOL available = [status isEqual:@"界面已读取"] || last;
         card.usageValues = @[(available ? record[@"fh"][@"percent"] : nil) ?: NSNull.null,(available ? record[@"sd"][@"percent"] : nil) ?: NSNull.null];
         NSString *detail = @"在实例页聚焦／点击，或你手动展开官方 Code 用量弹窗时，读取一次已有控件并记录。不定时轮询、不代点、不调用用量查询，不读官方历史或登录信息。必要时仅启用该官方进程的本机网页辅助功能树，不更改系统权限。弹窗关闭后保留最近周记录和原时间；重启后核对归属再恢复。卡片上的时间是本机观察时间，不是服务器实时额度，两项时间独立；账号或组织变化不沿用缓存。";
-        card.usageSource.stringValue = available ? @"" : status;
+        card.usageSource.stringValue = last ? @"Claude 未运行 · 上次记录" : available ? @"" : status;
         card.usageSource.toolTip = detail;
         for (NSUInteger row=0;row<2;row++) {
             NSString *key = row == 0 ? @"fh" : @"sd"; NSDictionary *metric = available ? record[key] : nil;
@@ -2043,13 +2033,7 @@ static const unsigned CardFill = 0xFFFCF7;
 - (void)openFromMenu:(NSMenuItem *)item { [self selectAccount:self.buttons[item.tag-1]]; }
 - (BOOL)applicationShouldHandleReopen:(NSApplication *)app hasVisibleWindows:(BOOL)visible { [self show:nil]; return YES; }
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)app {
-    if ([self.settingsDraft isEqual:self.settings]) return NSTerminateNow;
-    NSAlert *alert = [NSAlert new]; alert.messageText = @"设置尚未保存"; alert.informativeText = @"保存后退出，或放弃这次更改。Claude 实例会继续运行。";
-    [alert addButtonWithTitle:@"返回设置"]; [alert addButtonWithTitle:@"放弃并退出"]; [alert addButtonWithTitle:@"保存并退出"];
-    NSModalResponse response = [alert runModal];
-    if (response == NSAlertSecondButtonReturn) return NSTerminateNow;
-    if (response == NSAlertThirdButtonReturn) { [self saveSettings:nil]; return [self.settingsDraft isEqual:self.settings] ? NSTerminateNow : NSTerminateCancel; }
-    [self showPage:4]; [self show:nil]; return NSTerminateCancel;
+    return NSTerminateNow;
 }
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)app { return ![self.settings[@"closeToBackground"] boolValue]; }
 - (void)refresh {
@@ -2697,7 +2681,11 @@ static int UISettingsTest(NSString *output) {
         NSCAssert([launcher.cards[1].usageLabels[0].stringValue isEqual:@"73%"],@"account two does not inherit account one's quota");
         launcher.loginAccount = 1; [launcher updateUsageCards];
         NSCAssert([launcher.cards[0].usageLabels[0].stringValue isEqual:@"—"],@"login protection hides interface observations");
-        launcher.loginAccount = 0; launcher.usageInterface = nil; [launcher updateUsageCards];
+        launcher.loginAccount = 0; launcher.usageInterface = nil;
+        launcher.snapshotMode = NO; launcher.savedUsageInterface = @{@1:UsageDemo(@62,@70)}; [launcher updateUsageCards];
+        NSCAssert([launcher.cards[0].usageLabels[0].stringValue isEqual:@"62%"] && [launcher.cards[0].usageLabels[1].stringValue isEqual:@"70%"] &&
+            [launcher.cards[0].usageSource.stringValue isEqual:@"Claude 未运行 · 上次记录"] && [launcher.cards[1].usageLabels[0].stringValue isEqual:@"—"],@"stopped account keeps its last saved observation");
+        launcher.snapshotMode = YES; launcher.savedUsageInterface = nil; [launcher updateUsageCards];
         void (^capture)(NSString *) = ^(NSString *name) {
             NSView *view = launcher.window.contentView; [view layoutSubtreeIfNeeded];
             NSBitmapImageRep *bitmap = [view bitmapImageRepForCachingDisplayInRect:view.bounds]; [view cacheDisplayInRect:view.bounds toBitmapImageRep:bitmap];
@@ -2715,14 +2703,12 @@ static int UISettingsTest(NSString *output) {
         for (NSView *view in launcher.settingsContent.subviews) if ([view.identifier isEqual:@"closeToBackground"]) toggle = (NSButton *)view;
         NSCAssert(toggle && toggle.state == NSControlStateValueOn,@"real preference control");
         [toggle performClick:nil];
-        NSCAssert(![launcher.settingsDraft[@"closeToBackground"] boolValue] && [launcher.settings[@"closeToBackground"] boolValue],@"draft does not apply before save");
-        [launcher.saveSettingsButton performClick:nil];
         NSCAssert([launcher applicationShouldTerminateAfterLastWindowClosed:NSApp],@"close-window preference takes effect");
         NSUserDefaults *reopened = [[NSUserDefaults alloc] initWithSuiteName:suite];
         NSCAssert(![ValidatedSettings([reopened objectForKey:@"localSettings"])[@"closeToBackground"] boolValue],@"saved preference reload");
         [launcher.settingsTabs[2] performClick:nil];
         for (NSView *view in launcher.settingsContent.subviews) if ([view.identifier isEqual:@"showArtwork"]) [(NSButton *)view performClick:nil];
-        [launcher discardSettings:nil]; NSCAssert([launcher.settingsDraft isEqual:launcher.settings],@"cancel unsaved edits");
+        NSCAssert(![launcher.settings[@"showArtwork"] boolValue] && [launcher.settingsDraft isEqual:launcher.settings],@"toggle saves immediately");
         [preferences setInteger:3 forKey:@"loginProtectionAccount"]; [preferences setObject:@{@"2":@"本地别名"} forKey:@"accountDisplayNames"];
         launcher.settingsDraft = DefaultSettings().mutableCopy; [launcher saveSettings:nil];
         NSCAssert([preferences integerForKey:@"loginProtectionAccount"] == 3 && [[preferences objectForKey:@"accountDisplayNames"] count] == 1,@"reset settings preserves unrelated local state");
@@ -2761,7 +2747,7 @@ static int UISettingsTest(NSString *output) {
         Fetch([NSURL URLWithString:@"https://api.anthropic.com/v1/messages"],YES,100,1,nil,^(NSData *data,NSString *failure) { refused = !data && failure.length; });
         NSCAssert(refused,@"Claude requests rejected even with update opt-in"); NetworkEnabled = NO;
         NSCAssert(!launcher.timer && !launcher.statusItem && !launcher.projectStore,@"UI checks do not start normal lifecycle or load projects");
-        puts("PASS: native settings controls, isolated save/reload, draft cancellation, reset scope, artwork/interface-usage/notifications, log retention/persistence/filter/paging, account search/status/selection, network rejection before session creation; 9 offscreen renders");
+        puts("PASS: native settings controls, immediate save/reload, reset scope, artwork/interface-usage/notifications, log retention/persistence/filter/paging, account search/status/selection, network rejection before session creation; 9 offscreen renders");
     } @finally {
         NetworkEnabled = NO; [preferences removePersistentDomainForName:suite]; [preferences synchronize];
     }

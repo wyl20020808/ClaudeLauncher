@@ -50,7 +50,7 @@ artifacts\bin\ClaudeLauncher.exe --self-test | Write-Output
 - 系统设置：11 项默认值与 SPEC 一致；单项异常（越界、类型不符、路径当页面名）只回落该项；全部字段往返；导出为 version 1 且不含账号数据；上次页面白名单；开机启动只接受正式安装路径、值比较规则（不读写真实注册表）。
 - 账号别名与搜索：≤24 字、去首尾空白、拒绝控制字符；往返；无效条目跳过；损坏／未知版本报错且保留原文件；越界编号拒绝；别名、“账号 NN”、编号、目录均可匹配。
 - 账号页与日志页（LauncherTests）：按编号与别名搜索、状态筛选、全选当前结果、部分选中中间态、隐藏选择清除、复制路径只含可见选择；别名写入启动器自己的文件、卡片与表格同步、无效别名不改动、留空恢复默认、不进入设置导出；日志分页（10 条、上／下一页启停）、搜索回到第一页、级别／实例／时间筛选、空结果说明、导出为全部筛选结果且按时间正序、内容只读可选并有全文提示。
-- 界面（LauncherTests，合成设置 + 临时路径）：六个分类按钮、假选项已移除；开关改变草稿、切换分类保留草稿、撤销不写文件；恢复上次页面时默认页面禁用；保存后日志上限截断内存日志、插画隐藏、窗口内提示关闭；恢复默认只填草稿；更新检查在未开启或有未保存设置时不创建请求；诊断只含版本、系统版本与联网开关。
+- 界面（LauncherTests，合成设置 + 临时路径）：六个分类按钮、假选项已移除；保存／撤销按钮已移除，开关与选项即时写入文件；恢复上次页面时默认页面禁用；日志上限即时截断内存日志、插画隐藏、窗口内提示关闭；恢复默认立即保存并生效；更新检查在未开启时不创建请求；诊断只含版本、系统版本与联网开关。
 
 1.2.0 兼容的 `--apply-update` 原地替换改动后，另运行 `scripts/test-install.ps1`。
 
@@ -75,7 +75,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup.ps1
 
 ## 应用内更新（SPEC 更新与安装）
 
-- 开关（feature/windows-update-boundary 起）：`allowUpdates` 默认关闭，保存在 `%LOCALAPPDATA%\Claude-MultiLauncher\settings.json`；系统设置“关于软件 → 允许检查 GitHub 更新”切换后需点“保存设置”。未开启时设置页“检查更新”与托盘“检查更新…”都不联网，只提示开启；有未保存设置时不开始；下载期间设置被改则安装前取消并删除临时文件。
+- 开关（feature/windows-update-boundary 起）：`allowUpdates` 默认关闭，保存在 `%LOCALAPPDATA%\Claude-MultiLauncher\settings.json`；系统设置“关于软件 → 允许检查 GitHub 更新”切换即保存生效。未开启时设置页“检查更新”与托盘“检查更新…”都不联网，只提示开启；更新进行中不能改此开关；下载期间被关闭则安装前取消并删除临时文件。
 - 时机：开启后每次打开启动器检查一次（只在有新版时提示，失败只记日志）+ 手动检查；没有定时或后台重复检查，已删除 8 秒／24 小时自动检查及 `last-update-check`。
 - 来源：只用 `https://github.com/wyl20020808/ClaudeLauncher/releases/latest/download/latest-windows.json` 与同 Release 的 Setup；失败时显示原因并提供“前往 GitHub 下载”（打开 Releases 页面）。自建服务与“取较高版本”已从客户端移除（发布脚本过渡期仍为旧客户端同步自建服务）。
 - 清单：`platform=windows`、`version` x.y.z、`file=ClaudeLauncherSetup-<版本>.exe`、`size`（1 KB～50 MB）、小写 `sha256`、`minimumOS`、`signature`；签名原文为 platform、version、file、size、sha256 各一行（`\n` 结尾），RSA-3072 + SHA-256（PKCS#1 v1.5），公钥 `assets/update-public-key.xml`（与 macOS 同一把）。清单上限 16 KB。
@@ -148,13 +148,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup.ps1
 ### 系统设置六分类（2026-10-29，feature/windows-settings）
 
 - 自检（已执行）：`build.ps1 -Preview` 通过，LauncherTests 269 项（新增 23 项设置界面检查）、`--self-test` 179 项（新增 10 项设置模型检查）。系统设置六个分类的离屏图已人工查看，开关、下拉、按钮无遮挡；首轮发现开关文字缩进 14 px，已修正。
-- GUI（**未验证**）：桌面窗口中的实际点击与键盘操作；关闭窗口退出／隐藏、托盘图标显隐、退出前未保存提示；开机启动的确认与真实注册表写入（本轮未在真实 HKCU 中写入）及登录后自动打开；恢复上次页面跨重启；最小化窗口不恢复；提示音；导出文件对话框；复制到剪贴板。
+- GUI（**未验证**）：桌面窗口中的实际点击与键盘操作；关闭窗口退出／隐藏、托盘图标显隐；开机启动的确认与真实注册表写入（本轮未在真实 HKCU 中写入）及登录后自动打开；恢复上次页面跨重启；最小化窗口不恢复；提示音；导出文件对话框；复制到剪贴板。
 
 ### 网络边界（2026-10-29，feature/windows-update-boundary）
 
 - 自检（已执行）：`build.ps1 -Preview` 通过，LauncherTests 246 项、`--self-test` 169 项（删去取较高版本 6 项，新增 URL 白名单、离线拒绝与设置文件检查）、离屏预览四页与两种更新状态。设置页离屏图已人工查看，新开关默认关闭、无遮挡。
 - 真实网络只读复核（已执行，构建产物代码经反射调用内部下载函数，不写日志、不落盘）：GitHub `latest-windows.json` 与 `ClaudeLauncherSetup-1.7.3.exe` 的实际跳转链（latest → 标签路径 → 附件主机）均通过白名单，清单验签通过，Setup 2794723 字节、SHA-256 一致；非白名单首次地址在请求前拒绝。
-- GUI（**未验证**）：桌面窗口中切换开关并保存、重开后保持、启动时自动检查的实际提示、未开启时手动／托盘检查的提示、有未保存设置时的拦截、下载与安装流程。
+- GUI（**未验证**）：桌面窗口中切换开关即时保存、重开后保持、启动时自动检查的实际提示、未开启时手动／托盘检查的提示、下载与安装流程。
 
 ### 自检与自动检查（2026-10-28，feature/windows-sync，已执行）
 

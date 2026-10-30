@@ -50,11 +50,10 @@ namespace ClaudeLauncher {
         readonly TextBlock summary, message, emptyHint, tableFooter, logSummary;
         readonly TextBlock[] stats = new TextBlock[3];
         readonly Button create, endLogin;
-        Button update, saveSettings;
-        // 已保存的设置与草稿；草稿与已保存值不同即为未保存更改（SPEC 系统设置）。
+        Button update;
+        // 已保存的设置与编辑副本；每次更改即时保存，失败时副本回到已保存值（SPEC 系统设置）。
         LauncherSettings settings, draft;
         readonly string settingsPath, lastPagePath;
-        bool SettingsDirty { get { return !draft.SameAs(settings); } }
         // 水墨插画元素（侧栏、背景、卡片），按“显示水墨插画”切换。
         readonly List<UIElement> artwork = new List<UIElement>();
         Border toast; TextBlock toastText;
@@ -327,7 +326,7 @@ namespace ClaudeLauncher {
                 // 正式运行（Show 建立托盘后）：开启“关闭窗口后继续运行”时只隐藏；关闭该设置时关闭窗口即退出启动器（走统一的退出流程）。不退出 Claude。
                 if (tray == null || exiting) return;
                 e.Cancel = true;
-                if (!settings.CloseToBackground) { window.Dispatcher.BeginInvoke(new Action(() => ExitLauncher(false))); return; }
+                if (!settings.CloseToBackground) { window.Dispatcher.BeginInvoke(new Action(() => ExitLauncher())); return; }
                 window.Hide();
                 if (!trayHintShown && tray.Visible) {
                     trayHintShown = true;
@@ -347,7 +346,7 @@ namespace ClaudeLauncher {
         // 安装程序用此消息请求启动器退出（WM_CLOSE 现在只是隐藏到通知区域）。
         public static readonly int ExitMessage = Native.RegisterWindowMessage("ClaudeMultiLauncher.Exit");
         IntPtr ExitHook(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled) {
-            if (msg == ExitMessage) { handled = true; if (!deleting) ExitLauncher(true); }
+            if (msg == ExitMessage) { handled = true; if (!deleting) ExitLauncher(); }
             return IntPtr.Zero;
         }
         void CreateTray() {
@@ -396,7 +395,7 @@ namespace ClaudeLauncher {
             menu.Items.Add(check);
             var exit = new System.Windows.Forms.ToolStripMenuItem("退出启动器");
             exit.ToolTipText = "只退出启动器，不退出任何 Claude。";
-            exit.Click += delegate { ExitLauncher(false); };
+            exit.Click += delegate { ExitLauncher(); };
             menu.Items.Add(exit);
         }
         // 托盘中的账号项：与主界面卡片同一份可见性与可用状态（编号、标签、是否可点）。
@@ -409,14 +408,8 @@ namespace ClaudeLauncher {
             }
             return result;
         }
-        // force：安装程序请求退出或更新交接，不因未保存设置阻拦。
-        void ExitLauncher(bool force) {
+        void ExitLauncher() {
             if (deleting) { ShowMain(); Message("请先完成或取消当前删除操作。", true); return; }
-            if (!force && SettingsDirty) {
-                ShowMain();
-                int choice = Ask("设置尚未保存", "保存后退出，或放弃这次更改。Claude 实例会继续运行。", new[] { "取消", "放弃更改并退出", "保存并退出" }, 0, 2);
-                if (choice == 0 || (choice == 2 && !SaveSettings())) return;
-            }
             exiting = true;
             if (tray != null) { tray.Visible = false; tray.Dispose(); tray = null; }
             window.Close();
@@ -565,32 +558,27 @@ namespace ClaudeLauncher {
             y = SwitchRow(c, y, "显示窗口内提示", "在启动器底部临时显示警告和错误；不推送、不上传、不读取 Claude 消息。", () => draft.LocalNotifications, v => draft.LocalNotifications = v);
             y = SwitchRow(c, y, "警告时播放提示音", "仅在窗口内提示开启时生效，使用系统提示音。", () => draft.NotificationSound, v => draft.NotificationSound = v);
             ActionRow(c, 0, y + 6, "测试已保存的通知设置", () => {
-                settingsFeedback.Text = Notify("本地通知测试：设置已生效，没有发送网络请求。") ? "已按保存的设置显示提示" : "窗口内提示已关闭；开启并保存后可测试";
+                settingsFeedback.Text = Notify("本地通知测试：设置已生效，没有发送网络请求。") ? "已按当前设置显示提示" : "窗口内提示已关闭；开启后可测试";
             });
             Note(c, y + 56, "安全确认和错误弹窗始终保留，不受通知开关影响。");
 
             // 关于软件
             c = settingsSections[5]; y = Heading(c, "Claude 多开启动器 " + Updates.DisplayVersion);
             Note(c, y, "非官方本地管理工具，与 Anthropic 无关联。\n不向 Claude / Anthropic 发请求，不读取凭据，不修改官方应用。");
-            y = SwitchRow(c, y + 54, "允许检查 GitHub 更新", "默认关闭。保存开启后每次打开启动器检查一次，也可手动检查；只访问本项目 GitHub 下载地址。", () => draft.AllowUpdates, v => draft.AllowUpdates = v);
+            y = SwitchRow(c, y + 54, "允许检查 GitHub 更新", "默认关闭。开启后每次打开启动器检查一次，也可手动检查；只访问本项目 GitHub 下载地址。", () => draft.AllowUpdates, v => draft.AllowUpdates = v);
             update = ActionRow(c, 0, y + 6, "检查启动器更新…", async () => await CheckUpdate(true));
             ActionRow(c, 0, y + 50, "查看本地使用帮助", ShowHelp);
             ActionRow(c, 0, y + 94, "复制基础诊断信息", CopyDiagnostics);
             Note(c, y + 144, "诊断仅包含版本、Windows 版本和联网开关，不包含账号、路径、日志或凭据。");
 
-            // 底部：反馈、恢复默认、撤销、保存
-            settingsFeedback = At(page, new TextBlock { Text = "更改后点击保存设置", FontSize = 12, Foreground = B(Muted), TextTrimming = TextTrimming.CharacterEllipsis }, 230, 618, 518);
+            // 底部：反馈、恢复默认（更改即时保存，无保存／撤销按钮）
+            settingsFeedback = At(page, new TextBlock { Text = "更改即时保存并生效", FontSize = 12, Foreground = B(Muted), TextTrimming = TextTrimming.CharacterEllipsis }, 230, 656, 390);
             AutomationProperties.SetAutomationId(settingsFeedback, "SettingsFeedback");
-            var reset = At(page, Action("恢复默认…", "Btn", null, 14), 400, 646, 110, 38);
+            var reset = At(page, Action("恢复默认…", "Btn", null, 14), 646, 646, 110, 38);
+            AutomationProperties.SetAutomationId(reset, "ResetSettings");
             reset.Click += delegate {
-                if (Ask("恢复启动器默认设置？", "将默认值填入草稿，点击保存后生效。不会移除账号、登录保护、开机启动项或任何 Claude 数据。", new[] { "取消", "恢复到草稿" }, 0, 1) == 1) ResetSettingsDraft();
+                if (Ask("恢复启动器默认设置？", "立即保存并生效。不会移除账号、登录保护、开机启动项或任何 Claude 数据。", new[] { "取消", "恢复默认" }, 0, 1) == 1) ResetSettings();
             };
-            var undo = At(page, Action("撤销更改", "Btn", null, 14), 520, 646, 110, 38);
-            AutomationProperties.SetAutomationId(undo, "UndoSettings");
-            undo.Click += delegate { DiscardSettings(); };
-            saveSettings = At(page, Action("保存设置", "Primary", "", 14), 640, 646, 116, 38);
-            AutomationProperties.SetAutomationId(saveSettings, "SaveSettings");
-            saveSettings.Click += delegate { SaveSettings(); };
             ShowSettingsSection(0);
             SyncSettings();
         }
@@ -601,7 +589,7 @@ namespace ClaudeLauncher {
         void Note(Canvas c, double y, string text) {
             At(c, new TextBlock { Text = text, FontSize = 12, Foreground = B(Muted), TextWrapping = TextWrapping.Wrap, LineHeight = 19 }, 0, y, 518);
         }
-        // 开关行：整行可点（标题 + 说明 + 开关）；只改草稿。
+        // 开关行：整行可点（标题 + 说明 + 开关）；更改即时保存。
         double SwitchRow(Canvas c, double y, string title, string detail, Func<bool> get, Action<bool> set) {
             var text = new StackPanel { Width = 450, HorizontalAlignment = HorizontalAlignment.Left };
             text.Children.Add(new TextBlock { Text = title, FontSize = 14, FontWeight = FontWeights.SemiBold, Foreground = B(Ink) });
@@ -642,23 +630,21 @@ namespace ClaudeLauncher {
             }
             if (index == 1) autoStartStatus.Text = AutoStartStatus();
         }
-        // 控件从草稿重新取值；草稿跨分类保留。
+        // 控件从编辑副本重新取值。
         void SyncSettings() {
             syncingSettings = true;
             try { foreach (Action sync in settingsSync) sync(); } finally { syncingSettings = false; }
-            saveSettings.IsEnabled = SettingsDirty;
         }
+        // 每次更改即时保存；被拒绝或写入失败时控件回到已保存值。
         void DraftChanged() {
-            SyncSettings();
-            settingsFeedback.Text = SettingsDirty ? "有未保存的更改" : "与已保存设置一致";
+            if (!SaveSettings()) { draft = settings.Clone(); SyncSettings(); }
         }
-        internal void DiscardSettings() { draft = settings.Clone(); SyncSettings(); settingsFeedback.Text = "已撤销未保存更改"; }
-        internal void ResetSettingsDraft() { draft = new LauncherSettings(); SyncSettings(); settingsFeedback.Text = "默认值已填入，请保存或撤销"; }
+        internal void ResetSettings() { draft = new LauncherSettings(); DraftChanged(); }
         internal bool SaveSettings() {
             LauncherSettings next = draft.Clone();
-            if (updating && next.AllowUpdates != settings.AllowUpdates) { Alert("更新正在进行", "请等待当前更新结束后再改变联网选项。其余更改仍保留在草稿中。"); return false; }
+            if (updating && next.AllowUpdates != settings.AllowUpdates) { Alert("更新正在进行", "请等待当前更新结束后再改变联网选项。"); return false; }
             try { next.Save(settingsPath); }
-            catch (Exception error) { Diagnostics.Error("settings_save_error", error); Alert("保存设置失败", error.Message + "\n运行设置保持原样，草稿已保留。"); return false; }
+            catch (Exception error) { Diagnostics.Error("settings_save_error", error); Alert("保存设置失败", error.Message + "\n运行设置保持原样。"); return false; }
             settings = next; draft = next.Clone();
             ApplySettings(); SyncSettings();
             settingsFeedback.Text = "设置已保存并生效，仅作用于本地启动器";
@@ -1365,16 +1351,11 @@ namespace ClaudeLauncher {
             if (progress == null || progress.Finished) return;
             progress.Finished = true; progress.Window.Close();
         }
-        // SPEC 网络边界：只在已保存开启时检查本项目 GitHub Releases；有未保存设置时不开始；失败时提供“前往 GitHub 下载”。
+        // SPEC 网络边界：只在已开启时检查本项目 GitHub Releases；失败时提供“前往 GitHub 下载”。
         async Task CheckUpdate(bool manual) {
             if (updating || closed) return;
             if (!settings.AllowUpdates) {
-                if (manual) Alert("未开启检查更新", "请在系统设置中开启“检查启动器更新”并点“保存设置”后再检查。未开启时启动器不会联网。");
-                return;
-            }
-            if (SettingsDirty) {
-                if (manual) Alert("有未保存的设置", "请先保存或改回未保存的设置，再检查更新。");
-                else AddLog("有未保存的设置，跳过本次更新检查");
+                if (manual) Alert("未开启检查更新", "请在系统设置中开启“允许检查 GitHub 更新”后再检查。未开启时启动器不会联网。");
                 return;
             }
             if (manual && (deleting || pending.Count > 0 || checking.Count > 0)) { Message("请先等待当前操作完成。", true); return; }
@@ -1399,7 +1380,7 @@ namespace ClaudeLauncher {
                     if (deleting || pending.Count > 0 || checking.Count > 0) { Message("发现新版本 " + release.version + "，当前操作完成后可在系统设置中更新。", false); return; }
                     if (Ask("发现新版本 " + release.version, "当前版本 " + Updates.DisplayVersion + "。更新会先校验安装包，再关闭启动器、卸载旧版并安装新版，完成后重新打开；Claude 实例和账号数据不受影响。",
                         new[] { "稍后", "立即更新" }, 0, 1) != 1) return;
-                    if (SettingsDirty || !settings.AllowUpdates) { Message("设置已更改，未开始更新。", true); return; }
+                    if (!settings.AllowUpdates) { Message("设置已更改，未开始更新。", true); return; }
                     accepted = true;
                     progress = BuildUpdateProgress(release.version);
                     progress.Window.Owner = window;
@@ -1430,8 +1411,8 @@ namespace ClaudeLauncher {
                     if (closed) { if (setup != null) Updates.Discard(setup); return; }
                     if (setup != null) {
                         if (progress.Cancelled) { Updates.Discard(setup); CloseProgress(progress); Message("已取消更新，未做任何改动。", false); return; }
-                        // 下载期间出现未保存设置或更新被关闭：安装前取消并清理临时文件，保留当前程序和草稿。
-                        if (SettingsDirty || !settings.AllowUpdates) { Updates.Discard(setup); CloseProgress(progress); Message("设置在下载期间被更改，已取消更新并删除临时文件。", true); return; }
+                        // 下载期间更新被关闭：安装前取消并清理临时文件，保留当前程序。
+                        if (!settings.AllowUpdates) { Updates.Discard(setup); CloseProgress(progress); Message("设置在下载期间被更改，已取消更新并删除临时文件。", true); return; }
                         SetUpdateStep(progress, 1);
                         progress.Cancel.IsEnabled = false;
                         progress.Bar.IsIndeterminate = true;
@@ -1446,7 +1427,7 @@ namespace ClaudeLauncher {
                         Diagnostics.Write("update_handoff", "退出启动器，交由安装程序卸载旧版并安装新版");
                         await Task.Delay(TimeSpan.FromSeconds(2));
                         CloseProgress(progress);
-                        ExitLauncher(true); return;
+                        ExitLauncher(); return;
                     }
                 }
                 CloseProgress(progress);

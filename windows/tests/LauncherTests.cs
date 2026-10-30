@@ -121,7 +121,7 @@ public static class LauncherTests {
         Console.WriteLine("PASS: " + checks + " assertions; WPF layout loaded without showing windows.");
         return 0;
     }
-    // SPEC 系统设置 [Windows]：六分类、草稿跨分类保留、撤销、保存生效、恢复默认只填草稿、更新入口受开关和未保存设置约束。
+    // SPEC 系统设置 [Windows]：六分类、更改即时保存生效、恢复默认立即保存、更新入口受开关约束。
     static void TestSettingsPage(LauncherUI ui, string settingsFile, List<Instance> state) {
         var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
         var all = Children(ui.Snapshot(3, state)).ToArray();
@@ -129,22 +129,20 @@ public static class LauncherTests {
         Func<string, ComboBox> choice = name => all.OfType<ComboBox>().Single(b => AutomationProperties.GetName(b) == name);
         Func<string, Button> button = id => all.OfType<Button>().Single(b => AutomationProperties.GetAutomationId(b) == id || AutomationProperties.GetName(b) == id);
         Action<System.Windows.Controls.Primitives.ButtonBase> click = b => typeof(System.Windows.Controls.Primitives.ButtonBase).GetMethod("OnClick", flags).Invoke(b, null);
-        Func<bool> dirty = () => button("SaveSettings").IsEnabled;
         Func<System.Threading.Tasks.Task> check = () => (System.Threading.Tasks.Task)typeof(LauncherUI).GetMethod("CheckUpdate", flags).Invoke(ui, new object[] { false });
 
         foreach (string tab in new[] { "常规设置", "启动行为", "外观设置", "数据与存储", "消息通知", "关于软件" }) Check(all.OfType<Button>().Count(b => AutomationProperties.GetName(b) == tab) == 1, "Settings tab missing: " + tab);
         Check(!all.OfType<FrameworkElement>().Any(e => e is TextBlock && new[] { "默认浏览器", "启动间隔", "默认打开方式" }.Contains(((TextBlock)e).Text)), "Fake settings must be removed");
-        Check(!dirty() && toggle("显示水墨插画").IsChecked == true && toggle("允许检查 GitHub 更新").IsChecked == false, "Settings must start from saved defaults");
+        Check(!all.OfType<Button>().Any(b => new[] { "SaveSettings", "UndoSettings" }.Contains(AutomationProperties.GetAutomationId(b))), "Save and undo buttons must be removed");
+        Check(toggle("显示水墨插画").IsChecked == true && toggle("允许检查 GitHub 更新").IsChecked == false && !File.Exists(settingsFile), "Settings must start from saved defaults");
         click(toggle("显示水墨插画"));
-        Check(dirty() && toggle("显示水墨插画").IsChecked == false, "Toggle must change the draft");
-        click(button("关于软件"));
-        Check(dirty() && toggle("显示水墨插画").IsChecked == false, "Draft must survive switching categories");
-        click(button("UndoSettings"));
-        Check(!dirty() && toggle("显示水墨插画").IsChecked == true && !File.Exists(settingsFile), "Undo must restore saved values without writing");
+        Check(toggle("显示水墨插画").IsChecked == false && !LauncherSettings.Load(settingsFile).ShowArtwork, "Toggle must save immediately");
+        click(toggle("显示水墨插画"));
+        Check(LauncherSettings.Load(settingsFile).ShowArtwork, "Toggle back must save immediately");
         Check(choice("未恢复时的启动页面").IsEnabled, "Start page selectable when not restoring");
         click(toggle("恢复启动器上次页面"));
-        Check(!choice("未恢复时的启动页面").IsEnabled, "Start page disabled while restoring last page");
-        click(button("UndoSettings"));
+        Check(!choice("未恢复时的启动页面").IsEnabled && LauncherSettings.Load(settingsFile).RememberPage, "Start page disabled while restoring last page");
+        click(toggle("恢复启动器上次页面"));
 
         var addLog = typeof(LauncherUI).GetMethod("AddLog", flags);
         for (int i = 0; i < 600; i++) addLog.Invoke(ui, new object[] { "合成日志 " + i });
@@ -152,26 +150,22 @@ public static class LauncherTests {
         Check(logs.Count == 500, "Default log limit must be 500");
         choice("本次运行日志保留上限").SelectedIndex = 0;
         click(toggle("显示水墨插画")); click(toggle("显示窗口内提示"));
-        click(button("SaveSettings"));
         var saved = LauncherSettings.Load(settingsFile);
-        Check(!dirty() && saved.LogLimit == 100 && !saved.ShowArtwork && !saved.LocalNotifications && saved.LoadError == null, "Save must write the draft");
+        Check(saved.LogLimit == 100 && !saved.ShowArtwork && !saved.LocalNotifications && saved.LoadError == null, "Each change must be written");
         Check(logs.Count == 100, "Saved log limit must trim memory logs");
         var artwork = (List<UIElement>)typeof(LauncherUI).GetField("artwork", flags).GetValue(ui);
         Check(artwork.Count > 0 && artwork.All(e => e.Visibility == Visibility.Collapsed), "Artwork must follow the saved setting");
         Check(!ui.Notify("测试"), "Notifications off must not show the toast");
-        ui.ResetSettingsDraft();
-        Check(dirty() && LauncherSettings.Load(settingsFile).LogLimit == 100, "Reset must only fill the draft");
-        click(button("SaveSettings"));
-        Check(LauncherSettings.Load(settingsFile).SameAs(new LauncherSettings()) && artwork.All(e => e.Visibility == Visibility.Visible) && ui.Notify("测试"), "Saving defaults must apply them");
+        ui.ResetSettings();
+        Check(LauncherSettings.Load(settingsFile).SameAs(new LauncherSettings()) && artwork.All(e => e.Visibility == Visibility.Visible) && ui.Notify("测试"), "Reset must save and apply defaults");
 
-        // 更新入口：未开启或有未保存设置时不发请求。
+        // 更新入口：未开启时不发请求；开启即保存。
         int before = Updates.Requests;
         check().Wait();
-        click(toggle("允许检查 GitHub 更新")); click(button("SaveSettings"));
-        click(toggle("显示水墨插画"));
-        check().Wait();
-        Check(Updates.Requests == before, "Update check must not run while disabled or with unsaved settings");
-        click(button("UndoSettings")); click(toggle("允许检查 GitHub 更新")); click(button("SaveSettings"));
+        Check(Updates.Requests == before, "Update check must not run while disabled");
+        click(toggle("允许检查 GitHub 更新"));
+        Check(LauncherSettings.Load(settingsFile).AllowUpdates, "Updates switch must save immediately");
+        click(toggle("允许检查 GitHub 更新"));
         Check(!LauncherSettings.Load(settingsFile).AllowUpdates, "Updates must be off again");
         string diagnostics = ui.DiagnosticsText();
         Check(diagnostics.Contains(Updates.DisplayVersion) && diagnostics.Contains("GitHub updates disabled") && !diagnostics.Contains(":\\"), "Diagnostics must contain only version, OS and network switch");
