@@ -1548,9 +1548,14 @@ static BOOL ConfigFolderExists(NSInteger n) {
     self.logStorageNotice = L(@"启动器日志无法安全读写，请检查数据目录权限；当前记录保留在内存中。");
     self.message.stringValue = self.logStorageNotice; self.lastLogged = self.logStorageNotice;
 }
-- (void)saveLogs {
-    if (!self.logPath) return;
-    if (!WriteLogFile(self.logPath, SerializedLogs(self.logEntries ?: @[]))) [self reportLogStorageFailure];
+- (BOOL)writeLogEntries:(NSArray *)entries {
+    if (!self.logPath) return YES;
+    BOOL saved = WriteLogFile(self.logPath, SerializedLogs(entries));
+    if (!saved) [self reportLogStorageFailure];
+    return saved;
+}
+- (BOOL)saveLogs {
+    return [self writeLogEntries:self.logEntries ?: @[]];
 }
 - (void)reloadLogs {
     NSArray *filtered = [self filteredLogEntries]; NSInteger pages = MAX(1,(filtered.count+9)/10);
@@ -1918,7 +1923,11 @@ static BOOL ConfigFolderExists(NSInteger n) {
     NSAlert *alert = [NSAlert new]; alert.messageText = L(@"清空启动器日志？"); alert.informativeText = L(@"仅清空启动器自己保存的记录（Claude Launcher 目录中的 launcher-log.json），不读取或删除 Claude 日志。");
     [alert addButtonWithTitle:L(@"取消")]; [alert addButtonWithTitle:L(@"清空")];
     if ([alert runModal] != NSAlertSecondButtonReturn) return;
-    [self.logEntries removeAllObjects]; [self saveLogs]; self.logPage = 0; [self reloadLogs];
+    [self clearSavedLogs];
+}
+- (BOOL)clearSavedLogs {
+    if (![self writeLogEntries:@[]]) { [self reloadLogs]; return NO; }
+    [self.logEntries removeAllObjects]; self.logPage = 0; [self reloadLogs]; return YES;
 }
 - (void)exportLogs:(id)sender {
     NSSavePanel *panel = [NSSavePanel savePanel]; panel.nameFieldStringValue = L(@"Claude 启动器日志.txt");
@@ -3337,6 +3346,34 @@ static NSDictionary *UsageDemo(NSNumber *five, NSNumber *week) {
     return record;
 }
 // Native target/action checks and offscreen renders use an isolated preference suite and synthetic accounts only.
+static void TestLogWriteFailures(NSString *output) {
+    NSFileManager *fm = NSFileManager.defaultManager;
+    NSString *root = [output stringByAppendingPathComponent:NSUUID.UUID.UUIDString];
+    NSString *readOnly = [root stringByAppendingPathComponent:@"read-only"];
+    NSCAssert([fm createDirectoryAtPath:readOnly withIntermediateDirectories:YES attributes:nil error:nil], @"log failure fixtures");
+    NSData *original = SerializedLogs(@[]);
+    NSString *readOnlyFile = [readOnly stringByAppendingPathComponent:@"logs.json"];
+    NSCAssert(WriteLogFile(readOnlyFile, original) && chmod(readOnly.fileSystemRepresentation, 0500) == 0, @"read-only fixture");
+    @try {
+        for (NSString *path in @[[root stringByAppendingPathComponent:@"missing/logs.json"], readOnlyFile]) {
+            Launcher *logger = [Launcher new]; logger.snapshotMode = YES; logger.settings = DefaultSettings();
+            logger.logPath = path; logger.message = [NSTextField new];
+            [logger addLog:@"first retained record"];
+            NSCAssert(logger.logEntries.count == 1 && logger.logStorageFailed && logger.logStorageNotice.length && ![logger saveLogs], @"append failure retains memory and exposes failure");
+            logger.message.stringValue = @"later status";
+            [logger addLog:@"second retained record"];
+            NSArray *before = logger.logEntries.copy;
+            NSCAssert(![logger clearSavedLogs] && [logger.logEntries isEqual:before], @"failed clear preserves all memory records");
+            NSCAssert(logger.logEntries.count == 2 && [logger.message.stringValue isEqual:@"later status"], @"failure notice only once, without recursive logging");
+            NSCAssert([[NSData dataWithContentsOfFile:readOnlyFile] isEqual:original], @"failed writes preserve disk contents");
+            logger.logPath = [root stringByAppendingPathComponent:@"writable.json"];
+            NSCAssert([logger saveLogs] && [logger clearSavedLogs] && !logger.logEntries.count, @"successful clear commits empty disk then clears memory");
+            BOOL failed = NO;
+            NSCAssert([ReadLogFile(logger.logPath, &failed) isEqual:SerializedLogs(@[])] && !failed, @"empty log persisted");
+        }
+        printf("TestLogWriteFailures: PASS (missing/read-only directories, retained append and clear, one notice without recursion, successful clear)\n");
+    } @finally { chmod(readOnly.fileSystemRepresentation, 0700); [fm removeItemAtPath:root error:nil]; }
+}
 static void TestUpdateGeneration(Launcher *launcher, NSString *output) {
     NSUInteger old = [launcher beginUpdate]; [launcher showUpdateProgress:@"A"];
     [launcher cancelUpdate:nil];
@@ -3475,6 +3512,7 @@ static int UISettingsTest(NSString *output) {
         [preferences removeObjectForKey:@"usageAlertState"]; [launcher.accountNames removeObjectForKey:@"1"]; [launcher.accountNames removeObjectForKey:@"3"];
         launcher.suggestButton.hidden = YES; launcher.message.stringValue = @"";
         TestUpdateGeneration(launcher, output);
+        TestLogWriteFailures(output);
         NetworkEnabled = NO; __block BOOL refused = NO;
         Fetch([NSURL URLWithString:[GitHubDownloads stringByAppendingString:@"latest-macos.json"]],YES,100,1,nil,^(NSData *data,NSString *failure) { refused = !data && failure.length; });
         NSCAssert(refused,@"disabled network rejected before session creation");
