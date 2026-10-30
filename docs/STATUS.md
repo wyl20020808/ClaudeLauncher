@@ -1,5 +1,11 @@
 # 项目状态
 
+## macOS 1.7.16 发布准备（2026-10-30，dev）
+
+- 合并 origin/main（Windows 1.8.3）。windows/ 取 origin/main 已验证状态：dev 上未编译的 Windows 改动（设置即时保存、启动前网络检测与回环地址修正）未进入 main，交给 Windows 端按 e2f19f6、425a16e、8a569f7 移植。下方各节中的 Windows 部分因此不在 main。
+- 版本 1.7.16 / build 23，发布说明 [RELEASE-macos-1.7.16.md](RELEASE-macos-1.7.16.md)。固定证书构建、`--self-test`、`--ui-self-test` 通过。
+- 未验证：GUI 实际操作（见下方各节）。
+
 ## 新提交核验问题修正（2026-10-29，dev，未发布）
 
 依据 `build/review-20261029/REVIEW.txt` 的 4 项：
