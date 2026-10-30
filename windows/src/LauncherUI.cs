@@ -1071,7 +1071,29 @@ namespace ClaudeLauncher {
             Instance running = instances.FirstOrDefault(x => x.Number == number);
             if (running != null) { await Activate(number, running); return; }
             if (!create && loginAccount == 0 && !Core.HasData(number)) { Message("账号目录已变化，未创建新目录。请重新点击。", true); return; }
+            if (!await ConfirmEnvironment(number)) return;
+            // 对话框期间状态可能变化：重新扫描并核对后再启动。
+            if (!await ScanNow()) { Alert("实例或保护状态已变化", scanError); return; }
+            failure = Core.OpeningBlocker(number, 0, instances, loginAccount, Busy());
+            if (failure != null || Core.Running(number, instances)) { Alert("状态已变化，未启动", failure ?? "该账号已在运行，请重新点击。"); return; }
+            if (!create && loginAccount == 0 && !Core.HasData(number)) { Message("账号目录已变化，未创建新目录。请重新点击。", true); return; }
             await Launch(number);
+        }
+        // 每次启动新实例前做本机代理检测，用户确认后才启动；不访问外部网络。
+        async Task<bool> ConfirmEnvironment(int number) {
+            checking.Add(number); Render();
+            Message("账号 " + Two(number) + "：正在检测电脑网络环境…", false);
+            List<string> lines = null; bool ok = false;
+            try { ok = await Task.Run(() => ProxyCheck.Report(out lines)); }
+            catch (Exception error) { Diagnostics.Error("proxy_check_error", error); lines = new List<string> { "✗ 检测失败：" + error.Message }; }
+            if (closed) { checking.Remove(number); return false; }
+            int choice = Ask(ok ? "网络环境检测：已检测到代理" : "网络环境检测：未检测到可用代理",
+                string.Join("\n", lines) + "\n\n" + (ok ? "请确认代理节点可用后继续启动。" : "Claude 需要可用的代理才能正常连接。建议先开启代理软件的系统代理或 TUN 模式，再继续启动。")
+                + "\n\n仅读取本机系统代理设置与网卡，不访问外部网络，无法确认出口 IP 所在地区。",
+                new[] { "确认启动", "取消" }, 1, 0);
+            checking.Remove(number); Render();
+            if (choice != 0) Message("账号 " + Two(number) + "：已取消启动。", false);
+            return choice == 0;
         }
         async Task Launch(int number) {
             pending[number] = DateTime.UtcNow; Render();

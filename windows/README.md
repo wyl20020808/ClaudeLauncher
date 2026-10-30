@@ -15,6 +15,7 @@ C# 5 / .NET Framework 4.8 WPF（系统自带），无 NuGet 依赖。构建脚�
 | 单实例 | 按用户 SID 命名的 Mutex，重复打开时激活已有窗口 |
 | 存储校验 | `FileAttributes.ReparsePoint`、ACL 所有者、`GetFileInformationByHandle` 链接数（只读属性，不打开内容），存储项内部递归，在后台线程执行 |
 | 界面 | WPF 代码构建，水墨浅色四页（实例管理、账号管理、日志记录、系统设置六分类） |
+| 启动前网络环境检测 | `src/ProxyCheck.cs`：HKCU `Internet Settings` 代理、`NetworkInterface` TUN／VPN 网卡，只探测本机回环端口 |
 | 设置 | `%LOCALAPPDATA%\Claude-MultiLauncher\settings.json`（`src/Settings.cs`）；开机启动为 HKCU Run 的 `ClaudeMultiLauncher` 值 |
 
 目录：`src/` 生产源码（`ClaudeLauncher.cs` 核心逻辑，`LauncherUI.cs` 界面与流程，`Storage.cs` 存储校验与自检），`tests/` 自动检查，`scripts/` 构建、安装包与发布工具，`installer/` Inno Setup 脚本，`assets/` 图标与更新验签公钥，`updates/` 自建更新服务，`docs/` 开发、设计和用户说明。界面插画取自仓库根目录 `resources/ui/*.webp`，构建时转为 JPEG 内嵌，客户电脑不需要 WebP 解码器。

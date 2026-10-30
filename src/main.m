@@ -12,6 +12,7 @@
 #import "ProjectImport.h"
 #import "UsageInterface.h"
 #import "Settings.h"
+#import "ProxyCheck.h"
 #import <ServiceManagement/ServiceManagement.h>
 
 static NSString * const BundleID = @"local.claude.profile-launcher";
@@ -685,6 +686,7 @@ static const unsigned CardFill = 0xFFFCF7;
 @property NSMutableDictionary<NSNumber *, NSDate *> *starting;
 @property NSMutableSet<NSNumber *> *pendingLaunches;
 @property NSMutableSet<NSNumber *> *checking;
+@property NSMutableSet<NSNumber *> *environmentConfirmed;
 // Only retain this launcher's successful launches; never infer configuration from a directory or read process environments.
 @property NSMutableDictionary<NSNumber *, NSRunningApplication *> *configuredApps;
 @property NSMutableDictionary<NSNumber *, NSString *> *errors;
@@ -720,7 +722,7 @@ static const unsigned CardFill = 0xFFFCF7;
         self.selectedAccounts = [NSMutableSet set]; self.launchDate = NSDate.date;
         self.starting = [NSMutableDictionary dictionary]; self.errors = [NSMutableDictionary dictionary];
         self.pendingLaunches = [NSMutableSet set];
-        self.checking = [NSMutableSet set]; self.configuredApps = [NSMutableDictionary dictionary];
+        self.checking = [NSMutableSet set]; self.environmentConfirmed = [NSMutableSet set]; self.configuredApps = [NSMutableDictionary dictionary];
     }
     return self;
 }
@@ -2364,8 +2366,34 @@ static const unsigned CardFill = 0xFFFCF7;
     pid_t expectedPID = self.processes[key].count == 1 ? [self.processes[key].firstObject intValue] : 0;
     [self checkAccount:account completion:^{ [self openCheckedAccount:account expectedPID:expectedPID create:create prepare:prepare]; }];
 }
+- (void)confirmEnvironment:(NSInteger)account completion:(void (^)(void))completion {
+    NSNumber *key = @(account);
+    if ([self.checking containsObject:key] || self.starting[key]) return;
+    [self.checking addObject:key]; [self refresh];
+    self.message.stringValue = [NSString stringWithFormat:@"账号 %02ld：正在检测电脑网络环境…",(long)account];
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0), ^{
+        NSDictionary *report = ProxyEnvironmentReport();
+        dispatch_async(dispatch_get_main_queue(), ^{
+            BOOL ok = [report[@"ok"] boolValue];
+            NSAlert *alert = [NSAlert new];
+            alert.alertStyle = ok ? NSAlertStyleInformational : NSAlertStyleWarning;
+            alert.messageText = ok ? @"网络环境检测：已检测到代理" : @"网络环境检测：未检测到可用代理";
+            alert.informativeText = [NSString stringWithFormat:@"%@\n\n%@\n\n仅读取本机系统代理设置与网络接口，不访问外部网络，无法确认出口 IP 所在地区。",
+                [report[@"lines"] componentsJoinedByString:@"\n"],
+                ok ? @"请确认代理节点可用后继续启动。" : @"Claude 需要可用的代理才能正常连接。建议先开启代理软件的系统代理或 TUN 模式，再继续启动。"];
+            [alert addButtonWithTitle:@"确认启动"]; [alert addButtonWithTitle:@"取消"];
+            NSModalResponse response = [alert runModal];
+            [self.checking removeObject:key];
+            self.message.stringValue = response == NSAlertFirstButtonReturn ? @"" : [NSString stringWithFormat:@"账号 %02ld：已取消启动。",(long)account];
+            [self refresh];
+            if (response == NSAlertFirstButtonReturn) completion();
+        });
+    });
+}
 - (void)openCheckedAccount:(NSInteger)account expectedPID:(pid_t)expectedPID create:(BOOL)create prepare:(BOOL (^)(void))prepare {
     NSNumber *key = @(account);
+    BOOL environmentConfirmed = [self.environmentConfirmed containsObject:key];
+    [self.environmentConfirmed removeObject:key];
     [self refresh]; // The background check may outlive a process or a login-protection change.
     NSString *failure = [self openingBlocker:account expectedPID:expectedPID];
     if (failure) { [self alert:@"实例或保护状态已变化" detail:failure]; return; }
@@ -2379,6 +2407,13 @@ static const unsigned CardFill = 0xFFFCF7;
         if ([NSFileManager.defaultManager isExecutableFileAtPath:[path stringByAppendingPathComponent:@"Contents/MacOS/Claude"]]) { bundlePath = path; break; }
     }
     if (!bundlePath) { [self alert:@"未找到官方 Claude.app" detail:@"请将官方 Claude.app 安装到 /Applications 或 ~/Applications 后重试。"] ; return; }
+    if (!environmentConfirmed) { // Every new launch shows the local proxy check; state is re-validated after confirmation.
+        [self confirmEnvironment:account completion:^{
+            [self.environmentConfirmed addObject:key];
+            [self openCheckedAccount:account expectedPID:expectedPID create:create prepare:prepare];
+        }];
+        return;
+    }
     NSError *error = nil; BOOL directory = NO;
     BOOL exists = [NSFileManager.defaultManager fileExistsAtPath:ProfilePath(account) isDirectory:&directory];
     if (!exists && !self.loginAccount && !create) {
@@ -2484,6 +2519,7 @@ static int SelfTest(void) {
         TestProjectImport();
         TestProjectRegistration();
         TestUsageInterface();
+        TestProxyCheck();
         NSCAssert(AccountForArguments(@[@"Claude"]) == 1, @"default");
         for (NSInteger n=1;n<=10;n++) {
             NSCAssert(AccountForArguments(@[@"Claude",[@"--user-data-dir=" stringByAppendingString:ProfilePath(n)]]) == n,@"equals");
@@ -2757,6 +2793,7 @@ int main(int argc, const char *argv[]) {
     @autoreleasepool {
         if (argc > 2 && strcmp(argv[1],"--ui-self-test") == 0) return UISettingsTest(@(argv[2]));
         if (argc > 1 && strcmp(argv[1],"--self-test") == 0) return SelfTest();
+        if (argc > 1 && strcmp(argv[1],"--proxy-check") == 0) { NSDictionary *r = ProxyEnvironmentReport(); printf("%s\n%s\n",[r[@"ok"] boolValue] ? "已检测到代理" : "未检测到可用代理",[[r[@"lines"] componentsJoinedByString:@"\n"] UTF8String]); return 0; }
         if (argc > 1 && strcmp(argv[1],"--usage-history-check") == 0) {
             fputs("Historical usage reading is retired; use --usage-interface-check.\n",stderr); return 2;
         }

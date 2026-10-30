@@ -39,6 +39,7 @@
     <Compile Include="src\Settings.cs" />
     <Compile Include="src\Storage.cs" />
     <Compile Include="src\LauncherUI.cs" />
+    <Compile Include="src\ProxyCheck.cs" />
     <EmbeddedResource Include="assets\app.ico"><LogicalName>ClaudeLauncher.Icon</LogicalName></EmbeddedResource>
     <EmbeddedResource Include="assets\update-public-key.xml"><LogicalName>ClaudeLauncher.UpdateKey</LogicalName></EmbeddedResource>
     <EmbeddedResource Include="..\resources\ui\background.webp"><LogicalName>ClaudeLauncher.UI.background</LogicalName></EmbeddedResource>

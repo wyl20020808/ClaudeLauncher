@@ -1,5 +1,12 @@
 # 项目状态
 
+## 启动前网络环境检测（2026-10-29，dev，未发布）
+
+- 用户要求：点启动后先检测电脑网络环境，显示结果，确认后再启动。用户选择只做本地检测（不查公网 IP／地区，不新增网络入口），两端都做，每次启动新实例都检测。规则见 SPEC「启动与激活」。
+- macOS：`src/ProxyCheck.m`，构建新增系统 SystemConfiguration.framework。`scripts/build.sh`（含 `--self-test`，新增 TestProxyCheck）通过；`--proxy-check` 在本机实测输出 HTTP／HTTPS／SOCKS 127.0.0.1:7897 可连接，与 `scutil --proxy` 一致。
+- Windows：`src/ProxyCheck.cs`，接入 `CheckAndOpen`，`LauncherTests` 新增解析测试，csproj 与构建脚本已加入源文件。
+- 未验证：Windows 未编译、未运行测试（本机无 .NET 工具链）；两端检测对话框的 GUI 实际点击、无代理与 TUN 模式的真实环境未验证。
+
 ## 系统设置即时保存（2026-10-29，dev，未发布）
 
 - 用户要求：去掉“保存设置”与“撤销更改”按钮，每次切换／选择立即保存并生效；被拒绝（更新进行中改联网开关）或写入失败时弹出提示，控件回到已保存值。“恢复默认…”确认后立即保存。退出前不再有未保存提示，更新检查不再判断未保存设置。macOS 与 Windows 同步，SPEC、使用说明已更新。

@@ -48,6 +48,7 @@
 
 ### 网络边界
 
+- 启动前的网络环境检测只读本机设置并只连接本机回环端口，不是网络入口，见「启动与激活」。
 - 不再启动后检查、不设更新定时器。默认关闭 `allowUpdates`；需在设置中开启，再主动点击检查。
 - macOS 不再注入／读取 UPDATE_BASE_URL 或自建服务地址。初始请求只允许 HTTPS、本项目 GitHub `latest/download/latest-macos.json` 与严格版本文件名的 DMG。拒绝用户信息、非 443 端口、其他仓库、任意路径及域名伪装。
 - 重定向只允许本项目 Release 下载路径及 GitHub 的 `objects.githubusercontent.com`／`release-assets.githubusercontent.com`；拒绝所有其他域名，包括 Claude／Anthropic。使用无 Cookie、无凭据存储、无 URL 缓存的临时会话。签名、哈希、版本和安装证书校验保留。
@@ -107,6 +108,11 @@ macOS（`src/main.m`）和 Windows（`windows/`）各自原生实现，共同遵
   - **[Windows 例外，已确认]** 主进程在托盘中、按 PID 找不到可见窗口时，允许用同一 `--user-data-dir` 再启动一次，由 Claude 单实例锁（4.29 含 `requestSingleInstanceLock`，按 userData 区分）转交已有进程显示窗口。必须同时满足：该账号恰好一个已核实主进程且无可见窗口；使用该 PID 的可执行文件；之后重新扫描，若同账号出现第二个主进程则报错，不结束任何进程。macOS 保持纯 PID 激活，最小化窗口经辅助功能恢复。
 - 同一账号多个主进程：报错，不激活、不结束任何实例。
 - 未运行：校验存储后以新实例启动；启动中禁用按钮防重入，35 秒未出现主进程报失败。
+- 网络环境检测（2026-10-29 用户要求，两端）：每次启动新实例前（激活已运行实例不检测），后台检测本机代理环境，状态栏显示“正在检测电脑网络环境…”，然后弹窗列出结果，用户点“确认启动”才启动，“取消”不启动；检测与对话框期间占用该编号。确认后重新扫描并核对保护／进程状态再启动。
+  - 只做本地检测（用户选择，不新增网络入口）：读系统代理（macOS `SCDynamicStoreCopyProxies` 的 HTTP／HTTPS／SOCKS／PAC；Windows HKCU `Internet Settings` 的 `ProxyEnable`／`ProxyServer`／`AutoConfigURL`），以及 TUN／VPN（macOS 主网络接口为 `utun`／`tun`／`tap`／`ppp`／`ipsec`；Windows 已启用、有 IPv4 的 PPP 网卡或名称／描述含 Wintun、TAP-Windows、WireGuard、Clash、Mihomo、sing-box、tun、vpn 的网卡，排除系统 Tunnel 类型）。
+  - 代理地址为本机回环（`127.*`、`localhost`、`::1`）时 TCP 连接该端口（超时 0.8 秒）判断代理软件是否在运行；非本机地址不连接，只显示“未探测”。不下载 PAC，不查询公网 IP 或所在地区。
+  - 结论：任一 TUN／PAC／非本机代理／可连接的本机代理为“已检测到代理”；否则为“未检测到可用代理”并建议先开启系统代理或 TUN。两种结论都允许用户确认后继续启动。
+  - macOS `--proxy-check` 输出同一检测结果（本地，不联网）。
 - 启动器单实例；再次打开时唤起已有窗口。关闭启动器不退出 Claude。
 - 递归存储检查放到后台，不占用界面主线程；同账号检查期间禁止重复打开/删除。不同账号可独立检查，失败只记录在该账号。完成后重新扫描进程、检查保护状态及根目录元数据。原本要激活的 PID 若退出或被替换，不自动重启，也不静默切换到另一个 PID。删除同样在后台检查完成后再扫描和校验路径。
 - **[macOS]** LaunchServices 请求超过 35 秒仍未回调时报告超时，但继续保留该账号的启动中状态，禁止重试及其他账号进入登录保护，直到系统返回。不会强制结束启动请求或 Claude。

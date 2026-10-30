@@ -73,6 +73,7 @@ public static class LauncherTests {
         DeletionTests.Run(Check);
         TestLaunches();
         UpdateTests.Run(Check);
+        TestProxyCheck();
         using (var watch = new ProcessWatch()) {
             var info = new System.Diagnostics.ProcessStartInfo(System.Reflection.Assembly.GetExecutingAssembly().Location, "--exit-test-probe") { UseShellExecute=false, CreateNoWindow=true };
             using (var child = System.Diagnostics.Process.Start(info)) {
@@ -253,6 +254,17 @@ public static class LauncherTests {
         string[] lines = exported.Split(new[] { "\r\n" }, StringSplitOptions.RemoveEmptyEntries);
         Check(lines.Length == 15 && lines[0].EndsWith("普通信息 0") && lines[14].EndsWith("普通信息 14"), "Export writes all filtered entries oldest first");
         Check(rows.Children.OfType<TextBox>().All(t => t.IsReadOnly && t.ToolTip is string), "Log text is read-only, selectable and has a full-text tooltip");
+    }
+    static void TestProxyCheck() {
+        Check(ProxyCheck.Findings(0, "127.0.0.1:7890", null, null).Count == 0, "Disabled proxy must not count");
+        var f = ProxyCheck.Findings(1, "127.0.0.1:7890", null, null);
+        Check(f.Count == 1 && f[0].Host == "127.0.0.1" && f[0].Port == 7890, "Single proxy server not parsed");
+        f = ProxyCheck.Findings(1, "http=127.0.0.1:7890;https=http://127.0.0.1:7890;socks=[::1]:7891;ftp=bad;x=1.2.3.4:0", null, null);
+        Check(f.Count == 3 && f[1].Kind == "HTTPS" && f[1].Host == "127.0.0.1" && f[2].Kind == "SOCKS" && f[2].Host == "[::1]", "Per-protocol proxy server not parsed");
+        f = ProxyCheck.Findings(0, null, " http://127.0.0.1:1/pac ", new[] { "Meta" });
+        Check(f.Count == 2 && f[0].Kind == "PAC" && f[0].Detail == "http://127.0.0.1:1/pac" && f[1].Kind == "TUN", "PAC and tunnel findings missing");
+        Check(ProxyCheck.LooksLikeTunnel("Meta", "Wintun Userspace Tunnel") && ProxyCheck.LooksLikeTunnel("以太网 2", "TAP-Windows Adapter V9") && !ProxyCheck.LooksLikeTunnel("以太网", "Intel(R) Ethernet Connection"), "Tunnel adapter detection");
+        Check(ProxyCheck.IsLoopback("LocalHost") && ProxyCheck.IsLoopback("127.0.0.1") && ProxyCheck.IsLoopback("[::1]") && !ProxyCheck.IsLoopback("10.0.0.2"), "Loopback detection");
     }
     static void TestLaunches() {
         string fixture = Path.Combine(Path.GetTempPath(), "claude-launch-test-" + Guid.NewGuid().ToString("N"), "客户 测试 & O'Neil");

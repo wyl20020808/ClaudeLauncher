@@ -39,6 +39,7 @@
     <Compile Include="src\Settings.cs" />
     <Compile Include="src\Storage.cs" />
     <Compile Include="src\LauncherUI.cs" />
+    <Compile Include="src\ProxyCheck.cs" />
     <Compile Include="tests\LauncherTests.cs" />
     <Compile Include="tests\DeletionTests.cs" />
     <Compile Include="tests\UpdateTests.cs" />
