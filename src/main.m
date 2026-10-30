@@ -712,6 +712,7 @@ static const unsigned CardFill = 0xFFFCF7;
 @property BOOL snapshotMode;
 @property BOOL updating;
 @property BOOL updateCancelled;
+@property NSUInteger updateGeneration;
 @property NSURLSessionTask *updateTask;
 @property NSWindow *updateWindow;
 @property NSArray<NSTextField *> *updateSteps;
@@ -1852,15 +1853,22 @@ static BOOL ConfigFolderExists(NSInteger n) {
 - (void)checkForUpdates:(id)sender {
     [self runUpdateCheck:YES];
 }
+- (NSUInteger)beginUpdate {
+    self.updateGeneration++; self.updating = YES; self.updateCancelled = NO; self.updateStage = 0;
+    return self.updateGeneration;
+}
+- (BOOL)isCurrentUpdate:(NSUInteger)generation {
+    return generation == self.updateGeneration && self.updating && !self.updateCancelled;
+}
 - (void)runUpdateCheck:(BOOL)manual {
     if (!NetworkEnabled) {
         if (manual) [self alert:L(@"联网更新未启用") detail:L(@"如需检查启动器更新，请在系统设置 → 关于中启用 GitHub 更新并保存，然后再次点击检查更新。不会访问 Claude 或 Anthropic。")];
         return;
     }
     if (self.updating) { if (manual) [self alert:L(@"正在检查更新") detail:L(@"请稍候。")]; return; }
-    self.updating = YES; self.updateCancelled = NO;
+    NSUInteger generation = [self beginUpdate];
     [NSUserDefaults.standardUserDefaults setObject:[NSDate date] forKey:@"lastUpdateCheck"];
-    [self checkAllSources:manual];
+    [self checkAllSources:manual generation:generation];
 }
 // Progress window (SPEC 更新过程界面): 下载 → 校验 → 安装. Cancel is allowed until installation starts.
 - (void)showUpdateProgress:(NSString *)version {
@@ -1911,6 +1919,7 @@ static BOOL ConfigFolderExists(NSInteger n) {
 }
 - (void)cancelUpdate:(id)sender {
     if (!self.updating || self.updateStage >= 2) return;
+    self.updateGeneration++;
     self.updateCancelled = YES; self.updating = NO;
     [self.updateTask cancel]; self.updateTask = nil;
     [self closeUpdateProgress];
@@ -1921,7 +1930,8 @@ static BOOL ConfigFolderExists(NSInteger n) {
     if (self.updateStage >= 2) return NO;   // installation already handed off
     [self cancelUpdate:nil]; return NO;
 }
-- (void)updateFailed:(NSArray<NSString *> *)failures manual:(BOOL)manual {
+- (void)updateFailed:(NSArray<NSString *> *)failures manual:(BOOL)manual generation:(NSUInteger)generation {
+    if (![self isCurrentUpdate:generation]) return;
     self.updating = NO;
     [self closeUpdateProgress];
     NSString *detail = [failures componentsJoinedByString:@"\n"];
@@ -1934,7 +1944,7 @@ static BOOL ConfigFolderExists(NSInteger n) {
     if ([alert runModal] == NSAlertFirstButtonReturn) [NSWorkspace.sharedWorkspace openURL:[NSURL URLWithString:ReleasesPage]];
 }
 // Ask every source at once and compare: a lagging self-hosted copy must not hide a newer release on GitHub.
-- (void)checkAllSources:(BOOL)manual {
+- (void)checkAllSources:(BOOL)manual generation:(NSUInteger)generation {
     NSArray *sources = [self updateSources];
     NSMutableArray *results = [NSMutableArray array];
     for (NSUInteger i = 0; i < sources.count; i++) [results addObject:NSNull.null];
@@ -1943,22 +1953,24 @@ static BOOL ConfigFolderExists(NSInteger n) {
         NSDictionary *source = sources[i];
         dispatch_group_enter(group);
         Fetch([NSURL URLWithString:[source[@"base"] stringByAppendingString:@"latest-macos.json"]], [source[@"github"] boolValue], 16384, 30, nil, ^(NSData *data, NSString *failure) {
+            if (![self isCurrentUpdate:generation]) { dispatch_group_leave(group); return; }
             NSString *invalid = failure;
             NSDictionary *manifest = data ? VerifyManifest(data, ReleaseKeys(), &invalid) : nil;
             results[i] = manifest ? @{@"source":source,@"manifest":manifest} : @{@"source":source,@"failure":invalid ?: L(@"未知错误")};
             dispatch_group_leave(group);
         });
     }
-    dispatch_group_notify(group, dispatch_get_main_queue(), ^{ [self chooseUpdate:results manual:manual]; });
+    dispatch_group_notify(group, dispatch_get_main_queue(), ^{ [self chooseUpdate:results manual:manual generation:generation]; });
 }
-- (void)chooseUpdate:(NSArray<NSDictionary *> *)results manual:(BOOL)manual {
+- (void)chooseUpdate:(NSArray<NSDictionary *> *)results manual:(BOOL)manual generation:(NSUInteger)generation {
+    if (![self isCurrentUpdate:generation]) return;
     NSMutableArray *offers = [NSMutableArray array], *failures = [NSMutableArray array];
     for (NSDictionary *result in results) {
         if (self.headless) printf("[source] %s: %s\n",[result[@"source"][@"name"] UTF8String],result[@"manifest"] ? [result[@"manifest"][@"version"] UTF8String] : [result[@"failure"] UTF8String]);
         if (result[@"manifest"]) [offers addObject:result];
         else [failures addObject:[NSString stringWithFormat:@"%@：%@",result[@"source"][@"name"],result[@"failure"]]];
     }
-    if (!offers.count) { [self updateFailed:failures manual:manual]; return; }
+    if (!offers.count) { [self updateFailed:failures manual:manual generation:generation]; return; }
     NSArray *best = BestOffers(offers);
     NSDictionary *manifest = best.firstObject[@"manifest"], *source = best.firstObject[@"source"];
     {
@@ -1981,22 +1993,26 @@ static BOOL ConfigFolderExists(NSInteger n) {
         offer.informativeText = blocker ?: [NSString stringWithFormat:L(@"当前版本 %@。更新会先校验安装包，再退出启动器、替换旧版并重新打开；Claude 实例和账号数据不受影响。"),current];
         [offer addButtonWithTitle:blocker ? L(@"前往 GitHub 下载") : L(@"立即更新")]; [offer addButtonWithTitle:L(@"稍后")];
         if (self.headless) { if (blocker) { printf("[result] %s\n",blocker.UTF8String); exit(4); } printf("[offer] %s from %s, accepted\n",[manifest[@"version"] UTF8String],[source[@"name"] UTF8String]); }
-        else if ([offer runModal] != NSAlertFirstButtonReturn) { self.updating = NO; return; }
+        else {
+            NSModalResponse response = [offer runModal];
+            if (![self isCurrentUpdate:generation]) return;
+            if (response != NSAlertFirstButtonReturn) { self.updating = NO; return; }
+        }
         if (blocker) { self.updating = NO; [NSWorkspace.sharedWorkspace openURL:[NSURL URLWithString:ReleasesPage]]; return; }
-        [self downloadOffer:best index:0 failures:failures];
+        [self downloadOffer:best index:0 failures:failures generation:generation];
     }
 }
 // Download from the sources that offer the chosen version, in source order; a failed download moves to the next one.
-- (void)downloadOffer:(NSArray<NSDictionary *> *)offers index:(NSUInteger)index failures:(NSArray<NSString *> *)failures {
-    if (self.updateCancelled) return;
-    if (index >= offers.count) { [self updateFailed:failures manual:YES]; return; }
+- (void)downloadOffer:(NSArray<NSDictionary *> *)offers index:(NSUInteger)index failures:(NSArray<NSString *> *)failures generation:(NSUInteger)generation {
+    if (![self isCurrentUpdate:generation]) return;
+    if (index >= offers.count) { [self updateFailed:failures manual:YES generation:generation]; return; }
     NSDictionary *source = offers[index][@"source"], *manifest = offers[index][@"manifest"];
     [self addLog:[NSString stringWithFormat:L(@"正在从%@下载 %@"),source[@"name"],manifest[@"file"]]];
     if (index == 0) [self showUpdateProgress:manifest[@"version"]];
     double total = [manifest[@"size"] doubleValue];
     [self updateStep:0 detail:[NSString stringWithFormat:L(@"从 %@ 下载 · 0 / %.1f MB"),source[@"name"],total/1048576] progress:0];
     self.updateTask = Fetch([NSURL URLWithString:[source[@"base"] stringByAppendingString:[manifest[@"file"] stringByAddingPercentEncodingWithAllowedCharacters:NSCharacterSet.URLPathAllowedCharacterSet]]], [source[@"github"] boolValue], UpdateSizeLimit, 300, ^(long long received, long long expected) {
-        if (self.updateCancelled) return;
+        if (![self isCurrentUpdate:generation]) return;
         if (self.headless && self.testCancel) {
             [self cancelUpdate:nil]; printf("[result] cancelled at %lld bytes\n",received);
             dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(2*NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ exit(0); }); return;
@@ -2004,14 +2020,15 @@ static BOOL ConfigFolderExists(NSInteger n) {
         double size = expected > 0 ? expected : total;
         [self updateStep:0 detail:[NSString stringWithFormat:L(@"从 %@ 下载 · %.1f / %.1f MB · %.0f%%"),source[@"name"],received/1048576.0,size/1048576,size > 0 ? 100.0*received/size : 0] progress:size > 0 ? received/size : 0];
     }, ^(NSData *package, NSString *downloadFailure) {
+        if (![self isCurrentUpdate:generation]) return;
         self.updateTask = nil;
-        if (self.updateCancelled) return;
         NSString *problem = downloadFailure ?: (long long)package.length != [manifest[@"size"] longLongValue] || ![SHA256Hex(package) isEqual:manifest[@"sha256"]] ? L(@"安装包大小或 SHA-256 不匹配，已拒绝。") : nil;
-        if (problem) { [self downloadOffer:offers index:index+1 failures:[failures arrayByAddingObject:[NSString stringWithFormat:@"%@：%@",source[@"name"],problem]]]; return; }
-        [self installPackage:package version:manifest[@"version"]];
+        if (problem) { [self downloadOffer:offers index:index+1 failures:[failures arrayByAddingObject:[NSString stringWithFormat:@"%@：%@",source[@"name"],problem]] generation:generation]; return; }
+        [self installPackage:package version:manifest[@"version"] generation:generation];
     });
 }
-- (void)installPackage:(NSData *)package version:(NSString *)version {
+- (void)installPackage:(NSData *)package version:(NSString *)version generation:(NSUInteger)generation {
+    if (![self isCurrentUpdate:generation]) return;
     NSString *current = NSBundle.mainBundle.bundlePath, *folder = current.stringByDeletingLastPathComponent;
     NSString *token = NSUUID.UUID.UUIDString;
     NSString *staged = [folder stringByAppendingPathComponent:[NSString stringWithFormat:@".%@-update-%@.app",current.lastPathComponent.stringByDeletingPathExtension,token]];
@@ -2019,6 +2036,7 @@ static BOOL ConfigFolderExists(NSInteger n) {
     NSString *helper = [NSBundle.mainBundle pathForResource:@"update-helper" ofType:@"sh"];
     [self updateStep:1 detail:L(@"正在校验安装包：签名、版本与证书…") progress:-1];
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0), ^{
+        if (![self isCurrentUpdate:generation]) return;
         NSFileManager *fm = NSFileManager.defaultManager;
         NSString *work = [NSTemporaryDirectory() stringByAppendingPathComponent:[@"claude-launcher-update-" stringByAppendingString:token]];
         NSString *dmg = [work stringByAppendingPathComponent:@"update.dmg"], *mount = [work stringByAppendingPathComponent:@"mount"], *script = [work stringByAppendingPathComponent:@"update-helper.sh"];
@@ -2036,22 +2054,32 @@ static BOOL ConfigFolderExists(NSInteger n) {
         if (!failure) failure = SameSigner(staged);
         if (failure) [fm removeItemAtPath:staged error:nil];
         dispatch_async(dispatch_get_main_queue(), ^{
-            if (self.updateCancelled) { [fm removeItemAtPath:staged error:nil]; [fm removeItemAtPath:work error:nil]; return; }
-            if (failure) { [fm removeItemAtPath:work error:nil]; [self updateFailed:@[failure] manual:YES]; return; }
-            // Point of no return: cancel is disabled, the launcher quits and the helper replaces it.
-            [self updateStep:2 detail:L(@"校验通过。启动器即将关闭，安装完成后会自动重新打开。Claude 不受影响。") progress:-1];
-            dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)((self.headless ? 0 : 2)*NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                NSTask *task = [NSTask new]; task.executableURL = [NSURL fileURLWithPath:@"/bin/zsh"];
-                task.arguments = @[script,[NSString stringWithFormat:@"%d",getpid()],current,staged,backup];
-                NSError *error = nil;
-                if (![task launchAndReturnError:&error]) { [fm removeItemAtPath:staged error:nil]; [self updateFailed:@[error.localizedDescription ?: L(@"无法启动安装步骤。")] manual:YES]; return; }
-                [NSUserDefaults.standardUserDefaults setObject:backup forKey:@"updateBackupPath"];
-                [NSUserDefaults.standardUserDefaults synchronize];
-                [self addLog:[NSString stringWithFormat:L(@"更新包校验通过，退出并安装 %@"),version]];
-                [NSApp terminate:nil];
-            });
+            [self completeUpdateValidation:failure work:work current:current staged:staged backup:backup version:version generation:generation];
         });
     });
+}
+- (void)completeUpdateValidation:(NSString *)failure work:(NSString *)work current:(NSString *)current staged:(NSString *)staged backup:(NSString *)backup version:(NSString *)version generation:(NSUInteger)generation {
+    NSFileManager *fm = NSFileManager.defaultManager;
+    if (![self isCurrentUpdate:generation]) { [fm removeItemAtPath:staged error:nil]; [fm removeItemAtPath:work error:nil]; return; }
+    if (failure) { [fm removeItemAtPath:work error:nil]; [self updateFailed:@[failure] manual:YES generation:generation]; return; }
+    // Point of no return: cancel is disabled, the launcher quits and the helper replaces it.
+    [self updateStep:2 detail:L(@"校验通过。启动器即将关闭，安装完成后会自动重新打开。Claude 不受影响。") progress:-1];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)((self.headless ? 0 : 2)*NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [self launchValidatedUpdate:work current:current staged:staged backup:backup version:version generation:generation];
+    });
+}
+- (void)launchValidatedUpdate:(NSString *)work current:(NSString *)current staged:(NSString *)staged backup:(NSString *)backup version:(NSString *)version generation:(NSUInteger)generation {
+    NSFileManager *fm = NSFileManager.defaultManager;
+    if (![self isCurrentUpdate:generation]) { [fm removeItemAtPath:staged error:nil]; [fm removeItemAtPath:work error:nil]; return; }
+    NSAssert(!self.snapshotMode, @"offscreen tests must never launch an installer");
+    NSTask *task = [NSTask new]; task.executableURL = [NSURL fileURLWithPath:@"/bin/zsh"];
+    task.arguments = @[[work stringByAppendingPathComponent:@"update-helper.sh"],[NSString stringWithFormat:@"%d",getpid()],current,staged,backup];
+    NSError *error = nil;
+    if (![task launchAndReturnError:&error]) { [fm removeItemAtPath:staged error:nil]; [fm removeItemAtPath:work error:nil]; [self updateFailed:@[error.localizedDescription ?: L(@"无法启动安装步骤。")] manual:YES generation:generation]; return; }
+    [NSUserDefaults.standardUserDefaults setObject:backup forKey:@"updateBackupPath"];
+    [NSUserDefaults.standardUserDefaults synchronize];
+    [self addLog:[NSString stringWithFormat:L(@"更新包校验通过，退出并安装 %@"),version]];
+    [NSApp terminate:nil];
 }
 // After a successful replacement the previous version waits as a hidden backup next to the app; move it to the Trash.
 - (void)finishPendingUpdate {
@@ -3192,6 +3220,33 @@ static NSDictionary *UsageDemo(NSNumber *five, NSNumber *week) {
     return record;
 }
 // Native target/action checks and offscreen renders use an isolated preference suite and synthetic accounts only.
+static void TestUpdateGeneration(Launcher *launcher, NSString *output) {
+    NSUInteger old = [launcher beginUpdate]; [launcher showUpdateProgress:@"A"];
+    [launcher cancelUpdate:nil];
+    NSUInteger current = [launcher beginUpdate]; [launcher showUpdateProgress:@"B"];
+    [launcher updateStep:0 detail:@"B downloading" progress:0.4];
+    NSWindow *window = launcher.updateWindow;
+    NSCAssert(current > old && [launcher isCurrentUpdate:current], @"cancel and retry advance generation");
+    NSString *root = [output stringByAppendingPathComponent:NSUUID.UUID.UUIDString];
+    NSFileManager *fm = NSFileManager.defaultManager;
+    NSString *kept = [root stringByAppendingPathComponent:@"B"];
+    [fm createDirectoryAtPath:kept withIntermediateDirectories:YES attributes:nil error:nil];
+    for (NSUInteger scenario = 0; scenario < 3; scenario++) {
+        NSString *work = [root stringByAppendingPathComponent:@"A-work"], *staged = [root stringByAppendingPathComponent:@"A-staged.app"];
+        [fm createDirectoryAtPath:work withIntermediateDirectories:YES attributes:nil error:nil];
+        [fm createDirectoryAtPath:staged withIntermediateDirectories:YES attributes:nil error:nil];
+        if (scenario < 2) [launcher completeUpdateValidation:scenario == 0 ? @"late failure" : nil work:work current:kept staged:staged backup:kept version:@"A" generation:old];
+        else [launcher launchValidatedUpdate:work current:kept staged:staged backup:kept version:@"A" generation:old];
+        NSCAssert(![fm fileExistsAtPath:work] && ![fm fileExistsAtPath:staged] && [fm fileExistsAtPath:kept], @"stale callback cleans only its own files");
+        NSCAssert(launcher.updating && launcher.updateWindow == window && launcher.updateStage == 0 && launcher.updateBar.doubleValue == 0.4 && [launcher.updateDetail.stringValue isEqual:@"B downloading"], @"late validation or install callback cannot alter B or launch installer");
+    }
+    [launcher updateFailed:@[@"late download failure"] manual:YES generation:old];
+    [launcher installPackage:NSData.data version:@"A" generation:old];
+    [launcher downloadOffer:@[] index:0 failures:@[] generation:old];
+    NSCAssert(launcher.updating && launcher.updateWindow == window && launcher.updateBar.doubleValue == 0.4, @"late download success and failure leave B untouched");
+    [launcher cancelUpdate:nil]; [fm removeItemAtPath:root error:nil];
+    printf("TestUpdateGeneration: PASS (late failure, success and delayed install after cancel/retry)\n");
+}
 static int UISettingsTest(NSString *output) {
     [NSApplication sharedApplication];
     NSString *suite = [@"local.claude.settings-test." stringByAppendingString:NSUUID.UUID.UUIDString];
@@ -3302,6 +3357,7 @@ static int UISettingsTest(NSString *output) {
         launcher.suggestButton.hidden = YES; [launcher observeUsage:1 percent:91 reset:@"周四19:00 重置"]; NSCAssert(!launcher.suggestButton.hidden,@"changed reset text reminds");
         [preferences removeObjectForKey:@"usageAlertState"]; [launcher.accountNames removeObjectForKey:@"1"]; [launcher.accountNames removeObjectForKey:@"3"];
         launcher.suggestButton.hidden = YES; launcher.message.stringValue = @"";
+        TestUpdateGeneration(launcher, output);
         NetworkEnabled = NO; __block BOOL refused = NO;
         Fetch([NSURL URLWithString:[GitHubDownloads stringByAppendingString:@"latest-macos.json"]],YES,100,1,nil,^(NSData *data,NSString *failure) { refused = !data && failure.length; });
         NSCAssert(refused,@"disabled network rejected before session creation");
