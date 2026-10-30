@@ -1,3 +1,15 @@
+# 项目状态
+
+## Mac 接手 Windows 1.7.17 同步（2026-10-30，dev 8be8619 之上，未发布）
+
+- 本机 dev 原为 `ae65bbf`、无未推送提交和改动；fetch 后快进到 `origin/dev` 的 `8be8619`（Windows 合并提交，父提交 `498b726` + `ae65bbf`）。该提交未改动 `src/`、`scripts/`、`resources/update-helper.sh`，macOS 业务代码与 1.7.17 发布版一致。
+- 共用词条：`english.strings` 新增 31 行，其中 1 条与 Mac 已有键“请把当前工作整理成交接文档…”重复且译文不同；两端解析器都取后者，会静默改变已发布 Mac 英文交接指令。已删除后加的重复项，两端统一使用 Mac 原译文；Windows 测试未断言该译文。其余新键与 Mac `L()` 调用的原文不完全相同（如“同步配置” vs “同步配置…”），不影响 Mac 界面；含 `{0}` 的 Windows 键与 Mac 的 `%@` 键互不冲突。`plutil -lint` 通过，Mac 解析得 766 条。
+- 两端对照：Windows 已有账号页、提醒、趋势、项目清单与只读导入、本地交接、配置同步、主题、英文、登录开关、快捷键、设置导入。平台差异：符号链接不可用时退回拷贝；项目路径遇重解析点直接拒绝（Mac 解析真实路径）；“同步到 Claude 侧栏”Windows 只做只读调查，待单独授权，不算遗漏。Mac 侧未发现需补齐的功能。
+- 文档：Windows 段落原插在本文件“# 项目状态”标题之前，已移到标题下；`WINDOWS-THEME-PLAN.md` 标注主题已在 1.7.17 同步中实现。SPEC 中 Windows 1.7.16 段落的旧描述（主题待确认、`settings.json.projects`、无项目识别）由顶部 1.7.17 补充节覆盖，未逐条改写。
+- Mac 检查（固定证书 `ClaudeLauncher Local Signing`，designated requirement 为 identifier + leaf `5ce1d074…`）：构建通过，`--self-test` 全部 PASS（含 TestLocalization、TestConfigSync、TestUsageTrend、更新清单与源选择）；`--ui-self-test` 通过，11 张离屏图（2 张深色），抽查账号页与外观设置正常；`test-update-helper.sh` 4 个场景、`test-release-verification.sh` 9 个场景通过（zsh 运行，离线替身）。
+- 未验证：Mac 英文界面离屏布局（UI 自检只覆盖中文）；真实鼠标键盘 GUI；/Applications 仍为 1.7.16，软件内更新到 1.7.17 未实测。Windows 的 651 项检查、3 项安装替身、9 项发布复核为 Windows 机器结果，不作为 Mac 验收。
+- 发布条件：Mac 无新代码改动，无需发新版；若之后发布，须继续带入已发布 Windows 1.8.3 的签名清单与 Setup。Windows 不具备发布条件：版本号仍为 1.8.3，真实 GUI、符号链接共享、配置覆盖回收站、安装后重开等待人工验收，且未获发布授权。
+
 ## Windows 接手 macOS 1.7.17（2026-10-30，开发实现／未发布）
 
 - 已读取最新交接并 fetch；保留本地 `498b726`，将远端 `origin/main`／`origin/dev` 的 `ae65bbf` 合入 dev。用户已授权提交并推送 dev；本轮不修改 main、不发布。远端接收结果以实际分支提交为准。
@@ -20,8 +32,6 @@
 - 离屏预览已检查账号、实例、设置数据与存储、通知和项目页；合成预览不代表真实交互验收。
 - 未验证：真实 GUI 点击、写入失败回退弹窗、代理真实环境与确认期间状态变化、全局快捷键冲突、真实 PID 激活、详情关闭竞态、剪贴板交接全流程、非当前用户/符号链接/并发替换攻击的完整测试矩阵、高 DPI。未运行安装测试脚本（会安装/操作程序），仅更新其编译源列表。
 - 2026-10-30 用户授权提交并合并到本地 dev；不推送、不合并 main、不发布。上述 GUI 与安全测试缺口仍保留，合并不代表发布验收通过。
-
-# 项目状态
 
 ## macOS 1.7.17 已发布（2026-10-30，macos-v1.7.17）
 
