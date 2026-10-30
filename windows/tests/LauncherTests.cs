@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -119,10 +119,67 @@ public static class LauncherTests {
         TestLogsPage(ui, settingsFile, state);
         TestUsageCards(ui, settingsFile, state);
         Directory.Delete(settingsDir, true);
+        Check(ProxyCheck.LoopbackAddress("127.0.0.2").ToString() == "127.0.0.2", "Actual loopback retained");
+        foreach (string bad in new[] { "127.evil", "127.1", "2130706433", "[127.0.0.1]", "127.00.0.1", "[::1", "8.8.8.8" }) Check(ProxyCheck.LoopbackAddress(bad) == null, "Strict loopback: " + bad);
+        Check(ProxyCheck.IsLoopback("[::1]") && ProxyCheck.IsLoopback("localhost"), "IPv6 and localhost");
+        Check(ProxyCheck.ProxyApplications(new[] { "v2rayN", "Hiddify", "Claude", "fake-clash" }).Length == 2, "Process names only");
+        TestNewFeatures();
         Console.WriteLine("PASS: " + checks + " assertions; WPF layout loaded without showing windows.");
         return 0;
     }
-    // SPEC 系统设置 [Windows]：六分类、草稿跨分类保留、撤销、保存生效、恢复默认只填草稿、更新入口受开关和未保存设置约束。
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true)]
+    static extern bool CreateHardLink(string name, string existing, IntPtr security);
+    static void TestNewFeatures() {
+        var current = new LauncherSettings { UsageAlert = 70, LogLimit = 100, ShowTray = false };
+        var imported = current.Import(System.Text.Encoding.UTF8.GetBytes("{\"version\":1,\"settings\":{\"usageAlert\":90,\"logLimit\":\"500\",\"showTray\":true,\"unknown\":true}}"));
+        Check(imported.UsageAlert == 90 && imported.LogLimit == 100 && imported.ShowTray, "Import validates each value, preserves invalid");
+        foreach (string bad in new[] { "{}", "{\"version\":2,\"settings\":{}}", "{\"version\":1,\"settings\":[]}" }) {
+            bool rejected = false; try { current.Import(System.Text.Encoding.UTF8.GetBytes(bad)); } catch { rejected = true; } Check(rejected, "Invalid envelope rejected");
+        }
+        bool oversized = false; try { current.Import(new byte[65537]); } catch { oversized = true; } Check(oversized, "Import 64KB bound");
+        Check(new LauncherSettings().UsageAlert == 80 && !new LauncherSettings().GlobalHotkeys, "Feature defaults");
+        string root = Path.Combine(Path.GetTempPath(), "launcher-handoff-test-" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(root);
+        try {
+            string preferences = Path.Combine(root, "settings.json");
+            var alerts = new LauncherUI(new LauncherSettings(), preferences); alerts.Snapshot(0, new List<Instance>());
+            var high = new UsageMetric { Percent = 80, Reset = "reset-A", Observed = DateTime.Now };
+            Check(alerts.ObserveUsageAlert(2, high), "Threshold alerts once");
+            Check(!alerts.ObserveUsageAlert(2, high), "Same reset deduped");
+            var restarted = new LauncherUI(new LauncherSettings(), preferences); restarted.Snapshot(0, new List<Instance>());
+            Check(!restarted.ObserveUsageAlert(2, high), "Alert state survives restart");
+            Check(!restarted.ObserveUsageAlert(2, new UsageMetric { Percent = 79, Reset = "reset-A" }) && restarted.ObserveUsageAlert(2, high), "Below threshold rearms");
+            var disabled = new LauncherUI(new LauncherSettings { UsageAlert = 0 }, preferences); disabled.Snapshot(0, new List<Instance>());
+            Check(!disabled.ObserveUsageAlert(3, high), "Disabled alert");
+            var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            var cached = (Dictionary<int, UsageRecord>)typeof(LauncherUI).GetField("savedUsage", flags).GetValue(alerts);
+            cached[2] = new UsageRecord { Status = UsageInterface.Observed, Identity = "old", FiveHour = high };
+            var oldSnapshot = alerts.Snapshot(0, new List<Instance>());
+            typeof(LauncherUI).GetField("snapshotMode", flags).SetValue(alerts, false);
+            typeof(LauncherUI).GetMethod("RenderUsage", flags).Invoke(alerts, null);
+            var cardMap = (System.Collections.IDictionary)typeof(LauncherUI).GetField("cards", flags).GetValue(alerts);
+            var source = (TextBlock)cardMap[2].GetType().GetField("Source").GetValue(cardMap[2]);
+            Check(source.Text == "Claude 未运行 · 上次记录", "Stopped account keeps last usage");
+            typeof(LauncherUI).GetField("snapshotMode", flags).SetValue(alerts, true);
+            typeof(LauncherUI).GetMethod("RecordUse", flags).Invoke(alerts, new object[] { 2 });
+            var recentReload = new LauncherUI(new LauncherSettings(), preferences); recentReload.Snapshot(0, new List<Instance>());
+            Check((string)typeof(LauncherUI).GetMethod("Recent", flags).Invoke(recentReload, new object[] { 2 }) != "—", "Recent usage persists");
+            string file = Path.Combine(root, "CLAUDE.md");
+            Check(Handoff.Append(root) && File.ReadAllText(file) == Handoff.Rule, "Handoff creates exact rule");
+            Check(!Handoff.Append(root) && File.ReadAllText(file) == Handoff.Rule, "Handoff deduplicates");
+            File.WriteAllText(file, "existing"); Check(Handoff.Append(root) && File.ReadAllText(file).StartsWith("existing\n\n"), "Append preserves original");
+            File.WriteAllBytes(file, new byte[] { 255, 254 }); bool rejected = false; try { Handoff.Append(root); } catch { rejected = true; } Check(rejected && File.ReadAllBytes(file).Length == 2, "Invalid UTF8 unchanged");
+            File.WriteAllBytes(file, new byte[1048577]); rejected = false; try { Handoff.Append(root); } catch { rejected = true; } Check(rejected && new FileInfo(file).Length == 1048577, "Oversized file unchanged");
+            File.Delete(file); string other = Path.Combine(root, "other"); File.WriteAllText(other, "original");
+            Check(CreateHardLink(file, other, IntPtr.Zero), "Hardlink fixture"); rejected = false; try { Handoff.Append(root); } catch { rejected = true; } Check(rejected && File.ReadAllText(other) == "original", "Hardlink refused"); File.Delete(file);
+            Directory.CreateDirectory(file); rejected = false; try { Handoff.Append(root); } catch { rejected = true; } Check(rejected, "Directory refused"); Directory.Delete(file);
+            Check(Handoff.Age(root) == null && Handoff.ContinuePrompt(root).Contains(root), "Handoff metadata and prompt");
+            File.WriteAllText(Path.Combine(root, "HANDOFF.md"), "fixture"); Check(Handoff.Age(root).StartsWith("交接 "), "Handoff age");
+            var cancelled = new System.Threading.CancellationToken(true); rejected = false; try { LauncherUI.DirectoryBytes(root, cancelled); } catch (OperationCanceledException) { rejected = true; } Check(rejected, "Directory size cancellation");
+            Check(LauncherUI.DirectoryBytes(root, System.Threading.CancellationToken.None) > 0, "Directory size");
+        } finally { Directory.Delete(root, true); }
+    }
+
+    // SPEC 系统设置 [Windows]：六分类、更改即时保存生效、恢复默认立即保存、更新入口受开关约束。
     static void TestSettingsPage(LauncherUI ui, string settingsFile, List<Instance> state) {
         var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
         var all = Children(ui.Snapshot(3, state)).ToArray();
@@ -130,22 +187,20 @@ public static class LauncherTests {
         Func<string, ComboBox> choice = name => all.OfType<ComboBox>().Single(b => AutomationProperties.GetName(b) == name);
         Func<string, Button> button = id => all.OfType<Button>().Single(b => AutomationProperties.GetAutomationId(b) == id || AutomationProperties.GetName(b) == id);
         Action<System.Windows.Controls.Primitives.ButtonBase> click = b => typeof(System.Windows.Controls.Primitives.ButtonBase).GetMethod("OnClick", flags).Invoke(b, null);
-        Func<bool> dirty = () => button("SaveSettings").IsEnabled;
         Func<System.Threading.Tasks.Task> check = () => (System.Threading.Tasks.Task)typeof(LauncherUI).GetMethod("CheckUpdate", flags).Invoke(ui, new object[] { false });
 
         foreach (string tab in new[] { "常规", "启动行为", "外观", "数据与存储", "通知", "关于" }) Check(all.OfType<Button>().Count(b => AutomationProperties.GetName(b) == tab) == 1, "Settings tab missing: " + tab);
         Check(!all.OfType<FrameworkElement>().Any(e => e is TextBlock && new[] { "默认浏览器", "启动间隔", "默认打开方式" }.Contains(((TextBlock)e).Text)), "Fake settings must be removed");
-        Check(!dirty() && toggle("显示水墨插画").IsChecked == true && toggle("允许检查 GitHub 更新").IsChecked == false, "Settings must start from saved defaults");
+        Check(!all.OfType<Button>().Any(b => new[] { "SaveSettings", "UndoSettings" }.Contains(AutomationProperties.GetAutomationId(b))), "Save and undo buttons must be removed");
+        Check(toggle("显示水墨插画").IsChecked == true && toggle("允许检查 GitHub 更新").IsChecked == false && !File.Exists(settingsFile), "Settings must start from saved defaults");
         click(toggle("显示水墨插画"));
-        Check(dirty() && toggle("显示水墨插画").IsChecked == false, "Toggle must change the draft");
-        click(button("关于"));
-        Check(dirty() && toggle("显示水墨插画").IsChecked == false, "Draft must survive switching categories");
-        click(button("UndoSettings"));
-        Check(!dirty() && toggle("显示水墨插画").IsChecked == true && !File.Exists(settingsFile), "Undo must restore saved values without writing");
+        Check(toggle("显示水墨插画").IsChecked == false && !LauncherSettings.Load(settingsFile).ShowArtwork, "Toggle must save immediately");
+        click(toggle("显示水墨插画"));
+        Check(LauncherSettings.Load(settingsFile).ShowArtwork, "Toggle back must save immediately");
         Check(choice("未恢复时的启动页面").IsEnabled, "Start page selectable when not restoring");
         click(toggle("恢复启动器上次页面"));
-        Check(!choice("未恢复时的启动页面").IsEnabled, "Start page disabled while restoring last page");
-        click(button("UndoSettings"));
+        Check(!choice("未恢复时的启动页面").IsEnabled && LauncherSettings.Load(settingsFile).RememberPage, "Start page disabled while restoring last page");
+        click(toggle("恢复启动器上次页面"));
 
         var addLog = typeof(LauncherUI).GetMethod("AddLog", flags);
         for (int i = 0; i < 600; i++) addLog.Invoke(ui, new object[] { "合成日志 " + i });
@@ -153,26 +208,22 @@ public static class LauncherTests {
         Check(logs.Count == 500, "Default log limit must be 500");
         choice("启动器日志保留上限").SelectedIndex = 0;
         click(toggle("显示水墨插画")); click(toggle("显示窗口内提示"));
-        click(button("SaveSettings"));
         var saved = LauncherSettings.Load(settingsFile);
-        Check(!dirty() && saved.LogLimit == 100 && !saved.ShowArtwork && !saved.LocalNotifications && saved.LoadError == null, "Save must write the draft");
+        Check(saved.LogLimit == 100 && !saved.ShowArtwork && !saved.LocalNotifications && saved.LoadError == null, "Each change must be written");
         Check(logs.Count == 100, "Saved log limit must trim memory logs");
         var artwork = (List<UIElement>)typeof(LauncherUI).GetField("artwork", flags).GetValue(ui);
         Check(artwork.Count > 0 && artwork.All(e => e.Visibility == Visibility.Collapsed), "Artwork must follow the saved setting");
         Check(!ui.Notify("测试"), "Notifications off must not show the toast");
-        ui.ResetSettingsDraft();
-        Check(dirty() && LauncherSettings.Load(settingsFile).LogLimit == 100, "Reset must only fill the draft");
-        click(button("SaveSettings"));
-        Check(LauncherSettings.Load(settingsFile).SameAs(new LauncherSettings()) && artwork.All(e => e.Visibility == Visibility.Visible) && ui.Notify("测试"), "Saving defaults must apply them");
+        ui.ResetSettings();
+        Check(LauncherSettings.Load(settingsFile).SameAs(new LauncherSettings()) && artwork.All(e => e.Visibility == Visibility.Visible) && ui.Notify("测试"), "Reset must save and apply defaults");
 
-        // 更新入口：未开启或有未保存设置时不发请求。
+        // 更新入口：未开启时不发请求；开启即保存。
         int before = Updates.Requests;
         check().Wait();
-        click(toggle("允许检查 GitHub 更新")); click(button("SaveSettings"));
-        click(toggle("显示水墨插画"));
-        check().Wait();
-        Check(Updates.Requests == before, "Update check must not run while disabled or with unsaved settings");
-        click(button("UndoSettings")); click(toggle("允许检查 GitHub 更新")); click(button("SaveSettings"));
+        Check(Updates.Requests == before, "Update check must not run while disabled");
+        click(toggle("允许检查 GitHub 更新"));
+        Check(LauncherSettings.Load(settingsFile).AllowUpdates, "Updates switch must save immediately");
+        click(toggle("允许检查 GitHub 更新"));
         Check(!LauncherSettings.Load(settingsFile).AllowUpdates, "Updates must be off again");
         string diagnostics = ui.DiagnosticsText();
         Check(diagnostics.Contains(Updates.DisplayVersion) && diagnostics.Contains("GitHub updates disabled") && !diagnostics.Contains(":\\"), "Diagnostics must contain only version, OS and network switch");

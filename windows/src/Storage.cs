@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -345,7 +345,7 @@ namespace ClaudeLauncher {
             changed.Save(settingsFile);
             Check(LauncherSettings.Load(settingsFile).SameAs(changed) && !changed.SameAs(defaults) && changed.Clone().SameAs(changed), "设置往返或比较错误");
             string exported = changed.ExportJson();
-            Check(exported.StartsWith("{\"version\":1,\"settings\":{") && !exported.Contains("account") && !exported.Contains("Claude-") && !exported.Contains("lastPage"), "导出设置格式错误或含账号数据");
+            Check(exported.StartsWith("{\"version\":1,\"settings\":{") && !exported.Contains("accountLastUsed") && !exported.Contains("accountNames") && !exported.Contains("Claude-") && !exported.Contains("lastPage"), "导出设置格式错误或含账号数据");
             string lastPage = Path.Combine(root, "settings", "last-page");
             Check(LauncherSettings.ReadLastPage(lastPage) == null, "缺少上次页面应为空");
             LauncherSettings.WriteLastPage(lastPage, "accounts");

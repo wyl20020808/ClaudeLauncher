@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Windows;
@@ -18,6 +18,9 @@ public static class UiPreview {
         new Application();
         // 合成默认设置与临时目录（预览不保存设置；日志文件写入临时目录，结束时删除）。
         string temp = Path.Combine(Path.GetTempPath(), "claude-preview-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(temp);
+        string example = Path.Combine(temp, "示例项目"); Directory.CreateDirectory(example); File.WriteAllText(Path.Combine(example, "HANDOFF.md"), "合成预览");
+        File.WriteAllText(Path.Combine(temp, "settings.json.projects"), new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(new[] { new LauncherUI.LocalProject { Path = example, LastAccount = 1 } }));
         var ui = new LauncherUI(new LauncherSettings(), Path.Combine(temp, "settings.json"));
         var state = new List<Instance> { new Instance { Number = 1, ProcessId = 111 } };
         ui.Snapshot(0, state);
@@ -26,6 +29,7 @@ public static class UiPreview {
         string[] names = { "instances", "accounts", "logs" };
         Directory.CreateDirectory(args[0]);
         for (int page = 0; page < 3; page++) Save(ui.Snapshot(page, state), new Size(1080, 720), Path.Combine(args[0], names[page] + ".png"));
+        Save(ui.Snapshot(4, state), new Size(1080, 720), Path.Combine(args[0], "projects.png"));
         // 系统设置六个分类各一张。
         var section = typeof(LauncherUI).GetMethod("ShowSettingsSection", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
         for (int i = 0; i < 6; i++) { section.Invoke(ui, new object[] { i }); Save(ui.Snapshot(3, state), new Size(1080, 720), Path.Combine(args[0], "settings-" + (i + 1) + ".png")); }
@@ -44,6 +48,6 @@ public static class UiPreview {
         progress.Detail.Text = "请稍候，不要手动打开启动器。";
         Save(background, new Size(460, 300), Path.Combine(args[0], "update-install.png"));
         if (Directory.Exists(temp)) Directory.Delete(temp, true);
-        Console.WriteLine("PASS: three pages, six settings sections and two update states rendered offscreen; no desktop window opened.");
+        Console.WriteLine("PASS: four pages (including projects), six settings sections and two update states rendered offscreen; no desktop window opened.");
     }
 }

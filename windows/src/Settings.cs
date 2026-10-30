@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -10,11 +10,13 @@ namespace ClaudeLauncher {
     public sealed class LauncherSettings {
         public bool CloseToBackground = true, ShowTray = true, RememberPage, RestoreMinimized = true, ShowArtwork = true, ShowUsage = true, LocalNotifications = true, NotificationSound, AllowUpdates;
         public string StartPage = "instances";
-        public int RefreshInterval = 3, LogLimit = 500;
+        public int AccountSort;
+        public bool GlobalHotkeys;
+        public int RefreshInterval = 3, LogLimit = 500, UsageAlert = 80;
         // 读取失败的原因（已回落默认）；由调用方决定是否记录。
         public string LoadError;
 
-        public static readonly string[] Pages = { "instances", "accounts", "logs", "settings" };
+        public static readonly string[] Pages = { "instances", "accounts", "logs", "settings", "projects" };
         public static readonly int[] Intervals = { 1, 3, 5 }, LogLimits = { 100, 500, 1000 };
         public static readonly string DataDirectory = Path.Combine(ProfileDeletion.Local, "Claude-MultiLauncher");
         public static readonly string DefaultPath = Path.Combine(DataDirectory, "settings.json");
@@ -26,7 +28,7 @@ namespace ClaudeLauncher {
         // 固定键顺序的设置值，用于保存、导出与比较。
         public Dictionary<string, object> Values() {
             return new Dictionary<string, object> {
-                { "closeToBackground", CloseToBackground }, { "showTray", ShowTray }, { "rememberPage", RememberPage }, { "startPage", StartPage },
+                { "globalHotkeys", GlobalHotkeys }, { "accountSort", AccountSort }, { "usageAlert", UsageAlert }, { "closeToBackground", CloseToBackground }, { "showTray", ShowTray }, { "rememberPage", RememberPage }, { "startPage", StartPage },
                 { "refreshInterval", RefreshInterval }, { "restoreMinimized", RestoreMinimized }, { "showArtwork", ShowArtwork }, { "showUsage", ShowUsage }, { "logLimit", LogLimit },
                 { "localNotifications", LocalNotifications }, { "notificationSound", NotificationSound }, { "allowUpdates", AllowUpdates } };
         }
@@ -34,6 +36,9 @@ namespace ClaudeLauncher {
         public static LauncherSettings FromValues(IDictionary<string, object> values) {
             var d = new LauncherSettings();
             return new LauncherSettings {
+                GlobalHotkeys = Flag(values, "globalHotkeys", d.GlobalHotkeys),
+                AccountSort = Pick(values, "accountSort", new[] { 0, 1, 2 }, d.AccountSort),
+                UsageAlert = Pick(values, "usageAlert", new[] { 0, 70, 80, 90 }, d.UsageAlert),
                 CloseToBackground = Flag(values, "closeToBackground", d.CloseToBackground), ShowTray = Flag(values, "showTray", d.ShowTray),
                 RememberPage = Flag(values, "rememberPage", d.RememberPage), StartPage = Pick(values, "startPage", Pages, d.StartPage),
                 RefreshInterval = Pick(values, "refreshInterval", Intervals, d.RefreshInterval), RestoreMinimized = Flag(values, "restoreMinimized", d.RestoreMinimized),
@@ -67,6 +72,22 @@ namespace ClaudeLauncher {
         }
         // 导出已保存的偏好：不含账号、别名、项目、凭据、登录保护或上次页面。
         public string ExportJson() { return Serialize(new Dictionary<string, object> { { "version", 1 }, { "settings", Values() } }); }
+
+        public LauncherSettings Import(byte[] bytes) {
+            if (bytes.Length > 65536) throw new InvalidDataException("设置文件超过 64 KB");
+            var root = new JavaScriptSerializer().DeserializeObject(new System.Text.UTF8Encoding(false, true).GetString(bytes).TrimStart('\ufeff')) as Dictionary<string, object>;
+            object version, data;
+            if (root == null || !root.TryGetValue("version", out version) || !(version is int) || (int)version != 1 || !root.TryGetValue("settings", out data) || !(data is Dictionary<string, object>)) throw new InvalidDataException("设置文件格式无效");
+            var incoming = (Dictionary<string, object>)data;
+            var values = Values();
+            foreach (var pair in incoming) {
+                if (!values.ContainsKey(pair.Key)) continue;
+                var trial = new Dictionary<string, object>(values); trial[pair.Key] = pair.Value;
+                object parsed = FromValues(trial).Values()[pair.Key];
+                if (Object.Equals(parsed, pair.Value)) values[pair.Key] = parsed;
+            }
+            return FromValues(values);
+        }
 
         public static string ReadLastPage(string path) {
             try { string page = File.Exists(path) ? File.ReadAllText(path).Trim() : null; return Pages.Contains(page) ? page : null; }

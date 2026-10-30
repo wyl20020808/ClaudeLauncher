@@ -36,7 +36,7 @@ foreach ($name in $widths.Keys) {
     $arguments += '/resource:' + $target + ',ClaudeLauncher.UI.' + $name
 }
 $output = Join-Path $bin 'ClaudeLauncher.exe'
-$sources = @((Join-Path $projectRoot 'src/ClaudeLauncher.cs'), (Join-Path $projectRoot 'src/ProfileDeletion.cs'), (Join-Path $projectRoot 'src/Diagnostics.cs'), (Join-Path $projectRoot 'src/Updates.cs'), (Join-Path $projectRoot 'src/Usage.cs'), (Join-Path $projectRoot 'src/Settings.cs'), (Join-Path $projectRoot 'src/Storage.cs'), (Join-Path $projectRoot 'src/LauncherUI.cs'))
+$sources = @((Join-Path $projectRoot 'src/ClaudeLauncher.cs'), (Join-Path $projectRoot 'src/ProfileDeletion.cs'), (Join-Path $projectRoot 'src/Diagnostics.cs'), (Join-Path $projectRoot 'src/Updates.cs'), (Join-Path $projectRoot 'src/Usage.cs'), (Join-Path $projectRoot 'src/Settings.cs'), (Join-Path $projectRoot 'src/Handoff.cs'), (Join-Path $projectRoot 'src/ProxyCheck.cs'), (Join-Path $projectRoot 'src/Storage.cs'), (Join-Path $projectRoot 'src/LauncherUI.cs'))
 & $compiler @arguments /target:winexe ('/win32icon:' + $icon) ('/win32manifest:' + (Join-Path $projectRoot 'src/app.manifest')) ('/out:' + $output) @sources
 if ($LASTEXITCODE -ne 0) { throw 'GUI build failed.' }
 $test = Join-Path $bin 'LauncherTests.exe'

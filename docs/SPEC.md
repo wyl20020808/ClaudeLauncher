@@ -19,9 +19,9 @@
 
 不再提供自动恢复 Claude 实例、改默认浏览器、迁移账号目录或未存在的批量启动间隔。默认页面只在「恢复上次页面」关闭时可选。设置保存不修改运行中 Claude 的配置。
 
-**[Windows]**（2026-10-29，feature/windows-settings）同一六分类与草稿规则，WPF 原生控件（开关为带切换状态的复选框，选项为下拉框）。布局对应 macOS 1.7.14（feature/windows-settings-layout）：顶部分段标签（常规／启动行为／外观／数据与存储／通知／关于）切换分类；各分类按小标题分组为白色圆角卡片，每行 60 px，左侧图标、标题与说明，右侧开关／下拉／按钮／只读值；分组后可有带信息图标的提示框；内容超出时在面板内纵向滚动。草稿、保存、撤销、恢复默认及退出前提示不变。
+**[Windows]**（2026-10-29，feature/windows-settings）同一六分类，设置更改即时保存并生效，WPF 原生控件（开关为带切换状态的复选框，选项为下拉框）。布局对应 macOS 1.7.14（feature/windows-settings-layout）：顶部分段标签（常规／启动行为／外观／数据与存储／通知／关于）切换分类；各分类按小标题分组为白色圆角卡片，每行 60 px，左侧图标、标题与说明，右侧开关／下拉／按钮／只读值；分组后可有带信息图标的提示框；内容超出时在面板内纵向滚动。没有保存／撤销按钮和退出前未保存提示；恢复默认确认后立即保存。更新期间修改联网开关被拒绝或写入失败时弹窗提示，控件回到已保存值。
 
-- 存储：`%LOCALAPPDATA%\Claude-MultiLauncher\settings.json`，`{"version":1,"closeToBackground":true,"showTray":true,"rememberPage":false,"startPage":"instances","refreshInterval":3,"restoreMinimized":true,"showArtwork":true,"showUsage":true,"logLimit":500,"localNotifications":true,"notificationSound":false,"allowUpdates":false}`。逐项按类型与可选值校验，单项异常只回落该项；文件缺失、损坏或版本不是 1 时全部用默认。同目录临时文件写完后替换；保存失败保留原文件与草稿。`startPage` 存页面名（`instances`／`accounts`／`logs`／`settings`，项目页接入后加 `projects`），不存序号。上次页面只在开启「恢复上次页面」时写入同目录 `last-page`。
+- 存储：`%LOCALAPPDATA%\Claude-MultiLauncher\settings.json`，`{"version":1,"closeToBackground":true,"showTray":true,"rememberPage":false,"startPage":"instances","refreshInterval":3,"restoreMinimized":true,"showArtwork":true,"showUsage":true,"logLimit":500,"localNotifications":true,"notificationSound":false,"allowUpdates":false}`。逐项按类型与可选值校验，单项异常只回落该项；文件缺失、损坏或版本不是 1 时全部用默认。同目录临时文件写完后替换；保存失败保留原文件，控件恢复已保存值。`startPage` 存页面名（`instances`／`accounts`／`logs`／`settings`／`projects`），不存序号。上次页面只在开启「恢复上次页面」时写入同目录 `last-page`。
 - 常规：关闭窗口继续运行（开：隐藏窗口，托盘或再次打开启动器可恢复；关：关闭窗口即退出启动器，Claude 继续运行）；通知区域图标（关闭后托盘菜单不可用，再次打开启动器即可显示窗口）。
 - 启动行为：开机启动写 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 的 `ClaudeMultiLauncher` 值（带引号的程序路径），单独确认、立即生效、不进草稿；只在程序位于 `%LOCALAPPDATA%\Programs\Claude 多开启动器\ClaudeLauncher.exe` 时允许开启，开发副本拒绝；关闭只删除本值且仅当它指向本启动器。卸载程序不处理该值（升级时 Setup 会先运行旧卸载程序，处理它会丢失用户选择），卸载前请先关闭开机启动。**[Windows 差异]** 本地进程刷新间隔默认 3 秒（实测一次 WMI 扫描约 280 ms，1 秒间隔开销过大），可选 1／3／5 秒。点击账号时恢复最小化窗口：关闭时若目标窗口已最小化，不还原、不切换，只提示从任务栏打开。
 - 外观：显示水墨插画（侧栏山水、主区背景、账号卡片插画）；显示本地界面用量（默认开，`showUsage`，行为见「本地界面用量」[Windows]）。语言／主题为固定说明。
@@ -162,7 +162,7 @@ Windows 对应：重解析点（符号链接、junction）等同链接；硬链�
   - “交接给其他账号…”：沿用“打开”流程（账号检查、网络环境检测、记录上次账号、在 Finder 中显示项目），默认选中上次账号以外、观察到五小时用量最低的已有账号；剪贴板写入含项目路径、要求先读 `HANDOFF.md` 并复述下一步的接手指令。项目没有 `HANDOFF.md` 时先提示，可复制写交接指令、仍然交接或取消。
 - 项目行在名称下显示“交接 N 分钟前”（`HANDOFF.md` 的 `lstat` 修改时间，非普通文件不显示，不读内容）。
 - 用量提醒：触发提醒的账号若是某项目的上次账号，提示中附带该项目交接文档的更新时间，或提示先写交接文档。
-- Windows 未实现。
+- Windows 本地交接实现与边界见文末「[Windows] macOS 1.7.16 功能同步」。
 
 ### 一键识别与导入（macOS）
 
@@ -360,3 +360,20 @@ Windows 对应：重解析点（符号链接、junction）等同链接；硬链�
 两端加固自检还覆盖：登录保护准入、进行中操作和删除互斥、检查期间 PID 退出/替换及保护状态变化、保守 Code 状态、并发元数据检查与主线程回调（macOS）、深层存储链接/硬链接与深层 Code 存储链接拒绝。自动检查不代替 GUI 或真实账号登录验收。
 
 Windows 端的 `ClaudeLauncher.exe` 是 GUI 程序，需用 `ClaudeLauncher.exe --self-test | Write-Output` 运行，才会等待退出并显示结果。
+
+
+[Windows] 启动前本机环境检查（2026-10-30）：仅新实例启动前执行；只读系统代理、网卡和常见代理软件进程名，仅连接实际配置的回环地址。列出 Clash Verge、v2rayN、Clash for Windows、Mihomo Party、FlClash、sing-box、Hiddify 等已运行软件。无可用代理时建议在对应软件启用系统代理或 TUN，按钮为“取消／仍然启动”，默认取消；有代理时为“确认启动／取消”。不下载 PAC，不查公网 IP，不验证外网连通性。确认后再次检查存储、扫描进程并核对登录保护状态。
+
+
+## [Windows] macOS 1.7.16 功能同步（2026-10-30，待验收）
+
+- 设置即时保存：更新进行中拒绝修改联网开关，写入失败回退已保存值；恢复默认确认后立即保存。无保存、撤销和退出前草稿提醒。
+- 启动前本机环境检查：见「启动与激活」。激活已有进程不执行检测；新启动确认后重新校验存储、进程、登录保护和目录状态。只读常见代理软件进程名；不下载 PAC、不探测公网。
+- `usageAlert`：0／70／80／90，默认 80。仅处理用户触发读取的本地五小时观察结果，无新增轮询。按账号将重置说明保存在启动器的 `usage-observations.json.usageAlertState`，先保存去重状态再提醒；相同说明不重复，观察到低于阈值后重新启用。持久化失败弹窗，不伪装保存成功。提醒、状态栏与日志仅使用账号编号。推荐其他可打开且已观察五小时用量低于阈值的已有账号中用量最低者，实例卡片显示「切换到账号 NN」并复用正常打开流程。退出后的卡片保留数值并标「Claude 未运行 · 上次记录」；未运行记录不是实时额度。
+- 账号行增加创建／启动／打开按钮，复用卡片流程。`accountSort` 为编号／最近使用／状态（0／1／2，默认 0），保存到设置。启动请求成功或 PID 激活成功后，启动器记录 `settings.json.accountLastUsed`，不再以目录修改时间冒充最近使用。详情在后台统计大小，跳过重解析点；关闭详情窗口取消统计。
+- 窗口内 Ctrl+1～9、Ctrl+0 对应账号 01～10，仅已有账号生效。`globalHotkeys` 默认 false；开启时用 RegisterHotKey 注册 Ctrl+Alt+1～0，禁用按住重复，失败撤销本轮全部注册并提示。关闭设置和退出释放注册。托盘仅为注册成功的快捷键显示标记。
+- 数据与存储增加导入：只接受本地 ≤64 KB、UTF-8 的 `{"version":1,"settings":{…}}`；白名单逐项校验，无效值保留当前值；确认框列出变化后才保存并生效。账号、别名、项目、凭据和提醒去重状态不导入。
+- 项目管理增加本地清单及「···」交接菜单：添加已有本地目录、移除记录（不删除目录）、显示 HANDOFF.md 修改时间、追加规则、复制写交接指令、交接给其他账号。此轮实现交接所需入口；macOS 项目自动识别、分组和原生侧栏登记仍不属于 Windows 已实现能力。清单保存在 `settings.json.projects`，不跨电脑同步。
+- 交接规则和两段指令逐字采用 `src/Handoff.m`。写入 CLAUDE.md 前确认完整规则；只追加，标记已存在则跳过。拒绝 UNC／网络盘、父目录重解析点、目标重解析点、非普通文件、链接数不为 1、所有者不满足 `Storage.OwnedByMe`（当前用户或令牌默认所有者）、大于 1 MB、非 UTF-8。锁定父目录防替换，独占目标句柄并校验元数据，检测变化拒绝写入，写后 Flush(true)。文件不存在时独占创建，不覆盖已有文件。
+- 交接默认推荐上次账号以外、已观察五小时用量最低的已有账号；没有 HANDOFF.md 先提示。仅在账号打开流程通过后记录接手账号、显示项目目录和复制接手指令，用户自行在 Claude 选择目录并发送。不使用 Claude URI、浏览器或 CLI 代发消息。
+- 主题保留浅色；跟随系统／浅色／深色方案见 `docs/WINDOWS-THEME-PLAN.md`，等待用户确认后实施。
