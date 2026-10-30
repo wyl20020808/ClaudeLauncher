@@ -1,5 +1,10 @@
 # 项目状态
 
+## macOS 1.7.16 已发布（2026-10-30，macos-v1.7.16）
+
+- `scripts/publish-macos.sh` 退出 0：标签 macos-v1.7.16，目标 `03b6125`，已转正式并为 Latest（上一版 Latest 为 windows-v1.8.3）。附件 `ClaudeLauncher-1.7.16.dmg` 2308751 字节，SHA-256 `4ad880eec6349208eded2470d072559e9d84373863901725b5172263fd7b2fa7`；`latest-macos.json`；从 windows-v1.8.3 带入并核对的 Windows 清单与 `ClaudeLauncherSetup-1.8.3.exe`。草稿附件经 API 核对，latest/download 已复核。
+- 未验证：1.7.15 → 1.7.16 软件内更新；/Applications 中的日常版本尚未更新。
+
 ## macOS 1.7.16 发布准备（2026-10-30，dev）
 
 - 合并 origin/main（Windows 1.8.3）。windows/ 取 origin/main 已验证状态：dev 上未编译的 Windows 改动（设置即时保存、启动前网络检测与回环地址修正）未进入 main，交给 Windows 端按 e2f19f6、425a16e、8a569f7 移植。下方各节中的 Windows 部分因此不在 main。
