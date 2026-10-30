@@ -264,6 +264,8 @@ public static class LauncherTests {
         f = ProxyCheck.Findings(0, null, " http://127.0.0.1:1/pac ", new[] { "Meta" });
         Check(f.Count == 2 && f[0].Kind == "PAC" && f[0].Detail == "http://127.0.0.1:1/pac" && f[1].Kind == "TUN", "PAC and tunnel findings missing");
         Check(ProxyCheck.LooksLikeTunnel("Meta", "Wintun Userspace Tunnel") && ProxyCheck.LooksLikeTunnel("以太网 2", "TAP-Windows Adapter V9") && !ProxyCheck.LooksLikeTunnel("以太网", "Intel(R) Ethernet Connection"), "Tunnel adapter detection");
+        Check(ProxyCheck.LoopbackAddress("127.0.0.2").ToString() == "127.0.0.2" && ProxyCheck.LoopbackAddress("[::1]").ToString() == "::1" && ProxyCheck.LoopbackAddress("localhost").ToString() == "127.0.0.1", "Configured loopback address must be probed as written");
+        Check(ProxyCheck.LoopbackAddress("10.0.0.2") == null && ProxyCheck.LoopbackAddress("127.example") == null && ProxyCheck.LoopbackAddress("") == null, "Non-loopback hosts must not be probed");
         Check(ProxyCheck.IsLoopback("LocalHost") && ProxyCheck.IsLoopback("127.0.0.1") && ProxyCheck.IsLoopback("[::1]") && !ProxyCheck.IsLoopback("10.0.0.2"), "Loopback detection");
     }
     static void TestLaunches() {

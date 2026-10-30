@@ -53,13 +53,21 @@ namespace ClaudeLauncher {
             }
         }
 
+        // 解析为实际配置的回环地址（如 127.0.0.2）；localhost 视为 127.0.0.1；非回环或无法解析返回 null。
+        public static System.Net.IPAddress LoopbackAddress(string host) {
+            string h = (host ?? "").Trim().Trim('[', ']');
+            if (h.Equals("localhost", StringComparison.OrdinalIgnoreCase)) return System.Net.IPAddress.Loopback;
+            System.Net.IPAddress address;
+            return System.Net.IPAddress.TryParse(h, out address) && System.Net.IPAddress.IsLoopback(address) ? address : null;
+        }
+
         // 只连接回环地址，不离开本机。
         static bool LoopbackPortOpen(string host, int port) {
-            if (!IsLoopback(host)) return false;
-            bool v6 = host.Contains(":");
+            var address = LoopbackAddress(host);
+            if (address == null) return false;
             try {
-                using (var client = new TcpClient(v6 ? AddressFamily.InterNetworkV6 : AddressFamily.InterNetwork)) {
-                    var task = client.ConnectAsync(v6 ? System.Net.IPAddress.IPv6Loopback : System.Net.IPAddress.Loopback, port);
+                using (var client = new TcpClient(address.AddressFamily)) {
+                    var task = client.ConnectAsync(address, port);
                     return task.Wait(800) && client.Connected;
                 }
             } catch { return false; }
@@ -83,7 +91,7 @@ namespace ClaudeLauncher {
                 if (f.Kind == "TUN") { ok = true; lines.Add("✓ TUN／VPN 网卡：" + f.Detail); continue; }
                 if (f.Kind == "PAC") { ok = true; lines.Add("✓ 自动代理配置（PAC）：" + f.Detail); continue; }
                 string address = f.Host + ":" + f.Port;
-                if (!IsLoopback(f.Host)) { ok = true; lines.Add("✓ " + f.Kind + " 代理：" + address + "（非本机地址，未探测）"); }
+                if (LoopbackAddress(f.Host) == null) { ok = true; lines.Add("✓ " + f.Kind + " 代理：" + address + "（非本机地址，未探测）"); }
                 else if (LoopbackPortOpen(f.Host, f.Port)) { ok = true; lines.Add("✓ " + f.Kind + " 代理：" + address + "（本机端口可连接）"); }
                 else lines.Add("✗ " + f.Kind + " 代理：" + address + "（本机端口无响应，代理软件可能未运行）");
             }

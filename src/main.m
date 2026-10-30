@@ -734,7 +734,6 @@ static const unsigned CardFill = 0xFFFCF7;
 @property NSString *scanError;
 @property NSTimer *timer;
 @property NSArray<NSValue *> *hotKeys;
-@property NSMutableSet<NSString *> *usageAlerted;
 @property NSButton *suggestButton;
 @property int lockFD;
 @property NSInteger loginAccount;
@@ -2110,7 +2109,7 @@ static const unsigned CardFill = 0xFFFCF7;
     });
 }
 - (void)updateUsageCards {
-    NSDate *now = NSDate.date; NSMutableArray *over = [NSMutableArray array];
+    NSDate *now = NSDate.date; NSMutableArray *readings = [NSMutableArray array];
     for (AccountCard *card in self.cards) {
         NSDictionary *record = self.usageInterface[@(card.number)];
         NSString *status = record[@"status"] ?: @"未观察到 Code 用量";
@@ -2134,8 +2133,8 @@ static const unsigned CardFill = 0xFFFCF7;
         NSString *detail = @"在实例页聚焦／点击，或你手动展开官方 Code 用量弹窗时，读取一次已有控件并记录。不定时轮询、不代点、不调用用量查询，不读官方历史或登录信息。必要时仅启用该官方进程的本机网页辅助功能树，不更改系统权限。弹窗关闭后保留最近周记录和原时间；重启后核对归属再恢复。卡片上的时间是本机观察时间，不是服务器实时额度，两项时间独立；账号或组织变化不沿用缓存。";
         card.usageSource.stringValue = last ? @"Claude 未运行 · 上次记录" : available ? @"" : status;
         NSInteger threshold = [self.settings[@"usageAlert"] integerValue];
-        if (threshold && available && !last && !card.hidden && [card.usageValues[0] isKindOfClass:NSNumber.class] && [card.usageValues[0] doubleValue] >= threshold)
-            [over addObject:@[@(card.number),card.usageValues[0],[record[@"fh"][@"reset"] isKindOfClass:NSString.class] ? record[@"fh"][@"reset"] : @""]];
+        if (threshold && available && !last && !card.hidden && [card.usageValues[0] isKindOfClass:NSNumber.class])
+            [readings addObject:@[@(card.number),card.usageValues[0],[record[@"fh"][@"reset"] isKindOfClass:NSString.class] ? record[@"fh"][@"reset"] : @""]];
         card.usageSource.toolTip = detail;
         for (NSUInteger row=0;row<2;row++) {
             NSString *key = row == 0 ? @"fh" : @"sd"; NSDictionary *metric = available ? record[key] : nil;
@@ -2148,7 +2147,7 @@ static const unsigned CardFill = 0xFFFCF7;
         }
         card.needsDisplay = YES;
     }
-    for (NSArray *item in over) [self alertUsage:[item[0] integerValue] percent:[item[1] doubleValue] reset:item[2]];
+    for (NSArray *item in readings) [self observeUsage:[item[0] integerValue] percent:[item[1] doubleValue] reset:item[2]];
     NSInteger target = self.suggestButton.tag;
     if (!self.suggestButton.hidden && (target < 1 || target > 10 || self.cards[target-1].hidden || !self.buttons[target-1].enabled)) self.suggestButton.hidden = YES;
 }
@@ -2162,17 +2161,36 @@ NSInteger SuggestedAccount(NSArray<NSArray *> *candidates, NSInteger exclude, do
     }
     return best;
 }
-- (void)alertUsage:(NSInteger)account percent:(double)percent reset:(NSString *)reset {
-    if (!self.usageAlerted) self.usageAlerted = [NSMutableSet set];
-    NSString *token = [NSString stringWithFormat:@"%ld|%@",(long)account,reset]; // One reminder per account per reset window.
-    if ([self.usageAlerted containsObject:token]) return;
-    [self.usageAlerted addObject:token];
+// Reminder state is kept per account in the launcher's own preferences ({account: reset text when reminded}).
+// A reading below the threshold re-arms the account, so a new window reminds again even if its reset text repeats;
+// the same reset text without an observed drop stays quiet, also across launcher restarts. No extra reads or queries.
+- (NSMutableDictionary *)usageAlertState {
+    NSMutableDictionary *state = [NSMutableDictionary dictionary];
+    [[self.preferences dictionaryForKey:@"usageAlertState"] enumerateKeysAndObjectsUsingBlock:^(id key, id value, BOOL *stop) {
+        if ([key isKindOfClass:NSString.class] && [key integerValue] >= 1 && [key integerValue] <= 10 && [value isKindOfClass:NSString.class] && [value length] <= 200) state[key] = value;
+    }];
+    return state;
+}
+- (void)observeUsage:(NSInteger)account percent:(double)percent reset:(NSString *)reset {
+    double threshold = [self.settings[@"usageAlert"] doubleValue];
+    if (!threshold || account < 1 || account > 10) return;
+    NSMutableDictionary *state = [self usageAlertState]; NSString *key = @(account).stringValue;
+    if (percent < threshold) {
+        if (state[key]) { [state removeObjectForKey:key]; [self.preferences setObject:state forKey:@"usageAlertState"]; }
+        return;
+    }
+    if ([state[key] isEqual:reset ?: @""]) return;
+    state[key] = reset ?: @""; [self.preferences setObject:state forKey:@"usageAlertState"];
+    [self alertUsage:account percent:percent];
+}
+- (void)alertUsage:(NSInteger)account percent:(double)percent {
     double threshold = [self.settings[@"usageAlert"] doubleValue];
     NSMutableArray *candidates = [NSMutableArray array];
     for (AccountCard *card in self.cards) if (!card.hidden && self.buttons[card.number-1].enabled) [candidates addObject:@[@(card.number),card.usageValues.firstObject ?: NSNull.null]];
     NSInteger best = SuggestedAccount(candidates, account, threshold);
-    NSString *text = [NSString stringWithFormat:@"%@ 五小时已用 %.0f%%（提醒阈值 %.0f%%）。",[self accountName:account],percent,threshold];
-    if (best) text = [text stringByAppendingFormat:@"推荐切换到 %@（观察到已用 %.0f%%）。",[self accountName:best],[self.cards[best-1].usageValues.firstObject doubleValue]];
+    // Logged text uses account numbers only: names may be the Code display name, which must never be persisted.
+    NSString *text = [NSString stringWithFormat:@"账号 %02ld 五小时已用 %.0f%%（提醒阈值 %.0f%%）。",(long)account,percent,threshold];
+    if (best) text = [text stringByAppendingFormat:@"推荐切换到账号 %02ld（观察到已用 %.0f%%）。",(long)best,[self.cards[best-1].usageValues.firstObject doubleValue]];
     else text = [text stringByAppendingString:@"其他账号暂无低于阈值的观察记录。"];
     for (NSDictionary *project in [self projectRecords]) {
         if ([project[@"lastAccount"] integerValue] != account) continue;
@@ -3106,11 +3124,20 @@ static int UISettingsTest(NSString *output) {
         [launcher refreshAccountTable]; [launcher showPage:1]; capture(@"accounts.png");
         for (NSInteger n=1;n<=3;n++) launcher.buttons[n-1].enabled = YES;
         launcher.cards[0].usageValues = @[@86,@20]; launcher.cards[1].usageValues = @[@30,NSNull.null]; launcher.cards[2].usageValues = @[@10,@5];
-        [launcher alertUsage:1 percent:86 reset:@"14:00 重置"];
-        NSCAssert(!launcher.suggestButton.hidden && launcher.suggestButton.tag == 3 && [launcher.message.stringValue containsString:@"推荐切换到"],@"usage alert suggests lowest account");
-        launcher.suggestButton.hidden = YES; [launcher alertUsage:1 percent:90 reset:@"14:00 重置"];
-        NSCAssert(launcher.suggestButton.hidden,@"one reminder per reset window");
-        [launcher alertUsage:1 percent:90 reset:@"19:00 重置"]; NSCAssert(!launcher.suggestButton.hidden,@"new reset window reminds again");
+        launcher.accountNames[@"1"] = @"Synthetic-Name-Only"; launcher.accountNames[@"3"] = @"Synthetic-Name-Only";
+        [preferences removeObjectForKey:@"usageAlertState"];
+        [launcher observeUsage:1 percent:86 reset:@"周四01:10 重置"];
+        NSCAssert(!launcher.suggestButton.hidden && launcher.suggestButton.tag == 3 && [launcher.message.stringValue containsString:@"推荐切换到账号 03"],@"usage alert suggests lowest account");
+        BOOL leaked = NO; for (NSDictionary *entry in launcher.logEntries) if ([entry[@"text"] containsString:@"Synthetic-Name-Only"]) leaked = YES;
+        NSCAssert(!leaked && ![launcher.message.stringValue containsString:@"Synthetic-Name-Only"],@"usage alert logs account numbers, never names");
+        launcher.suggestButton.hidden = YES; [launcher observeUsage:1 percent:90 reset:@"周四01:10 重置"];
+        NSCAssert(launcher.suggestButton.hidden,@"one reminder per window");
+        Launcher *restarted = [Launcher new]; restarted.preferences = preferences; restarted.settings = launcher.settings;
+        NSCAssert([[restarted usageAlertState][@"1"] isEqual:@"周四01:10 重置"],@"reminder state survives restart");
+        [launcher observeUsage:1 percent:4 reset:@"周四01:10 重置"]; NSCAssert(![launcher usageAlertState][@"1"],@"observed drop re-arms");
+        [launcher observeUsage:1 percent:90 reset:@"周四01:10 重置"]; NSCAssert(!launcher.suggestButton.hidden,@"next window with the same reset text reminds again");
+        launcher.suggestButton.hidden = YES; [launcher observeUsage:1 percent:91 reset:@"周四19:00 重置"]; NSCAssert(!launcher.suggestButton.hidden,@"changed reset text reminds");
+        [preferences removeObjectForKey:@"usageAlertState"]; [launcher.accountNames removeObjectForKey:@"1"]; [launcher.accountNames removeObjectForKey:@"3"];
         launcher.suggestButton.hidden = YES; launcher.message.stringValue = @"";
         NetworkEnabled = NO; __block BOOL refused = NO;
         Fetch([NSURL URLWithString:[GitHubDownloads stringByAppendingString:@"latest-macos.json"]],YES,100,1,nil,^(NSData *data,NSString *failure) { refused = !data && failure.length; });

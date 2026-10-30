@@ -25,6 +25,7 @@ NSString *AppendHandoffRule(NSString *directory, BOOL *alreadyPresent) {
     if (!exists && errno != ENOENT) return @"无法读取 CLAUDE.md 的状态，未写入。";
     if (exists && !S_ISREG(info.st_mode)) return @"CLAUDE.md 是链接或不是普通文件，未写入。";
     if (exists && info.st_uid != getuid()) return @"CLAUDE.md 不属于当前用户，未写入。";
+    if (exists && info.st_nlink != 1) return @"CLAUDE.md 有硬链接，追加会同时改动其他位置的文件，未写入。";
     if (exists && info.st_size > 1024*1024) return @"CLAUDE.md 超过 1 MB，未写入。";
     NSData *existing = exists ? [NSData dataWithContentsOfFile:path] : [NSData data];
     if (!existing) return @"无法读取 CLAUDE.md，未写入。";
@@ -34,7 +35,7 @@ NSString *AppendHandoffRule(NSString *directory, BOOL *alreadyPresent) {
     int fd = open(path.fileSystemRepresentation, O_WRONLY|O_APPEND|O_CREAT|O_NOFOLLOW|O_CLOEXEC, 0644);
     if (fd < 0) return [NSString stringWithFormat:@"无法打开 CLAUDE.md：%s。未写入。",strerror(errno)];
     struct stat opened;
-    if (fstat(fd, &opened) != 0 || !S_ISREG(opened.st_mode) || opened.st_uid != getuid() || (exists && (opened.st_ino != info.st_ino || opened.st_size != info.st_size))) {
+    if (fstat(fd, &opened) != 0 || !S_ISREG(opened.st_mode) || opened.st_uid != getuid() || opened.st_nlink != 1 || (exists && (opened.st_ino != info.st_ino || opened.st_size != info.st_size))) {
         close(fd); return @"CLAUDE.md 在检查期间发生变化，未写入。";
     }
     NSString *block = HandoffRuleBlock();
@@ -86,6 +87,9 @@ void TestHandoff(void) {
     [NSFileManager.defaultManager createSymbolicLinkAtPath:claude withDestinationPath:target error:nil];
     NSCAssert(AppendHandoffRule(dir, &present) && [[NSString stringWithContentsOfFile:target encoding:NSUTF8StringEncoding error:nil] isEqual:@"x"], @"symlinked CLAUDE.md refused");
     [NSFileManager.defaultManager removeItemAtPath:claude error:nil];
+    [NSFileManager.defaultManager linkItemAtPath:target toPath:claude error:nil];
+    NSCAssert(AppendHandoffRule(dir, &present) && [[NSString stringWithContentsOfFile:target encoding:NSUTF8StringEncoding error:nil] isEqual:@"x"], @"hard-linked CLAUDE.md refused");
+    [NSFileManager.defaultManager removeItemAtPath:claude error:nil];
     [[NSData dataWithBytes:"\xff\xfe" length:2] writeToFile:claude atomically:NO];
     NSCAssert(AppendHandoffRule(dir, &present), @"non-UTF-8 CLAUDE.md refused");
     NSCAssert(!HandoffModified(dir), @"missing handoff");
@@ -95,5 +99,5 @@ void TestHandoff(void) {
     NSCAssert([HandoffAge([now dateByAddingTimeInterval:-30], now) isEqual:@"刚刚"] && [HandoffAge([now dateByAddingTimeInterval:-720], now) isEqual:@"12 分钟前"] && [HandoffAge([now dateByAddingTimeInterval:-7300], now) isEqual:@"2 小时前"] && !HandoffAge(nil, now), @"handoff age");
     NSCAssert([HandoffContinuePrompt(@"/tmp/p") containsString:@"/tmp/p"] && [HandoffContinuePrompt(@"/tmp/p") containsString:@"HANDOFF.md"], @"continue prompt names project and file");
     [NSFileManager.defaultManager removeItemAtPath:dir error:nil];
-    puts("PASS: handoff rule append-only (create, dedupe, keep content, refuse links and non-UTF-8), HANDOFF.md metadata and age, prompts; temporary fixtures only");
+    puts("PASS: handoff rule append-only (create, dedupe, keep content, refuse symlinks, hard links and non-UTF-8), HANDOFF.md metadata and age, prompts; temporary fixtures only");
 }
