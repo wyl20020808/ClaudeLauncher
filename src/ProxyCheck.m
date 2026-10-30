@@ -64,7 +64,24 @@ static BOOL LoopbackPortOpen(NSString *host, NSInteger port) {
     return open;
 }
 
-NSDictionary *ProxyEnvironmentReport(void) {
+NSArray<NSString *> *KnownProxyApps(NSArray<NSDictionary *> *apps) {
+    // Bundle identifier prefixes first; display-name keywords catch renamed or less common builds.
+    NSDictionary *bundles = @{@"io.github.clash-verge-rev":@"Clash Verge",@"com.west2online.ClashX":@"ClashX",@"com.nssurge.surge-mac":@"Surge",
+                              @"com.liguangming.Shadowrocket":@"Shadowrocket",@"net.yanue.V2rayU":@"V2rayU",@"ws.stash.app":@"Stash",
+                              @"com.crossutility.quantumult-x":@"Quantumult X",@"com.follow.clash":@"FlClash",@"party.mihomo":@"Mihomo Party",
+                              @"io.nekohasekai.sfavt":@"sing-box",@"app.hiddify":@"Hiddify",@"com.loon0x00.LoonLite":@"Loon"};
+    NSArray *keywords = @[@"Clash",@"Surge",@"Shadowrocket",@"V2ray",@"Stash",@"Quantumult",@"Mihomo",@"sing-box",@"Hiddify",@"Loon",@"Shadowsocks",@"Trojan",@"NekoRay"];
+    NSMutableOrderedSet *found = [NSMutableOrderedSet orderedSet];
+    for (NSDictionary *app in apps) {
+        NSString *bundle = [app[@"bundle"] isKindOfClass:NSString.class] ? app[@"bundle"] : @"", *name = [app[@"name"] isKindOfClass:NSString.class] ? app[@"name"] : @"";
+        NSString *match = nil;
+        for (NSString *prefix in bundles) if ([bundle hasPrefix:prefix]) { match = [bundle hasPrefix:@"com.west2online.ClashXPro"] ? @"ClashX Pro" : bundles[prefix]; break; }
+        if (!match) for (NSString *word in keywords) if ([name rangeOfString:word options:NSCaseInsensitiveSearch].location != NSNotFound) { match = name; break; }
+        if (match) [found addObject:match];
+    }
+    return found.array;
+}
+NSDictionary *ProxyEnvironmentReport(NSArray<NSDictionary *> *apps) {
     NSDictionary *proxies = CFBridgingRelease(SCDynamicStoreCopyProxies(NULL)) ?: @{};
     NSString *primary = nil;
     SCDynamicStoreRef store = SCDynamicStoreCreate(NULL, CFSTR("ClaudeLauncherProxyCheck"), NULL, NULL);
@@ -85,7 +102,9 @@ NSDictionary *ProxyEnvironmentReport(void) {
         else [lines addObject:[NSString stringWithFormat:@"✗ %@ 代理：%@（本机端口无响应，代理软件可能未运行）",kind,address]];
     }
     if (!lines.count) [lines addObject:@"✗ 未检测到系统代理或 TUN／VPN 模式"];
-    return @{@"ok":@(ok), @"lines":lines};
+    NSArray *clients = KnownProxyApps(apps);
+    [lines addObject:clients.count ? [@"• 正在运行的代理软件：" stringByAppendingString:[clients componentsJoinedByString:@"、"]] : @"• 未发现常见代理软件在运行"];
+    return @{@"ok":@(ok), @"lines":lines, @"clients":clients};
 }
 
 void TestProxyCheck(void) {
@@ -102,5 +121,10 @@ void TestProxyCheck(void) {
     NSCAssert(IsLoopbackHost(@"LocalHost") && IsLoopbackHost(@"127.0.0.1") && IsLoopbackHost(@"::1") && !IsLoopbackHost(@"10.0.0.2"), @"loopback");
     // Port 1 on loopback is not expected to listen; probe must fail fast without leaving the machine.
     NSCAssert(!LoopbackPortOpen(@"127.0.0.1", 1), @"closed loopback port");
+    NSArray *apps = @[@{@"bundle":@"io.github.clash-verge-rev.clash-verge-rev",@"name":@"Clash Verge"},@{@"bundle":@"com.west2online.ClashXPro",@"name":@"ClashX Pro"},
+                      @{@"bundle":@"com.example.mystash",@"name":@"My Shadowsocks"},@{@"bundle":@"com.apple.Safari",@"name":@"Safari"},@{@"bundle":@3,@"name":NSNull.null}];
+    NSArray *clients = KnownProxyApps(apps);
+    NSCAssert(clients.count == 3 && [clients[0] isEqual:@"Clash Verge"] && [clients[1] isEqual:@"ClashX Pro"] && [clients[2] isEqual:@"My Shadowsocks"], @"known proxy clients");
+    NSCAssert(KnownProxyApps(@[]).count == 0, @"no clients");
     puts("PASS: proxy check findings (HTTP/HTTPS/SOCKS/PAC/TUN), type and port validation, loopback-only probe; no external network");
 }

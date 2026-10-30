@@ -4,12 +4,32 @@ NSDictionary *DefaultSettings(void) {
     return @{@"closeToBackground":@YES, @"showMenuBar":@YES, @"rememberPage":@NO,
              @"startPage":@0, @"restoreMinimized":@YES, @"refreshInterval":@1,
              @"showArtwork":@YES, @"showUsageHistory":@YES, @"logLimit":@500,
-             @"localNotifications":@YES, @"notificationSound":@NO, @"allowUpdates":@NO};
+             @"localNotifications":@YES, @"notificationSound":@NO, @"allowUpdates":@NO,
+             @"usageAlert":@80, @"globalHotkeys":@NO, @"theme":@1};
+}
+// Each valid item from input replaces the base value; invalid or unknown items keep the base value.
+static NSDictionary *MergedSettings(id input, NSDictionary *base) {
+    NSMutableDictionary *result = ValidatedSettings(base).mutableCopy;
+    if (![input isKindOfClass:NSDictionary.class]) return result;
+    NSDictionary *choices = @{@"startPage":@[@0,@1,@2,@3,@4], @"refreshInterval":@[@1,@3,@5], @"logLimit":@[@100,@500,@1000],
+                              @"usageAlert":@[@0,@70,@80,@90], @"theme":@[@0,@1,@2]};
+    for (NSString *key in result.allKeys) {
+        id value = input[key];
+        if (![value isKindOfClass:NSNumber.class]) continue;
+        if (choices[key] ? [choices[key] containsObject:value] : [@[@NO,@YES] containsObject:value]) result[key] = value;
+    }
+    return result;
+}
+NSDictionary *ImportedSettings(NSData *data, NSDictionary *current) {
+    id root = data.length && data.length <= 65536 ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+    if (![root isKindOfClass:NSDictionary.class] || ![root[@"version"] isEqual:@1] || ![root[@"settings"] isKindOfClass:NSDictionary.class]) return nil;
+    return MergedSettings(root[@"settings"], current);
 }
 NSDictionary *ValidatedSettings(id input) {
     NSMutableDictionary *result = DefaultSettings().mutableCopy;
     if (![input isKindOfClass:NSDictionary.class]) return result;
-    NSDictionary *choices = @{@"startPage":@[@0,@1,@2,@3,@4], @"refreshInterval":@[@1,@3,@5], @"logLimit":@[@100,@500,@1000]};
+    NSDictionary *choices = @{@"startPage":@[@0,@1,@2,@3,@4], @"refreshInterval":@[@1,@3,@5], @"logLimit":@[@100,@500,@1000],
+                              @"usageAlert":@[@0,@70,@80,@90], @"theme":@[@0,@1,@2]};
     for (NSString *key in result.allKeys) {
         id value = input[key];
         if (![value isKindOfClass:NSNumber.class]) continue;
@@ -73,6 +93,12 @@ void TestSettings(void) {
     NSDictionary *changed = ValidatedSettings(@{@"showArtwork":@NO,@"refreshInterval":@5,@"startPage":@4});
     NSData *json = [NSJSONSerialization dataWithJSONObject:changed options:0 error:nil];
     NSCAssert([ValidatedSettings([NSJSONSerialization JSONObjectWithData:json options:0 error:nil]) isEqual:changed], @"preferences round trip");
+    NSDictionary *current = ValidatedSettings(@{@"showArtwork":@NO,@"theme":@2});
+    NSData *file = [@"{\"version\":1,\"settings\":{\"usageAlert\":90,\"theme\":7,\"logLimit\":\"500\",\"unknown\":true,\"globalHotkeys\":true}}" dataUsingEncoding:NSUTF8StringEncoding];
+    NSDictionary *imported = ImportedSettings(file, current);
+    NSCAssert([imported[@"usageAlert"] isEqual:@90] && [imported[@"globalHotkeys"] isEqual:@YES] && [imported[@"theme"] isEqual:@2] && [imported[@"showArtwork"] isEqual:@NO] && !imported[@"unknown"], @"import keeps current values for invalid items");
+    for (NSString *bad in @[@"{\"version\":2,\"settings\":{}}",@"{\"settings\":{}}",@"[]",@"{"]) NSCAssert(!ImportedSettings([bad dataUsingEncoding:NSUTF8StringEncoding], current), @"reject malformed import");
+    NSCAssert(!ImportedSettings(nil, current) && !ImportedSettings([NSMutableData dataWithLength:65537], current), @"reject empty or oversized import");
     NSCAssert([ValidatedAccountName(@"  工作账号  ") isEqual:@"工作账号"] && !ValidatedAccountName(@"a\nb") && !ValidatedAccountName([@"长" stringByPaddingToLength:25 withString:@"长" startingAtIndex:0]), @"bounded local alias");
     NSDate *now = NSDate.date;
     NSArray *logs = @[@{@"time":@"now",@"date":now,@"instance":@"系统",@"level":@"信息",@"text":@"Hello"},@{@"time":@"old",@"date":[now dateByAddingTimeInterval:-600],@"instance":@"Claude 2",@"level":@"错误",@"text":@"失败"}];

@@ -1090,10 +1090,12 @@ namespace ClaudeLauncher {
             int choice = Ask(ok ? "网络环境检测：已检测到代理" : "网络环境检测：未检测到可用代理",
                 string.Join("\n", lines) + "\n\n" + (ok ? "请确认代理节点可用后继续启动。" : "Claude 需要可用的代理才能正常连接。建议先开启代理软件的系统代理或 TUN 模式，再继续启动。")
                 + "\n\n仅读取本机系统代理设置与网卡，不访问外部网络，无法确认出口 IP 所在地区。",
-                new[] { "确认启动", "取消" }, 1, 0);
+                ok ? new[] { "确认启动", "取消" } : new[] { "取消", "仍然启动" }, ok ? 1 : 0, 0);
+            // 未检测到可用代理时回车即取消，必须明确点“仍然启动”。
+            bool confirmed = ok ? choice == 0 : choice == 1;
             checking.Remove(number); Render();
-            if (choice != 0) Message("账号 " + Two(number) + "：已取消启动。", false);
-            return choice == 0;
+            if (!confirmed) Message("账号 " + Two(number) + "：已取消启动。", false);
+            return confirmed;
         }
         async Task Launch(int number) {
             pending[number] = DateTime.UtcNow; Render();
