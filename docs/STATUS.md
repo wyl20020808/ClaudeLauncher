@@ -2,6 +2,7 @@
 
 ## macOS 1.7.20：新手教程和同步标题（2026-10-31）
 
+- 发布：`macos-v1.7.20`（目标 `6a09107`，dev 与 main 同一提交），`scripts/publish-macos.sh` 退出 0，草稿经 API 核对、latest/download 复核通过。DMG `ClaudeLauncher-1.7.20.dmg`，3804683 字节，SHA-256 `9d56dc7a485c054751e5337eebe6701817aceb833ef78d3297e4a41f6b7965ff`；Windows 沿用 `ClaudeLauncherSetup-1.8.4.exe`。安装版未由本轮安装，软件内更新未验证。
 - 版本 1.7.20 / build 27。用户试用开发版后同意发布；教程会话列出的 6 个人工检查点（动画、点击、按键、页面恢复、永久入口、深色和英文）用户没有逐项回报，按未验证记录。
 - 首次启动路径：开发版启动后 `tutorialSeen` 被写为 1，说明自动引导已走到。
 - 文档配图是发布前用演示数据生成的，左上角版本显示 V1.7.19，未重新生成。
