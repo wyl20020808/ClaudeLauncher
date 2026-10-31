@@ -62,7 +62,7 @@ namespace ClaudeLauncher {
         Border toast; TextBlock toastText;
         readonly DispatcherTimer toastTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(5) };
         readonly StackPanel cardList, rowList;
-        readonly ScrollViewer rowScroll, accountsScroll;
+        readonly ScrollViewer accountsScroll;
         readonly Canvas trendSection, accountsContent;
         readonly Border tablePanel;
         readonly Rectangle tableLine;
@@ -139,6 +139,15 @@ namespace ClaudeLauncher {
             if (chevron) { var down = Glyph("", 10, Muted); Grid.SetColumn(down, 2); grid.Children.Add(down); }
             var box = Panel(10, "#EBFFFDFA"); box.Child = grid; box.IsHitTestVisible = false;
             return At(canvas, box, x, y, width, height);
+        }
+        // i 图标：悬停显示说明，点击弹出同样的文字，点别处关闭。
+        Button InfoButton(string text) {
+            var button = new Button { Style = (Style)window.FindResource("Icon"), Content = Glyph("", 14, Muted), ToolTip = text };
+            AutomationProperties.SetName(button, Appearance.Text(text));
+            var label = new TextBlock { FontSize = 12, Foreground = B(Ink), TextWrapping = TextWrapping.Wrap, Width = 256 };
+            var popup = new System.Windows.Controls.Primitives.Popup { PlacementTarget = button, Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom, StaysOpen = false, Child = new Border { Background = B("#FFFDFA"), BorderBrush = B("#EDE4D8"), BorderThickness = new Thickness(1), Padding = new Thickness(12, 10, 12, 10), Child = label } };
+            button.Click += delegate { label.Text = Appearance.Text(text); popup.IsOpen = true; };
+            return button;
         }
         Button Action(string text, string style, string icon, double size) {
             var button = new Button { Style = (Style)window.FindResource(style), FontSize = size };
@@ -339,8 +348,7 @@ namespace ClaudeLauncher {
             for (int i = 0; i < heads.Length; i++) At(accounts, T(heads[i], 13, "#7A6F64", FontWeights.SemiBold), 36 + offsets[i], 304);
             At(accounts, new Rectangle { Fill = B("#EFE7DC") }, 37, 336, 734, 1);
             tableLine = At(accounts, new Rectangle { Fill = B("#EFE7DC") }, 37, 655, 734, 1);
-            rowList = new StackPanel();
-            rowScroll = At(accounts, new ScrollViewer { Content = rowList, VerticalScrollBarVisibility = ScrollBarVisibility.Auto }, 37, 337, 734, 318);
+            rowList = At(accounts, new StackPanel(), 37, 337, 734);
             for (int n = 1; n <= 10; n++) { rows[n] = BuildRow(n); rowList.Children.Add(rows[n].Root); }
             accountsEmpty = At(accounts, T("没有符合条件的账号", 13, "#8A7F74", FontWeights.Normal), 37, 470, 734);
             accountsEmpty.TextAlignment = TextAlignment.Center;
@@ -353,12 +361,6 @@ namespace ClaudeLauncher {
             pages[1].Children.Remove(accounts);
             accountsScroll = new ScrollViewer { Content = accounts, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Focusable = false };
             pages[1].Children.Add(accountsScroll);
-            // 表格滚到头或无需滚动时，滚轮交给整页，否则指针停在表格上页面不动。
-            rowScroll.PreviewMouseWheel += (sender, e) => {
-                bool canScroll = e.Delta > 0 ? rowScroll.VerticalOffset > 0 : rowScroll.VerticalOffset < rowScroll.ScrollableHeight;
-                if (canScroll) return;
-                accountsScroll.ScrollToVerticalOffset(accountsScroll.VerticalOffset - e.Delta); e.Handled = true;
-            };
 
             // 日志记录
             var logsPage = PageTitled(2, "日志记录", "查看实例启动、关闭与异常信息，便于追踪运行情况和排查问题。");
@@ -693,6 +695,7 @@ namespace ClaudeLauncher {
             var projectHint = At(canvas, T("选择账号后会复制路径并打开资源管理器，请在 Claude 中选择此文件夹。", 12, "#795539", FontWeights.Normal), 38, 656, 734, 42);
             projectHint.TextWrapping = TextWrapping.Wrap;
             var import = At(canvas, Action("识别并导入", "Btn", "", 14), 484, 56, 146, 44);
+            At(canvas, InfoButton("从各账号本机记录里找出用过的项目目录，加到下方清单。不读对话，不改账号数据。"), 456, 66, 24, 24);
             import.IsEnabled = !projectsUnreadable;
             import.Click += async delegate {
                 import.IsEnabled=false;
@@ -1559,12 +1562,12 @@ namespace ClaudeLauncher {
             var found = instances.Where(x => x.Number == n).ToList();
             return found.Count == 1 ? UsageInterface.Identity(n, found[0]) : null;
         }
-        // 表格卡片按账号数显示 3～6 行，趋势区紧跟其后；更多账号在表格内滚动。
+        // 表格随账号数变高（至少 3 行），只有整页滚动，滚轮不会卡在表格里；趋势区紧跟其后。
         void LayoutAccountTable(int count) {
-            double height = Math.Max(3, Math.Min(6, count)) * 53;
+            double height = Math.Max(3, count) * 53;
             if (height == accountRowsHeight) return;
             accountRowsHeight = height;
-            rowScroll.Height = height; tablePanel.Height = 86 + height;
+            tablePanel.Height = 86 + height;
             Canvas.SetTop(tableLine, 337 + height); Canvas.SetTop(accountsEmpty, 337 + height / 2 - 10);
             Canvas.SetTop(tableFooter, 349 + height); Canvas.SetTop(accountNote, 349 + height);
             Canvas.SetTop(trendSection, 394 + height);

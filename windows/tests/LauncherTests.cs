@@ -184,6 +184,15 @@ public static class LauncherTests {
     // SPEC 系统设置 [Windows]：六分类、更改即时保存生效、恢复默认立即保存、更新入口受开关约束。
     static void TestSettingsPage(LauncherUI ui, string settingsFile, List<Instance> state) {
         var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+        // 账号表格不再内部滚动：全部账号显示时表格变高，整页只有一个滚动层。
+        ui.Snapshot(1, state); var layoutTable = typeof(LauncherUI).GetMethod("LayoutAccountTable", flags);
+        var tableBorder = (Border)typeof(LauncherUI).GetField("tablePanel", flags).GetValue(ui); var trendArea = (FrameworkElement)typeof(LauncherUI).GetField("trendSection", flags).GetValue(ui);
+        var pageScroll = (ScrollViewer)typeof(LauncherUI).GetField("accountsScroll", flags).GetValue(ui);
+        Check(!Children((DependencyObject)pageScroll.Content).OfType<ScrollViewer>().Any(), "Account page must not nest a scroller");
+        layoutTable.Invoke(ui, new object[] { 10 }); Check(tableBorder.Height == 86 + 530 && Canvas.GetTop(trendArea) == 394 + 530, "Table must grow to all ten rows");
+        layoutTable.Invoke(ui, new object[] { 1 }); Check(tableBorder.Height == 86 + 159 && Canvas.GetTop(trendArea) == 394 + 159, "Table keeps its three-row minimum");
+        var infoButtons = Children(ui.Snapshot(4, state)).OfType<Button>().Where(b => (b.ToolTip as string ?? "").StartsWith("从各账号本机记录里")).ToArray();
+        Check(infoButtons.Length == 1 && AutomationProperties.GetName(infoButtons[0]).Length > 0, "Import info icon missing");
         var all = Children(ui.Snapshot(3, state)).ToArray();
         Func<string, CheckBox> toggle = name => all.OfType<CheckBox>().Single(b => AutomationProperties.GetName(b) == name);
         Func<string, ComboBox> choice = name => all.OfType<ComboBox>().Single(b => AutomationProperties.GetName(b) == name);
