@@ -1,5 +1,25 @@
 # 项目状态
 
+## macOS 1.7.20：新手教程和同步标题（2026-10-31）
+
+- 版本 1.7.20 / build 27。用户试用开发版后同意发布；教程会话列出的 6 个人工检查点（动画、点击、按键、页面恢复、永久入口、深色和英文）用户没有逐项回报，按未验证记录。
+- 首次启动路径：开发版启动后 `tutorialSeen` 被写为 1，说明自动引导已走到。
+- 文档配图是发布前用演示数据生成的，左上角版本显示 V1.7.19，未重新生成。
+- Windows 交接：`docs/HANDOFF-windows-1.7.20.md`，未授权发布 Windows。
+
+## 新手教程（2026-10-31，macOS）
+
+- 用户要求：首次启动的互动引导，加上永久入口，可选软件内播放或文档教程。只讲账号、项目、同步会话、用量趋势。Windows 未做，见 SPEC `[Windows 待同步]`。
+- 实现：`src/main.m` 的 `TutorialOverlay`、`TutorialCardFrame`、`TutorialDocumentText` 和 `tutorial*` 方法；入口在侧栏底部；文档在 `resources/tutorial/`（两种语言各 3 张配图，共约 1.3 MB）。`--snapshot` 新增 `--tutorial-demo <步骤|-1 选择窗|-2 文档|-3 纯页面>`，只用演示数据。
+- 决定：升级用户也会自动看到一次。文档用原生文本窗口而不是浏览器或 WebView，避免任何联网入口。窗口当前固定 1080×720，尺寸变化只由自检模拟。
+- 自检：`--self-test`、`--ui-self-test` 通过，新增 TestTutorial（只显示一次、登录保护推迟、步骤进退、跳过、Esc／方向键／回车、遮罩挡住控件和账号快捷键、定位、尺寸变化、选择窗、文档只含包内图片、不启动任何东西）。真实偏好未写入 `tutorialSeen`。
+- 截图检查（离屏渲染）：浅色、深色、英文的全部 8 步和选择窗都看过，文档全文看过中文浅色、中文深色、英文浅色。过程中发现并修复：高亮偏到整个列表（`visibleRect` 超出控件自身）、账号页高亮偏 28pt（隐藏页面的滚动内边距在布局后才生效）、文档滚动范围过短（图片使懒布局算错长度）。
+- 未验证：真实窗口上的鼠标点击和动画观感（本进程没有屏幕录制权限，开发版与安装版也不能同时运行）。点击拦截和按键只在自检中用命中测试和合成事件验证；动画只在真实运行循环中确认了结束状态正确。首次启动路径 `applicationDidFinishLaunching` 未实际走过（自检直接调用其中的 `startTutorialIfFirstRun`）。
+
+## 同步会话标题后缀（2026-10-31）
+
+- 用户要求：同步后的标题后缀从“（副本 MM/dd HH:mm）”改为“（同步 MM/dd HH:mm）”，英文为“(Synced MM/dd HH:mm)”。再次同步旧副本时，旧后缀同样被替换，不叠加。已写入账号的副本不改。
+
 ## macOS 1.7.19：同步会话（2026-10-31）
 
 - 发布：`macos-v1.7.19`（目标 `689496b`，dev 与 main 同一提交），`scripts/publish-macos.sh` 退出 0，草稿经 API 核对、latest/download 复核通过。DMG `ClaudeLauncher-1.7.19.dmg`，2414234 字节，SHA-256 `7fbe4201babe3ed376087e140dd8e929d87fc445de779d811bb1cd73554a8394`；Windows 沿用 `ClaudeLauncherSetup-1.8.4.exe`。发布后短时间内 latest/download 在部分 CDN 节点仍跳转到 windows-v1.8.4（返回 1.7.18），API 的 Latest 已是 macos-v1.7.19。安装版未由本轮安装，软件内更新未验证。

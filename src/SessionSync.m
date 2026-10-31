@@ -149,11 +149,11 @@ static NSString *ReadRows(NSString *path, NSMutableArray<NSMutableDictionary *> 
 static NSString *SessionCopyTitle(NSString *title, NSDate *date) {
     static NSRegularExpression *suffix; static NSDateFormatter *format; static dispatch_once_t once;
     dispatch_once(&once, ^{
-        suffix = [NSRegularExpression regularExpressionWithPattern:@"(?:（清理副本）| \\(cleaned copy\\)|（副本 \\d\\d/\\d\\d \\d\\d:\\d\\d）| \\(Copy \\d\\d/\\d\\d \\d\\d:\\d\\d\\))$" options:0 error:nil];
+        suffix = [NSRegularExpression regularExpressionWithPattern:@"(?:（清理副本）| \\(cleaned copy\\)|（(?:副本|同步) \\d\\d/\\d\\d \\d\\d:\\d\\d）| \\((?:Copy|Synced) \\d\\d/\\d\\d \\d\\d:\\d\\d\\))$" options:0 error:nil];
         format = [NSDateFormatter new]; format.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"]; format.dateFormat = @"MM/dd HH:mm";
     });
     NSString *base = [suffix stringByReplacingMatchesInString:title options:0 range:NSMakeRange(0,title.length) withTemplate:@""];
-    return [NSString stringWithFormat:L(@"%@（副本 %@）"),base,[format stringFromDate:date]];
+    return [NSString stringWithFormat:L(@"%@（同步 %@）"),base,[format stringFromDate:date]];
 }
 NSDictionary *CleanSession(NSString *sourcePath, NSString *project, NSString *home) {
     NSMutableArray<NSMutableDictionary *> *rows = [NSMutableArray array]; NSString *title = nil; NSUInteger sidechain = 0;
@@ -303,7 +303,7 @@ void TestSessionSync(void) {
         NSString *text = [[NSString alloc] initWithData:clean[@"jsonl"] encoding:NSUTF8StringEncoding];
         for (NSString *forbidden in @[@"SOURCE",@"PRIVATETHOUGHT",@"TOOLINPUT",@"TOOLOUTPUT",@"SECRETCOMMAND",@"IMAGEDATA",@"ABANDONEDBRANCH",@"SIDECHAINTEXT",@"COMPACTSUMMARY",@"INJECTED",@"me@example.com",@"sk-abc",@"Secret/plan",@"partial"])
             NSCAssert(![text containsString:forbidden] && ![clean[@"preview"] containsString:forbidden],@"not carried: %@",forbidden);
-        for (NSString *kept in @[@"第一问",@"答一",@"答二",@"排队指令",@"src/a.m",@"[项目外路径已移除]",@"[已移除:邮箱]",@"[已移除:密钥]",@"[历史工具请求：Edit，src/a.m]",@"[历史工具请求：Read，项目外路径已省略]",@"[历史工具请求：Bash]",@"[工作目录：windows]",@"[工作目录：项目根目录]",@"原标题（副本 "])
+        for (NSString *kept in @[@"第一问",@"答一",@"答二",@"排队指令",@"src/a.m",@"[项目外路径已移除]",@"[已移除:邮箱]",@"[已移除:密钥]",@"[历史工具请求：Edit，src/a.m]",@"[历史工具请求：Read，项目外路径已省略]",@"[历史工具请求：Bash]",@"[工作目录：windows]",@"[工作目录：项目根目录]",@"原标题（同步 "])
             NSCAssert([text containsString:kept],@"kept: %@",kept);
         NSArray *out = [[text stringByTrimmingCharactersInSet:NSCharacterSet.newlineCharacterSet] componentsSeparatedByString:@"\n"];
         NSCAssert(out.count == [clean[@"messages"] unsignedIntegerValue]+1,@"one row per merged message plus title");
@@ -320,7 +320,7 @@ void TestSessionSync(void) {
         NSCAssert(record.count == 8 && [record[@"cliSessionId"] isEqual:clean[@"sessionId"]] && [record[@"sessionId"] isEqual:[@"local_" stringByAppendingString:clean[@"sessionId"]]] && [record[@"isArchived"] isEqual:@NO],@"eight-field record");
 
         NSDate *fixed = [NSDate dateWithTimeIntervalSince1970:1800000000];
-        NSCAssert([[SessionCopyTitle(SessionCopyTitle(@"甲",fixed),fixed) componentsSeparatedByString:@"副本"] count] == 2 && [SessionCopyTitle(@"甲（清理副本）",fixed) hasPrefix:@"甲（副本 "],@"copy suffix is replaced, not stacked");
+        NSCAssert([[SessionCopyTitle(SessionCopyTitle(@"甲",fixed),fixed) componentsSeparatedByString:@"同步"] count] == 2 && [SessionCopyTitle(@"甲（清理副本）",fixed) hasPrefix:@"甲（同步 "] && [SessionCopyTitle(@"甲（副本 10/26 12:00）",fixed) hasPrefix:@"甲（同步 "],@"copy suffix is replaced, not stacked");
         NSCAssert(CleanSession(source,sub,home)[@"error"] != nil,@"root must be the selected project");
         NSString *wrong = [folder stringByAppendingPathComponent:[NSUUID.UUID.UUIDString.lowercaseString stringByAppendingString:@".jsonl"]];
         [[@"{\"type\":\"user\",\"uuid\":\"u\",\"parentUuid\":null,\"cwd\":\"" stringByAppendingFormat:@"%@\",\"message\":{\"role\":\"user\",\"content\":\"a\"}}\n{\"type\":\"assistant\",\"uuid\":\"v\",\"parentUuid\":\"u\",\"cwd\":\"%@\",\"message\":{\"role\":\"assistant\",\"content\":\"b\"}}\n",project,home] writeToFile:wrong atomically:NO encoding:NSUTF8StringEncoding error:nil];

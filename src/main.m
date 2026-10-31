@@ -868,6 +868,198 @@ static const unsigned CardFill = 0xFFFCF7;
 }
 @end
 
+// Places a card beside its highlight without covering it when any side has room. side: 0 none, 1 below, 2 above, 3 right, 4 left (flipped coordinates).
+static NSRect TutorialCardFrame(NSRect bounds, NSRect spot, NSSize size, NSInteger *side) {
+    const CGFloat margin = 16, gap = 16;
+    NSRect area = NSInsetRect(bounds,margin,margin);
+    CGFloat midX = NSMidX(spot)-size.width/2, midY = NSMidY(spot)-size.height/2;
+    CGFloat x = MIN(MAX(midX,NSMinX(area)),NSMaxX(area)-size.width), y = MIN(MAX(midY,NSMinY(area)),NSMaxY(area)-size.height);
+    if (side) *side = 0;
+    if (NSIsEmptyRect(spot)) return NSMakeRect(NSMidX(bounds)-size.width/2,NSMidY(bounds)-size.height/2,size.width,size.height);
+    NSRect options[4] = {NSMakeRect(x,NSMaxY(spot)+gap,size.width,size.height),NSMakeRect(x,NSMinY(spot)-gap-size.height,size.width,size.height),
+                         NSMakeRect(NSMaxX(spot)+gap,y,size.width,size.height),NSMakeRect(NSMinX(spot)-gap-size.width,y,size.width,size.height)};
+    for (NSInteger i = 0; i < 4; i++) if (NSContainsRect(area,options[i])) { if (side) *side = i+1; return options[i]; }
+    // The highlight fills the window: keep the card inside, at the corner that covers the least of its start.
+    return NSMakeRect(NSMaxX(area)-size.width,NSMaxY(area)-size.height,size.width,size.height);
+}
+typedef NS_ENUM(NSInteger, TutorialAction) { TutorialNext, TutorialBack, TutorialClose };
+// Dims the window and swallows every click and shortcut, so the tour can never start an account or change data.
+@interface TutorialOverlay : NSView
+@property (copy) void (^onAction)(TutorialAction action);
+@property NSArray<NSView *> *targets;
+@property NSView *card;
+@property NSRect spot, targetSpot;
+@property NSInteger side;
+@property CGFloat fade, dim;
+@property BOOL animates;
+@property NSTimer *motion;
+- (void)showCard:(NSView *)card targets:(NSArray<NSView *> *)targets;
+- (NSRect)measuredSpot;
+- (void)relayout;
+- (void)stop;
+@end
+@implementation TutorialOverlay
+- (BOOL)isFlipped { return YES; }
+- (BOOL)mouseDownCanMoveWindow { return NO; }
+- (BOOL)acceptsFirstResponder { return YES; }
+- (BOOL)acceptsFirstMouse:(NSEvent *)event { return YES; }
+- (void)mouseDown:(NSEvent *)event {
+    if (NSPointInRect([self convertPoint:event.locationInWindow fromView:nil],self.targetSpot)) self.onAction(TutorialNext);
+}
+- (void)keyDown:(NSEvent *)event {
+    switch (event.keyCode) {
+        case 36: case 76: case 124: self.onAction(TutorialNext); break; // Return, Enter, Right.
+        case 123: self.onAction(TutorialBack); break;                   // Left.
+        case 53: self.onAction(TutorialClose); break;                   // Esc.
+        default: [super keyDown:event];
+    }
+}
+- (BOOL)performKeyEquivalent:(NSEvent *)event {
+    // Account shortcuts stay off during the tour; ⌘Q and ⌘W still reach the system.
+    if (!(event.modifierFlags & NSEventModifierFlagCommand) || [@[@"q",@"w"] containsObject:event.charactersIgnoringModifiers.lowercaseString]) return [super performKeyEquivalent:event];
+    return YES;
+}
+- (void)setFrameSize:(NSSize)size { [super setFrameSize:size]; [self relayout]; }
+- (void)viewDidEndLiveResize { [super viewDidEndLiveResize]; [self relayout]; }
+- (NSRect)measuredSpot {
+    NSRect result = NSZeroRect;
+    for (NSView *view in self.targets) {
+        NSRect visible = NSIntersectionRect(view.bounds,view.visibleRect); // visibleRect alone can overshoot the view's own bounds inside a scroll view.
+        if (view.hiddenOrHasHiddenAncestor || NSIsEmptyRect(visible)) continue;
+        result = NSUnionRect(result,[view convertRect:visible toView:self]);
+    }
+    return NSIsEmptyRect(result) ? NSZeroRect : NSIntersectionRect(NSInsetRect(result,-6,-6),NSInsetRect(self.bounds,4,4));
+}
+// Follows the target when the window or the page moves it; a step change goes through showCard.
+- (void)relayout {
+    if (!self.card) return;
+    NSRect target = [self measuredSpot]; NSInteger side = 0;
+    NSRect frame = TutorialCardFrame(self.bounds,target,self.card.frame.size,&side);
+    if (NSEqualRects(target,self.targetSpot) && NSEqualRects(frame,self.card.frame)) return;
+    [self.motion invalidate]; self.motion = nil;
+    self.targetSpot = target; self.spot = target; self.side = side; self.card.frame = frame; self.fade = 1; self.dim = 1; self.card.alphaValue = 1;
+    self.needsDisplay = YES;
+}
+- (void)showCard:(NSView *)card targets:(NSArray<NSView *> *)targets {
+    [self.card removeFromSuperview]; [self.motion invalidate]; self.motion = nil;
+    NSRect from = self.spot; CGFloat fromDim = self.dim;
+    self.card = card; self.targets = targets; self.targetSpot = [self measuredSpot];
+    NSInteger side = 0; card.frame = TutorialCardFrame(self.bounds,self.targetSpot,card.frame.size,&side); self.side = side;
+    [self addSubview:card];
+    // Tab stays inside the card; the page behind must not take keyboard focus.
+    NSMutableArray<NSView *> *controls = [NSMutableArray array];
+    for (NSView *view in card.subviews) if ([view isKindOfClass:NSButton.class]) [controls addObject:view];
+    for (NSView *view in card.subviews) for (NSView *inner in view.subviews) if ([inner isKindOfClass:NSButton.class]) [controls addObject:inner];
+    self.nextKeyView = controls.firstObject;
+    for (NSUInteger i = 0; i < controls.count; i++) controls[i].nextKeyView = i+1 < controls.count ? controls[i+1] : self;
+    NSRect to = self.targetSpot;
+    if (!self.animates) { self.spot = to; self.fade = 1; self.dim = 1; self.needsDisplay = YES; return; }
+    // The hole grows out of, or closes into, the target's centre when there is nothing to glide from or to.
+    if (NSIsEmptyRect(from)) from = NSInsetRect(to,NSWidth(to)*0.45,NSHeight(to)*0.45);
+    if (NSIsEmptyRect(to)) to = NSInsetRect(from,NSWidth(from)/2,NSHeight(from)/2);
+    self.fade = 0; card.alphaValue = 0;
+    NSDate *start = NSDate.date; __weak TutorialOverlay *weak = self;
+    self.motion = [NSTimer timerWithTimeInterval:1.0/60 repeats:YES block:^(NSTimer *timer) {
+        TutorialOverlay *overlay = weak; if (!overlay) { [timer invalidate]; return; }
+        CGFloat t = MIN(-start.timeIntervalSinceNow/0.24,1), e = 1-pow(1-t,3);
+        overlay.spot = NSMakeRect(NSMinX(from)+(NSMinX(to)-NSMinX(from))*e,NSMinY(from)+(NSMinY(to)-NSMinY(from))*e,NSWidth(from)+(NSWidth(to)-NSWidth(from))*e,NSHeight(from)+(NSHeight(to)-NSHeight(from))*e);
+        overlay.fade = e; overlay.card.alphaValue = e; overlay.dim = fromDim+(1-fromDim)*e; overlay.needsDisplay = YES;
+        if (t >= 1) { [timer invalidate]; overlay.motion = nil; overlay.spot = overlay.targetSpot; }
+    }];
+    [NSRunLoop.currentRunLoop addTimer:self.motion forMode:NSRunLoopCommonModes];
+}
+- (void)stop { [self.motion invalidate]; self.motion = nil; [self removeFromSuperview]; }
+- (void)drawRect:(NSRect)dirtyRect {
+    NSBezierPath *shade = [NSBezierPath bezierPathWithRect:self.bounds];
+    BOOL hole = NSWidth(self.spot) > 1 && NSHeight(self.spot) > 1;
+    if (hole) { [shade appendBezierPathWithRoundedRect:self.spot xRadius:12 yRadius:12]; shade.windingRule = NSWindingRuleEvenOdd; }
+    [[NSColor colorWithWhite:0 alpha:(DarkDrawing() ? 0.68 : 0.56)*self.dim] setFill]; [shade fill];
+    if (hole) {
+        NSBezierPath *ring = [NSBezierPath bezierPathWithRoundedRect:self.spot xRadius:12 yRadius:12];
+        [SRGB(0xE9B48A) setStroke]; ring.lineWidth = 2; [ring stroke];
+    }
+    if (!self.card) return;
+    NSRect box = self.card.frame;
+    CGContextRef context = NSGraphicsContext.currentContext.CGContext;
+    CGContextSaveGState(context); CGContextSetAlpha(context,self.fade);
+    NSShadow *shadow = [NSShadow new]; shadow.shadowColor = [NSColor colorWithWhite:0 alpha:0.28]; shadow.shadowBlurRadius = 24; shadow.shadowOffset = NSMakeSize(0,-8);
+    NSBezierPath *panel = [NSBezierPath bezierPathWithRoundedRect:box xRadius:18 yRadius:18];
+    [NSGraphicsContext saveGraphicsState]; [shadow set]; [Hex(0xFFFDFA) setFill]; [panel fill]; [NSGraphicsContext restoreGraphicsState];
+    [Hex(0xEDE4D8) setStroke]; panel.lineWidth = 1; [panel stroke];
+    if (self.side) {
+        const CGFloat size = 9;
+        CGFloat x = MIN(MAX(NSMidX(self.targetSpot),NSMinX(box)+26),NSMaxX(box)-26), y = MIN(MAX(NSMidY(self.targetSpot),NSMinY(box)+26),NSMaxY(box)-26);
+        NSPoint a, b, tip;
+        switch (self.side) {
+            case 1: a = NSMakePoint(x-size,NSMinY(box)); b = NSMakePoint(x+size,NSMinY(box)); tip = NSMakePoint(x,NSMinY(box)-size); break;
+            case 2: a = NSMakePoint(x-size,NSMaxY(box)); b = NSMakePoint(x+size,NSMaxY(box)); tip = NSMakePoint(x,NSMaxY(box)+size); break;
+            case 3: a = NSMakePoint(NSMinX(box),y-size); b = NSMakePoint(NSMinX(box),y+size); tip = NSMakePoint(NSMinX(box)-size,y); break;
+            default: a = NSMakePoint(NSMaxX(box),y-size); b = NSMakePoint(NSMaxX(box),y+size); tip = NSMakePoint(NSMaxX(box)+size,y); break;
+        }
+        NSBezierPath *caret = [NSBezierPath bezierPath]; [caret moveToPoint:a]; [caret lineToPoint:tip]; [caret lineToPoint:b]; [caret closePath];
+        [Hex(0xFFFDFA) setFill]; [caret fill];
+        NSBezierPath *edge = [NSBezierPath bezierPath]; [edge moveToPoint:a]; [edge lineToPoint:tip]; [edge lineToPoint:b]; edge.lineWidth = 1; [edge stroke];
+    }
+    CGContextRestoreGState(context);
+}
+@end
+static NSAttributedString *TutorialStyled(NSString *text, NSFont *font, NSColor *color, CGFloat lineSpacing) {
+    NSMutableParagraphStyle *style = [NSMutableParagraphStyle new]; style.lineSpacing = lineSpacing;
+    return [[NSAttributedString alloc] initWithString:text attributes:@{NSFontAttributeName:font,NSForegroundColorAttributeName:color,NSParagraphStyleAttributeName:style}];
+}
+// Adds a wrapped label and returns its bottom edge.
+static CGFloat TutorialLabel(NSView *parent, NSString *text, CGFloat x, CGFloat y, CGFloat width, NSFont *font, NSColor *color, CGFloat lineSpacing) {
+    NSAttributedString *styled = TutorialStyled(text,font,color,lineSpacing);
+    CGFloat height = ceil([styled boundingRectWithSize:NSMakeSize(width,0) options:NSStringDrawingUsesLineFragmentOrigin|NSStringDrawingUsesFontLeading].size.height)+2;
+    NSTextField *label = [NSTextField wrappingLabelWithString:text]; label.attributedStringValue = styled; label.selectable = NO;
+    label.frame = NSMakeRect(x-2,y,width+4,height); [parent addSubview:label];
+    return y+height;
+}
+// Renders the bundled guide: #, ##, "- " lists, ![caption](bundled file) and **bold**. Native text only, so opening it can never reach the network.
+static NSAttributedString *TutorialDocumentText(NSString *markdown, CGFloat imageWidth) {
+    NSMutableAttributedString *result = [NSMutableAttributedString new];
+    NSColor *ink = Hex(0x2B2622), *body = Hex(0x4A423B), *muted = Hex(0x8A8178);
+    NSRegularExpression *bold = [NSRegularExpression regularExpressionWithPattern:@"\\*\\*(.+?)\\*\\*" options:0 error:nil];
+    NSRegularExpression *image = [NSRegularExpression regularExpressionWithPattern:@"^!\\[(.*)\\]\\(([^/()]+)\\)$" options:0 error:nil];
+    void (^add)(NSString *, NSFont *, NSColor *, void (^)(NSMutableParagraphStyle *)) = ^(NSString *text, NSFont *font, NSColor *color, void (^configure)(NSMutableParagraphStyle *)) {
+        NSMutableParagraphStyle *style = [NSMutableParagraphStyle new]; style.lineSpacing = 5; style.paragraphSpacing = 10; if (configure) configure(style);
+        NSMutableAttributedString *line = [[NSMutableAttributedString alloc] initWithString:[text stringByAppendingString:@"\n"] attributes:@{NSFontAttributeName:font,NSForegroundColorAttributeName:color,NSParagraphStyleAttributeName:style}];
+        for (NSTextCheckingResult *match in [[bold matchesInString:line.string options:0 range:NSMakeRange(0,line.length)] reverseObjectEnumerator]) {
+            NSString *inner = [line.string substringWithRange:[match rangeAtIndex:1]];
+            [line replaceCharactersInRange:match.range withAttributedString:[[NSAttributedString alloc] initWithString:inner attributes:@{NSFontAttributeName:[NSFont systemFontOfSize:font.pointSize weight:NSFontWeightSemibold],NSForegroundColorAttributeName:ink,NSParagraphStyleAttributeName:style}]];
+        }
+        [result appendAttributedString:line];
+    };
+    for (NSString *raw in [markdown componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet]) {
+        NSString *line = [raw stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+        if (!line.length) continue;
+        NSTextCheckingResult *picture = [image firstMatchInString:line options:0 range:NSMakeRange(0,line.length)];
+        if ([line hasPrefix:@"# "]) add([line substringFromIndex:2],TitleFont(30),ink,^(NSMutableParagraphStyle *style) { style.paragraphSpacing = 6; });
+        else if ([line hasPrefix:@"## "]) add([line substringFromIndex:3],TitleFont(20),ink,^(NSMutableParagraphStyle *style) { style.paragraphSpacingBefore = 18; style.paragraphSpacing = 8; });
+        else if ([line hasPrefix:@"- "]) add([@"•\t" stringByAppendingString:[line substringFromIndex:2]],[NSFont systemFontOfSize:14],body,^(NSMutableParagraphStyle *style) {
+            style.tabStops = @[[[NSTextTab alloc] initWithTextAlignment:NSTextAlignmentLeft location:18 options:@{}]]; style.headIndent = 18; style.paragraphSpacing = 6;
+        });
+        else if (picture) {
+            NSString *file = [line substringWithRange:[picture rangeAtIndex:2]];
+            NSImage *source = [[NSImage alloc] initWithContentsOfFile:[NSBundle.mainBundle pathForResource:file.stringByDeletingPathExtension ofType:file.pathExtension] ?: @""];
+            if (!source) continue;
+            NSSize size = NSMakeSize(imageWidth,round(imageWidth*source.size.height/source.size.width));
+            NSTextAttachment *attachment = [NSTextAttachment new]; attachment.bounds = NSMakeRect(0,0,size.width,size.height);
+            attachment.image = [NSImage imageWithSize:size flipped:NO drawingHandler:^BOOL(NSRect rect) {
+                NSBezierPath *frame = [NSBezierPath bezierPathWithRoundedRect:NSInsetRect(rect,0.5,0.5) xRadius:12 yRadius:12];
+                [NSGraphicsContext saveGraphicsState]; [frame addClip]; [source drawInRect:rect]; [NSGraphicsContext restoreGraphicsState];
+                [Hex(0xE3D9CD) setStroke]; [frame stroke]; return YES;
+            }];
+            NSMutableParagraphStyle *style = [NSMutableParagraphStyle new]; style.paragraphSpacingBefore = 6; style.paragraphSpacing = 6;
+            NSMutableAttributedString *block = [[NSAttributedString attributedStringWithAttachment:attachment] mutableCopy];
+            [block appendAttributedString:[[NSAttributedString alloc] initWithString:@"\n"]];
+            [block addAttribute:NSParagraphStyleAttributeName value:style range:NSMakeRange(0,block.length)];
+            [result appendAttributedString:block];
+            add([line substringWithRange:[picture rangeAtIndex:1]],[NSFont systemFontOfSize:12],muted,^(NSMutableParagraphStyle *caption) { caption.paragraphSpacing = 16; });
+        } else add(line,[NSFont systemFontOfSize:14],body,nil);
+    }
+    return result;
+}
 @interface Launcher : NSObject <NSApplicationDelegate, NSWindowDelegate, NSMenuDelegate, NSSearchFieldDelegate, NSTableViewDataSource, NSTableViewDelegate>
 @property NSWindow *window;
 @property NSMutableArray<NSButton *> *buttons;
@@ -964,6 +1156,11 @@ static const unsigned CardFill = 0xFFFCF7;
 @property id usageClickMonitor;
 @property NSMutableDictionary *usagePopoverObservers;
 @property NSMutableSet *pendingUsagePopovers;
+@property TutorialOverlay *tutorialOverlay;
+@property NSArray<NSDictionary *> *tutorialSteps; // nil while the overlay shows the picker.
+@property NSInteger tutorialIndex, tutorialReturnPage;
+@property NSView *tutorialEntry;
+@property NSWindow *tutorialDocument;
 @end
 @implementation Launcher
 - (void)dealloc { if (_usageClickMonitor) [NSEvent removeMonitor:_usageClickMonitor]; }
@@ -1024,6 +1221,7 @@ static const unsigned CardFill = 0xFFFCF7;
     }];
     if (self.projectStore.notice) [self alert:L(@"项目清单提示") detail:self.projectStore.notice];
     [self finishPendingUpdate];
+    [self startTutorialIfFirstRun];
     // One check per launch (only when the user enabled updates); no timers or repeated background checks.
     if (NetworkEnabled) dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(3*NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ [self runUpdateCheck:NO]; });
 }
@@ -1618,7 +1816,7 @@ static BOOL ConfigFolderExists(NSInteger n) {
             NSString *log = [NSString stringWithFormat:L(@"会话同步：账号 %02ld 新增 %lu 条，共选择 %lu 条"),(long)to,(unsigned long)written,(unsigned long)(cleans.count+failures.count)];
             [self projectNotice:failure ?: log]; [self addLog:log];
             NSAlert *done = [NSAlert new]; done.messageText = written == cleans.count ? L(@"会话已同步") : L(@"同步未全部完成");
-            NSString *info = [NSString stringWithFormat:L(@"已写入 %lu 条。打开账号 %02ld 后，它们会出现在侧栏，标题后带“副本”和同步时间。第一条消息由你发送；如果项目还没被该账号信任，发送时官方会请你确认。"),(unsigned long)written,(long)to];
+            NSString *info = [NSString stringWithFormat:L(@"已写入 %lu 条。打开账号 %02ld 后，它们会出现在侧栏，标题后带“同步”和时间。第一条消息由你发送；如果项目还没被该账号信任，发送时官方会请你确认。"),(unsigned long)written,(long)to];
             if (failure) info = [info stringByAppendingFormat:@"\n\n%@",failure];
             if (failures.count) info = [info stringByAppendingFormat:L(@"\n\n%lu 条无法处理，没有同步。"),(unsigned long)failures.count];
             done.informativeText = info;
@@ -2518,6 +2716,16 @@ static BOOL ConfigFolderExists(NSInteger n) {
     NSMutableArray *items = [NSMutableArray array];
     for (NSUInteger i = 0; i < nav.count; i++) { NSView *item = [self navItem:nav[i][0] symbol:nav[i][1] index:i]; [sidebar addSubview:item]; [items addObject:item]; }
     self.navItems = items;
+    Canvas *guide = [[Canvas alloc] initWithFrame:NSMakeRect(20,660,232,40)];
+    guide.paint = ^(NSRect bounds) {
+        NSBezierPath *path = [NSBezierPath bezierPathWithRoundedRect:NSInsetRect(bounds,0.5,0.5) xRadius:12 yRadius:12];
+        [[Hex(0xFFFDFA) colorWithAlphaComponent:0.82] setFill]; [path fill]; [Hex(0xE3D9CD) setStroke]; [path stroke];
+    };
+    [guide addSubview:Symbol(@"questionmark.circle",NSMakeRect(20,11,18,18),Hex(0x3A332D))];
+    [guide addSubview:Text(L(@"使用教程"),NSMakeRect(56,10,160,20),[NSFont systemFontOfSize:14 weight:NSFontWeightMedium],Hex(0x2B2622))];
+    NSButton *guideHit = [NSButton buttonWithTitle:L(@"使用教程") target:self action:@selector(showTutorialPicker:)];
+    guideHit.frame = guide.bounds; guideHit.bordered = NO; guideHit.title = @""; guideHit.focusRingType = NSFocusRingTypeExterior; guideHit.accessibilityLabel = L(@"使用教程"); [guide addSubview:guideHit];
+    [sidebar addSubview:guide]; self.tutorialEntry = guide;
 
     Canvas *main = [[Canvas alloc] initWithFrame:NSMakeRect(272,0,808,720)];
     NSImage *backdrop = Art(@"background");
@@ -2912,6 +3120,7 @@ static OSStatus HotKeyHandler(EventHandlerCallRef next, EventRef event, void *co
     if (self.page == 3) [self reloadLogs];
     [self syncUsagePopoverObservers]; // Registration only: never reads quota controls or organization files on a timer.
     [self updateUsageCards];
+    [self.tutorialOverlay relayout]; // An account appearing or quitting moves the cards under the highlight.
 }
 - (void)refreshAccountTable {
     NSUInteger shown = 0, total = 0, running = 0, attention = 0, selected = 0; CGFloat y = 0;
@@ -3034,6 +3243,161 @@ static OSStatus HotKeyHandler(EventHandlerCallRef next, EventRef event, void *co
         for (AccountCard *card in self.cards) card.nameLabel.stringValue = [self accountName:card.number];
         [self refreshAccountTable]; return;
     }
+}
+// The tour only points at real controls: the overlay takes every click and shortcut, so nothing starts or changes.
+- (NSArray<NSDictionary *> *)tutorialStepList {
+    NSMutableArray *steps = [NSMutableArray arrayWithObject:@{@"title":L(@"欢迎使用 Claude 启动器"),@"body":L(@"用 1 分钟认识账号、项目、同步会话和用量趋势。引导期间不会启动账号，也不会改动任何数据。"),@"page":@0,@"targets":@[]}];
+    for (AccountCard *card in self.cards) if (!card.hidden) {
+        [steps addObject:@{@"title":L(@"启动或切换账号"),@"body":L(@"每个账号一张卡片。没运行的点“启动”，运行中的点“打开”切到它的窗口。各账号的登录和会话相互独立。"),@"page":@0,@"targets":@[card.button]}];
+        break;
+    }
+    // Heading, suggestion and the first row of charts: the whole section would leave no room for the card.
+    NSMutableArray *trend = [NSMutableArray array];
+    for (NSView *view in self.trendSection.subviews) if (NSMaxY(view.frame) <= 360) [trend addObject:view];
+    [steps addObjectsFromArray:@[
+        @{@"title":L(@"新建账号"),@"body":L(@"点这里创建下一个空闲账号，然后在打开的 Claude 里登录。最多 10 个。"),@"page":@0,@"targets":@[self.createButton]},
+        @{@"title":L(@"账号管理"),@"body":L(@"所有账号都在这张表里：搜索、筛选、排序，看运行状态和最近使用，也能直接启动或切换。"),@"page":@1,@"targets":@[self.rowsView]},
+        @{@"title":L(@"项目管理"),@"body":L(@"添加常用目录，或从各账号的本机记录里识别导入。所有账号共用这份清单。"),@"page":@2,@"targets":@[self.importProjectsButton,self.addProjectButton]},
+        @{@"title":L(@"同步会话"),@"body":L(@"把会话复制到另一个账号接着聊。原会话不变，两边不会合并。目标账号要先正常退出；有项目后才能用。"),@"page":@2,@"targets":@[self.syncSessionButton]},
+        @{@"title":L(@"用量趋势"),@"body":L(@"账号管理页下方记录近 7 天用量，并建议下一个使用的账号。只用启动器已观察到的数值，不查询 Claude。"),@"page":@1,@"targets":trend,@"trend":@YES},
+        @{@"title":L(@"随时回看"),@"body":L(@"点这里可以重新播放引导，或查看文档教程。"),@"page":@0,@"targets":@[self.tutorialEntry]}]];
+    return steps;
+}
+- (ActionButton *)tutorialButton:(NSString *)title frame:(NSRect)frame action:(SEL)action {
+    ActionButton *button = [self toolButton:title symbol:nil frame:frame action:action]; button.fontSize = 13; return button;
+}
+- (NSView *)tutorialCardForStep:(NSInteger)index {
+    NSDictionary *step = self.tutorialSteps[index];
+    BOOL welcome = index == 0, last = index == (NSInteger)self.tutorialSteps.count-1;
+    CGFloat width = welcome ? 420 : 348, inner = width-48, y = 22;
+    NSInteger count = self.tutorialSteps.count;
+    Canvas *card = [[Canvas alloc] initWithFrame:NSMakeRect(0,0,width,100)];
+    if (welcome) { NSImageView *logo = [[NSImageView alloc] initWithFrame:NSMakeRect(24,y,52,52)]; logo.image = NSApp.applicationIconImage; [card addSubview:logo]; y += 62; }
+    CGFloat dotsY = y+4;
+    card.paint = ^(NSRect bounds) {
+        for (NSInteger i = 0; i < count; i++) {
+            [(i <= index ? Hex(0xA8765A) : Hex(0xE3D9CD)) setFill];
+            [[NSBezierPath bezierPathWithRoundedRect:NSMakeRect(24+i*14+(i > index ? 8 : 0),dotsY,i == index ? 16 : 8,4) xRadius:2 yRadius:2] fill];
+        }
+    };
+    NSTextField *progress = Text([NSString stringWithFormat:@"%ld / %ld",(long)index+1,(long)count],NSMakeRect(width-84,y-2,60,16),[NSFont monospacedDigitSystemFontOfSize:11 weight:NSFontWeightMedium],Hex(0x8A8178));
+    progress.alignment = NSTextAlignmentRight; progress.accessibilityLabel = [NSString stringWithFormat:L(@"第 %ld 步，共 %ld 步"),(long)index+1,(long)count]; [card addSubview:progress];
+    y = TutorialLabel(card,step[@"title"],24,y+18,inner,TitleFont(welcome ? 24 : 20),Hex(0x2B2622),0)+6;
+    y = TutorialLabel(card,step[@"body"],24,y,inner,[NSFont systemFontOfSize:13],Hex(0x5A524A),4)+16;
+    CGFloat right = width-24;
+    ActionButton *next = [self tutorialButton:welcome ? L(@"开始") : last ? L(@"完成") : L(@"下一步") frame:NSMakeRect(right-92,y,92,32) action:@selector(tutorialNext:)];
+    next.primary = YES; right -= 100;
+    NSMutableArray *buttons = [NSMutableArray array];
+    if (!last) { ActionButton *skip = [self tutorialButton:L(@"跳过") frame:NSMakeRect(18,y,64,32) action:@selector(tutorialClose:)]; skip.plain = YES; [buttons addObject:skip]; }
+    if (!welcome) [buttons addObject:[self tutorialButton:L(@"上一步") frame:NSMakeRect(right-84,y,84,32) action:@selector(tutorialBack:)]];
+    [buttons addObject:next];
+    for (NSView *button in buttons) [card addSubview:button];
+    [card setFrameSize:NSMakeSize(width,y+32+20)];
+    return card;
+}
+- (void)openTutorialOverlay {
+    if (self.tutorialOverlay) return;
+    self.tutorialReturnPage = self.page;
+    TutorialOverlay *overlay = [[TutorialOverlay alloc] initWithFrame:self.window.contentView.bounds];
+    overlay.autoresizingMask = NSViewWidthSizable|NSViewHeightSizable; overlay.wantsLayer = YES; overlay.accessibilityLabel = L(@"使用教程");
+    overlay.animates = !self.snapshotMode && !NSWorkspace.sharedWorkspace.accessibilityDisplayShouldReduceMotion;
+    __weak Launcher *weak = self; overlay.onAction = ^(TutorialAction action) { [weak tutorialAction:action]; };
+    [self.window.contentView addSubview:overlay]; self.tutorialOverlay = overlay;
+}
+- (void)startTutorial {
+    [self openTutorialOverlay];
+    self.tutorialSteps = [self tutorialStepList];
+    [self showTutorialStep:0];
+}
+- (void)showTutorialStep:(NSInteger)index {
+    self.tutorialIndex = index;
+    NSDictionary *step = self.tutorialSteps[index];
+    [self showPage:[step[@"page"] integerValue]];
+    [self.window.contentView layoutSubtreeIfNeeded]; // A page that was hidden applies its scroll insets only now; measure after them.
+    if (step[@"trend"]) [self.accountsContent scrollPoint:NSMakePoint(0,NSMinY(self.trendSection.frame)-8)];
+    for (NSView *target in step[@"targets"]) if (!step[@"trend"]) [target scrollRectToVisible:target.bounds];
+    [self.tutorialOverlay showCard:[self tutorialCardForStep:index] targets:step[@"targets"]];
+    [self.window makeFirstResponder:self.tutorialOverlay];
+    NSAccessibilityPostNotificationWithUserInfo(self.tutorialOverlay,NSAccessibilityAnnouncementRequestedNotification,@{NSAccessibilityAnnouncementKey:[NSString stringWithFormat:@"%@. %@",step[@"title"],step[@"body"]]});
+}
+- (void)tutorialAction:(TutorialAction)action {
+    BOOL picking = !self.tutorialSteps;
+    if (action == TutorialClose) [self closeTutorial];
+    else if (picking) return;
+    else if (action == TutorialBack) { if (self.tutorialIndex > 0) [self showTutorialStep:self.tutorialIndex-1]; }
+    else if (self.tutorialIndex+1 < (NSInteger)self.tutorialSteps.count) [self showTutorialStep:self.tutorialIndex+1];
+    else [self closeTutorial];
+}
+- (void)tutorialNext:(id)sender { [self tutorialAction:TutorialNext]; }
+- (void)tutorialBack:(id)sender { [self tutorialAction:TutorialBack]; }
+- (void)tutorialClose:(id)sender { [self tutorialAction:TutorialClose]; }
+- (void)closeTutorial {
+    if (!self.tutorialOverlay) return;
+    [self.tutorialOverlay stop]; self.tutorialOverlay = nil; self.tutorialSteps = nil;
+    [self showPage:self.tutorialReturnPage];
+    [self.window makeFirstResponder:nil];
+}
+// Shown once, whichever way the tour ends. Login protection needs the user's attention first, so it waits for a later launch.
+- (BOOL)startTutorialIfFirstRun {
+    if ([self.preferences boolForKey:@"tutorialSeen"] || self.loginAccount) return NO;
+    [self.preferences setBool:YES forKey:@"tutorialSeen"]; [self.preferences synchronize];
+    [self startTutorial]; return YES;
+}
+- (NSView *)tutorialTile:(NSString *)title detail:(NSString *)detail symbol:(NSString *)symbol frame:(NSRect)frame action:(SEL)action {
+    Canvas *tile = [[Canvas alloc] initWithFrame:frame];
+    tile.paint = ^(NSRect bounds) {
+        NSBezierPath *path = [NSBezierPath bezierPathWithRoundedRect:NSInsetRect(bounds,0.5,0.5) xRadius:14 yRadius:14];
+        [Hex(0xFAF4EB) setFill]; [path fill]; [Hex(0xEDE4D8) setStroke]; [path stroke];
+        [Hex(0xF3E3D2) setFill]; [[NSBezierPath bezierPathWithRoundedRect:NSMakeRect(16,16,40,40) xRadius:11 yRadius:11] fill];
+    };
+    [tile addSubview:Symbol(symbol,NSMakeRect(24,24,24,24),Hex(0x9A6447))];
+    CGFloat y = TutorialLabel(tile,title,16,68,NSWidth(frame)-32,[NSFont systemFontOfSize:15 weight:NSFontWeightSemibold],Hex(0x2B2622),0);
+    TutorialLabel(tile,detail,16,y+4,NSWidth(frame)-32,[NSFont systemFontOfSize:12],Hex(0x6E655C),3);
+    NSButton *hit = [NSButton buttonWithTitle:title target:self action:action];
+    hit.frame = tile.bounds; hit.bordered = NO; hit.title = @""; hit.focusRingType = NSFocusRingTypeExterior; hit.accessibilityLabel = [NSString stringWithFormat:@"%@. %@",title,detail]; [tile addSubview:hit];
+    return tile;
+}
+- (void)showTutorialPicker:(id)sender {
+    [self openTutorialOverlay];
+    self.tutorialSteps = nil; self.tutorialIndex = -1;
+    Canvas *card = [[Canvas alloc] initWithFrame:NSMakeRect(0,0,488,288)];
+    [card addSubview:Text(L(@"使用教程"),NSMakeRect(24,22,380,32),TitleFont(24),Hex(0x2B2622))];
+    [card addSubview:Text(L(@"选一种方式了解核心功能。"),NSMakeRect(25,58,420,18),[NSFont systemFontOfSize:13],Hex(0x6E655C))];
+    NSButton *close = [NSButton buttonWithImage:[NSImage imageWithSystemSymbolName:@"xmark" accessibilityDescription:L(@"关闭")] target:self action:@selector(tutorialClose:)];
+    close.frame = NSMakeRect(444,18,28,28); close.bordered = NO; close.contentTintColor = Hex(0x6E655C); [card addSubview:close];
+    [card addSubview:[self tutorialTile:L(@"软件内播放") detail:L(@"在真实界面上一步步演示，约 1 分钟，不会启动账号。") symbol:@"play.fill" frame:NSMakeRect(24,92,214,172) action:@selector(playTutorial:)]];
+    [card addSubview:[self tutorialTile:L(@"查看文档教程") detail:L(@"图文说明，随时翻阅。文档在本机打开，不联网。") symbol:@"book" frame:NSMakeRect(250,92,214,172) action:@selector(openTutorialDocument:)]];
+    [self.tutorialOverlay showCard:card targets:@[]];
+    [self.window makeFirstResponder:self.tutorialOverlay];
+}
+- (void)playTutorial:(id)sender { [self startTutorial]; }
+- (NSWindow *)tutorialDocumentWindow {
+    NSString *path = [NSBundle.mainBundle pathForResource:UIEnglish ? @"guide.en" : @"guide.zh" ofType:@"md"];
+    NSString *markdown = path ? [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil] : nil;
+    if (!markdown) return nil;
+    const CGFloat width = 760, inset = 48;
+    if (!self.tutorialDocument) {
+        NSWindow *window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,width,720) styleMask:NSWindowStyleMaskTitled|NSWindowStyleMaskClosable|NSWindowStyleMaskMiniaturizable|NSWindowStyleMaskResizable backing:NSBackingStoreBuffered defer:NO];
+        window.title = L(@"文档教程"); window.releasedWhenClosed = NO; window.contentMinSize = NSMakeSize(width,420); [window center];
+        NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:window.contentView.bounds];
+        scroll.autoresizingMask = NSViewWidthSizable|NSViewHeightSizable; scroll.hasVerticalScroller = YES; scroll.backgroundColor = Hex(0xFAF6F0);
+        NSTextView *text = [[NSTextView alloc] initWithFrame:scroll.bounds];
+        text.autoresizingMask = NSViewWidthSizable; text.editable = NO; text.backgroundColor = Hex(0xFAF6F0); text.textContainerInset = NSMakeSize(inset,36);
+        text.verticallyResizable = YES; text.maxSize = NSMakeSize(CGFLOAT_MAX,CGFLOAT_MAX); text.textContainer.widthTracksTextView = YES; text.textContainer.lineFragmentPadding = 0;
+        scroll.documentView = text; window.contentView = scroll; self.tutorialDocument = window;
+    }
+    NSTextView *text = ((NSScrollView *)self.tutorialDocument.contentView).documentView;
+    [text.textStorage setAttributedString:TutorialDocumentText(markdown,width-inset*2)];
+    [text.layoutManager ensureLayoutForTextContainer:text.textContainer]; // Images make lazy layout misjudge the length; size the scroll range now.
+    [text sizeToFit];
+    [text scrollPoint:NSZeroPoint];
+    return self.tutorialDocument;
+}
+- (void)openTutorialDocument:(id)sender {
+    [self closeTutorial];
+    NSWindow *window = [self tutorialDocumentWindow];
+    if (!window) { [self alert:L(@"无法打开文档教程") detail:L(@"应用包里缺少文档文件，请重新安装启动器。")]; return; }
+    [window makeKeyAndOrderFront:nil];
 }
 - (void)showPage:(NSInteger)page {
     if (page < 0 || page >= (NSInteger)self.pages.count) page = 0;
@@ -3460,6 +3824,77 @@ static void TestLogStorage(void) {
         printf("TestLogStorage: PASS (directory/ancestor symlink, file symlink, hard link, missing file, safe 0600 round trip, size limit)\n");
     } @finally { [fm removeItemAtPath:root error:nil]; }
 }
+static void TestTutorial(void) {
+    NSCAssert(NSEqualRects(TutorialCardFrame(NSMakeRect(0,0,1000,700),NSZeroRect,NSMakeSize(300,200),NULL),NSMakeRect(350,250,300,200)),@"no highlight centres the card");
+    NSRect bounds = NSMakeRect(0,0,1080,720); NSSize size = NSMakeSize(348,200);
+    for (NSValue *value in @[@(NSMakeRect(40,40,100,40)),@(NSMakeRect(900,40,160,40)),@(NSMakeRect(20,660,232,40)),@(NSMakeRect(900,660,160,40)),@(NSMakeRect(300,300,700,300))]) {
+        NSInteger side = 0; NSRect card = TutorialCardFrame(bounds,value.rectValue,size,&side);
+        NSCAssert(side > 0 && NSContainsRect(NSInsetRect(bounds,16,16),card) && !NSIntersectsRect(card,value.rectValue),@"card stays inside and beside the highlight");
+    }
+    NSInteger fullSide = 9; NSCAssert(NSContainsRect(bounds,TutorialCardFrame(bounds,NSInsetRect(bounds,4,4),size,&fullSide)) && fullSide == 0,@"oversized highlight keeps the card on screen");
+    BOOL savedEnglish = UIEnglish;
+    for (NSString *file in @[@"guide.zh",@"guide.en"]) {
+        NSString *path = [NSBundle.mainBundle pathForResource:file ofType:@"md"]; NSCAssert(path,@"guide bundled");
+        NSString *markdown = [NSString stringWithContentsOfFile:path encoding:NSUTF8StringEncoding error:nil];
+        NSCAssert(markdown.length && ![markdown containsString:@"http"] && ![markdown containsString:@"<"],@"guide stays local and has no markup that could load anything");
+        NSAttributedString *text = TutorialDocumentText(markdown,640); __block NSUInteger images = 0;
+        [text enumerateAttribute:NSAttachmentAttributeName inRange:NSMakeRange(0,text.length) options:0 usingBlock:^(id value, NSRange range, BOOL *stop) { if (value) images++; }];
+        NSUInteger expected = [markdown componentsSeparatedByString:@"!["].count-1;
+        NSCAssert(images == expected && expected > 0 && ![text.string containsString:@"**"] && ![text.string containsString:@"# "],@"every guide image resolves and markdown is rendered");
+    }
+    NSCAssert(![TutorialDocumentText(@"![x](../../secret.png)",640).string containsString:@"\uFFFC"],@"guide images come only from the bundle");
+    [NSApplication sharedApplication];
+    NSString *suite = [@"local.claude.tutorial-test." stringByAppendingString:NSUUID.UUID.UUIDString];
+    NSUserDefaults *preferences = [[NSUserDefaults alloc] initWithSuiteName:suite];
+    Launcher *launcher = [Launcher new]; launcher.snapshotMode = YES; launcher.preferences = preferences;
+    launcher.settings = DefaultSettings(); launcher.settingsDraft = launcher.settings.mutableCopy; launcher.accountNames = [NSMutableDictionary dictionary];
+    [launcher makeWindow];
+    for (NSInteger n = 1; n <= 10; n++) launcher.cards[n-1].hidden = n > 2;
+    [launcher showPage:3];
+    launcher.loginAccount = 1; NSCAssert(![launcher startTutorialIfFirstRun] && ![preferences boolForKey:@"tutorialSeen"],@"login protection defers the first run without using it up");
+    launcher.loginAccount = 0;
+    NSCAssert([launcher startTutorialIfFirstRun] && [preferences boolForKey:@"tutorialSeen"] && launcher.tutorialOverlay && launcher.tutorialIndex == 0 && launcher.page == 0,@"first run opens the tour and records it at once");
+    TutorialOverlay *overlay = launcher.tutorialOverlay; NSInteger count = launcher.tutorialSteps.count;
+    NSCAssert(count == 8 && NSIsEmptyRect(overlay.targetSpot),@"welcome card has no highlight");
+    [launcher tutorialBack:nil]; NSCAssert(launcher.tutorialIndex == 0,@"back stops at the first step");
+    NSButton *realStart = launcher.buttons[0];
+    NSPoint onStart = [realStart convertPoint:NSMakePoint(NSMidX(realStart.bounds),NSMidY(realStart.bounds)) toView:launcher.window.contentView.superview];
+    [launcher tutorialNext:nil]; NSCAssert([launcher.window.contentView.superview hitTest:onStart] == overlay,@"even the highlighted control only reaches the overlay");
+    NSEvent *(^key)(unsigned short, NSString *, NSEventModifierFlags) = ^NSEvent *(unsigned short code, NSString *text, NSEventModifierFlags flags) {
+        return [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:flags timestamp:0 windowNumber:launcher.window.windowNumber context:nil characters:text charactersIgnoringModifiers:text isARepeat:NO keyCode:code];
+    };
+    NSCAssert([overlay performKeyEquivalent:key(18,@"1",NSEventModifierFlagCommand)] && ![overlay performKeyEquivalent:key(12,@"q",NSEventModifierFlagCommand)],@"account shortcuts are blocked, quit is not");
+    [overlay keyDown:key(123,@"",0)]; NSCAssert(launcher.tutorialIndex == 0,@"left arrow goes back");
+    [overlay keyDown:key(36,@"\r",0)]; NSCAssert(launcher.tutorialIndex == 1,@"return goes forward");
+    [launcher tutorialBack:nil];
+    for (NSInteger i = 1; i < count; i++) {
+        [launcher tutorialNext:nil]; NSCAssert(launcher.tutorialIndex == i && launcher.page == [launcher.tutorialSteps[i][@"page"] integerValue],@"next moves one step and shows its page");
+        NSView *target = [launcher.tutorialSteps[i][@"targets"] firstObject];
+        [launcher.window.contentView layoutSubtreeIfNeeded]; NSCAssert(NSEqualRects(overlay.targetSpot,[overlay measuredSpot]),@"highlight was measured after the page's own layout");
+        NSCAssert(!NSIsEmptyRect(overlay.targetSpot) && !target.hiddenOrHasHiddenAncestor,@"each step points at a visible control");
+        NSCAssert(NSIntersectsRect(overlay.targetSpot,[target convertRect:target.bounds toView:overlay]) && NSContainsRect(overlay.bounds,overlay.card.frame),@"highlight sits on the real control and the card stays inside");
+        NSCAssert(overlay.side > 0 && !NSIntersectsRect(overlay.card.frame,overlay.targetSpot),@"card does not cover what it explains");
+    }
+    [launcher tutorialBack:nil]; NSCAssert(launcher.tutorialIndex == count-2,@"back returns one step");
+    NSRect before = overlay.targetSpot; [overlay setFrameSize:NSMakeSize(900,600)];
+    NSCAssert(NSContainsRect(overlay.bounds,overlay.card.frame) && NSEqualRects(overlay.spot,overlay.targetSpot),@"resize keeps the card inside and the highlight on target");
+    [overlay setFrameSize:NSMakeSize(1080,720)]; NSCAssert(NSEqualRects(overlay.targetSpot,before),@"highlight returns with the window");
+    overlay.onAction(TutorialClose); NSCAssert(!launcher.tutorialOverlay && launcher.page == 3 && launcher.window.contentView.subviews.lastObject != overlay,@"skip closes and returns to the previous page");
+    NSCAssert(![launcher startTutorialIfFirstRun] && !launcher.tutorialOverlay,@"never opens by itself a second time");
+    Launcher *restarted = [Launcher new]; restarted.preferences = preferences; NSCAssert(![restarted startTutorialIfFirstRun],@"seen state survives a restart");
+    NSMutableDictionary *reset = DefaultSettings().mutableCopy; launcher.settingsDraft = reset; [launcher saveSettings:nil]; NSCAssert([preferences boolForKey:@"tutorialSeen"],@"resetting settings does not replay the tour");
+    [launcher showTutorialPicker:nil]; NSCAssert(launcher.tutorialOverlay && !launcher.tutorialSteps,@"entry opens the picker");
+    [launcher tutorialNext:nil]; NSCAssert(!launcher.tutorialSteps,@"picker ignores step keys");
+    [launcher playTutorial:nil]; NSCAssert(launcher.tutorialIndex == 0 && launcher.tutorialSteps.count == 8,@"picker plays the tour on demand");
+    for (NSInteger i = 0; i < count; i++) [launcher tutorialNext:nil];
+    NSCAssert(!launcher.tutorialOverlay && launcher.page == 3,@"finishing closes and returns");
+    NSCAssert(!launcher.starting.count && !launcher.checking.count && !launcher.pendingLaunches.count,@"the tour starts nothing");
+    for (NSInteger n = 1; n <= 10; n++) launcher.cards[n-1].hidden = YES;
+    [launcher startTutorial]; NSCAssert(launcher.tutorialSteps.count == 7,@"no accounts: the start step is dropped"); [launcher closeTutorial];
+    [launcher showTutorialPicker:nil]; [launcher openTutorialDocument:nil]; NSCAssert(!launcher.tutorialOverlay && launcher.tutorialDocument.visible,@"document opens natively and the picker closes"); [launcher.tutorialDocument close];
+    UIEnglish = savedEnglish; [preferences removePersistentDomainForName:suite];
+    puts("PASS: tutorial shows once, step forward/back/skip, targets and card placement, resize, picker, bundled local guide, starts nothing");
+}
 static int SelfTest(void) {
     @autoreleasepool {
         TestSettings();
@@ -3473,6 +3908,7 @@ static int SelfTest(void) {
         TestLocalization();
         TestConfigSync();
         TestUsageTrend();
+        TestTutorial();
         NSCAssert(SuggestedAccount(@[@[@1,@85],@[@2,@12],@[@3,NSNull.null],@[@4,@40]],1,80) == 2,@"lowest observed account suggested");
         NSCAssert(SuggestedAccount(@[@[@1,@85],@[@2,@92],@[@3,NSNull.null]],1,80) == 0 && SuggestedAccount(@[@[@1,@5]],1,80) == 0,@"no suggestion above threshold, unobserved or self");
         NSCAssert(AccountForArguments(@[@"Claude"]) == 1, @"default");
@@ -3932,6 +4368,14 @@ int main(int argc, const char *argv[]) {
             launcher.snapshotMode = YES;
             if (getenv("CLAUDE_LAUNCHER_SNAPSHOT_ENGLISH")) UIEnglish = YES; // Preview the English interface without changing saved settings.
             if (argc > 3) launcher.page = atoi(argv[3]);
+            // Tutorial fixtures: demo data only, nothing read from saved settings or aliases. Modes: 0…n step, -1 picker, -2 document, -3 plain page.
+            BOOL tutorialDemo = argc > 5 && strcmp(argv[4],"--tutorial-demo") == 0;
+            if (tutorialDemo) {
+                UIEnglish = getenv("CLAUDE_LAUNCHER_SNAPSHOT_ENGLISH") != NULL;
+                launcher.settings = DefaultSettings(); launcher.settingsDraft = launcher.settings.mutableCopy; launcher.accountNames = [NSMutableDictionary dictionary];
+                launcher.snapshotProjects = @[@{@"name":L(@"网站项目"),@"group":L(@"工作"),@"path":@"/Users/example/Projects/Website",@"lastAccount":@2,@"previewStatus":@"正常",@"previewHandoff":[NSDate dateWithTimeIntervalSinceNow:-720]},
+                    @{@"name":L(@"研究笔记"),@"group":@"",@"path":@"/Users/example/Documents/Notes",@"lastAccount":@1,@"previewStatus":@"正常"}];
+            }
             // Purely visual fixtures: do not load or write the user's project list.
             if (argc > 4 && strcmp(argv[4],"--projects-demo") == 0) launcher.snapshotProjects = @[
                 @{@"name":@"网站项目",@"group":@"工作",@"path":@"/Users/example/Projects/Website",@"lastAccount":@2,@"previewStatus":@"正常",@"previewHandoff":[NSDate dateWithTimeIntervalSinceNow:-720]},
@@ -3943,6 +4387,25 @@ int main(int argc, const char *argv[]) {
                 [launcher updateUsageCards];
             }
             NSView *view = launcher.window.contentView;
+            if (tutorialDemo) {
+                if (getenv("CLAUDE_LAUNCHER_SNAPSHOT_DARK")) NSApp.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
+                launcher.processes = @{@2:@[@123]};
+                for (NSInteger n = 1; n <= 10; n++) { launcher.cards[n-1].hidden = n > 3; if (n <= 3) { [launcher.cards[n-1] setFrameOrigin:NSMakePoint(0,(n-1)*136)]; launcher.buttons[n-1].title = L(n == 2 ? @"打开" : @"启动"); launcher.statuses[n-1].stringValue = L(n == 2 ? @"运行中" : @"未运行"); launcher.cards[n-1].dot = n == 2 ? Hex(0x3BAA6E) : Hex(0xB9B1A7); } }
+                [launcher.cardsView setFrameSize:NSMakeSize(776,3*136-12)];
+                launcher.summaryLabel.stringValue = [NSString stringWithFormat:L(@"本机 %lu 个账号 · %lu 个运行中"),3UL,1UL];
+                launcher.usageInterface = @{@1:UsageDemo(@62,@70),@2:UsageDemo(@73,nil)}; [launcher updateUsageCards]; [launcher refreshAccountTable]; [launcher refreshProjects:nil];
+                NSMutableArray *synthetic = [NSMutableArray array]; NSTimeInterval end = NSDate.date.timeIntervalSince1970;
+                for (NSInteger h = 160; h >= 0; h -= 2) {
+                    [synthetic addObject:@{@"account":@1,@"time":@(end-h*3600),@"fh":@(fmod(160-h,5)*18+6),@"sd":@(MIN(96.0,(160-h)*0.55+8))}];
+                    if (h % 6 == 0) [synthetic addObject:@{@"account":@2,@"time":@(end-h*3600+60),@"fh":@(fmod(160-h,10)*7+4),@"sd":@((160-h)*0.18+12)}];
+                }
+                launcher.usageTrend = synthetic; launcher.trendSignature = nil; [launcher updateTrendSection];
+                NSInteger mode = atoi(argv[5]);
+                if (mode == -3 && launcher.page == 1) [launcher.accountsContent scrollPoint:NSMakePoint(0,NSMinY(launcher.trendSection.frame)-8)];
+                if (mode == -1) [launcher showTutorialPicker:nil];
+                if (mode == -2) { NSWindow *guide = [launcher tutorialDocumentWindow]; view = ((NSScrollView *)guide.contentView).documentView; }
+                if (mode >= 0) { launcher.tutorialReturnPage = launcher.page; [launcher startTutorial]; [launcher showTutorialStep:mode]; }
+            }
             NSAlert *importPreview = nil;
             if (argc > 4 && strcmp(argv[4],"--import-demo") == 0) {
                 importPreview = [launcher projectImportAlert:@{@"summaries":@[@"账号 01：路径 5 · 格式跳过 1 · 读取失败 0 · 失效/受限 1",@"账号 02：路径 3 · 格式跳过 0 · 读取失败 0 · 失效/受限 0",@"账号 03：未找到支持的本地记录，不代表没有项目"],@"candidates":@[
