@@ -9,4 +9,6 @@ NSArray<NSDictionary *> *ConfigSyncItems(NSString *source, NSString *target);
 // link: place a symlink to the source item instead of a copy, so later source edits apply to the target too;
 // with overwrite an identical copy also becomes a link. Returns {added, replaced, skipped, error?}.
 NSDictionary *ApplyConfigSync(NSString *source, NSString *target, NSArray<NSString *> *names, BOOL overwrite, BOOL link);
+// Whether a path relative to a config folder is an entry config sync may place.
+BOOL ConfigSyncEntryAllowed(NSString *relative);
 void TestConfigSync(void);

@@ -8,5 +8,6 @@ NSArray *LoadedUsageTrend(id stored, NSDate *now);
 NSNumber *UsageHoursLeft(NSArray *points, NSInteger account, NSString *key, NSDate *now);
 // Lowest latest weekly use, ties broken by five-hour use; 0 when nothing was observed.
 NSInteger UsageRotationAccount(NSArray *points, NSArray<NSNumber *> *accounts, NSInteger exclude);
-NSView *UsageTrendChart(NSArray *points, NSInteger account, NSRect frame, NSDate *now);
+// Transparent chart; colors: grid, axis, sd (weekly), fh (five-hour).
+NSView *UsageTrendChart(NSArray *points, NSInteger account, NSRect frame, NSDate *now, NSDictionary<NSString *, NSColor *> *colors);
 void TestUsageTrend(void);

@@ -767,3 +767,20 @@
 
 "<!-- claude-launcher:handoff -->\n## 交接文档（由 Claude 启动器添加）\n\n本项目可能由多个 Claude 账号轮流继续。请在项目根目录维护 `HANDOFF.md`：\n- 每完成一个阶段、做出重要决定，或预计会话即将结束时，立即更新它；\n- 内容包括：目标、已完成、进行中、下一步（按顺序）、关键文件与命令、已知问题与注意事项；\n- 写到让没有上下文的新会话能直接接手；\n- 新会话开始时，如果存在 `HANDOFF.md`，先阅读再继续。\n<!-- /claude-launcher:handoff -->\n" = "<!-- claude-launcher:handoff -->\n## Handoff notes (added by Claude Launcher)\n\nDifferent Claude accounts may take turns on this project. Maintain `HANDOFF.md` in the project root:\n- Update it after each phase, important decision, or before ending a session;\n- Include the goal, completed work, work in progress, ordered next steps, key files and commands, known issues and cautions;\n- Make it sufficient for a fresh session to continue without prior context;\n- Read `HANDOFF.md`, if present, before starting a new session.\n<!-- /claude-launcher:handoff -->\n";
 "这是从另一个会话交接过来的工作。项目目录：{0}\n请先阅读项目根目录的 HANDOFF.md，用几句话复述目标和下一步，然后继续完成剩余工作；过程中按 CLAUDE.md 的要求持续更新 HANDOFF.md。" = "This work is handed over from another session. Project folder: {0}\nRead HANDOFF.md in the project root first, briefly restate the goal and next steps, then continue the remaining work. Keep HANDOFF.md current as required by CLAUDE.md.";
+
+"近 7 天 · 只记录启动器已观察到的数值，不查询 Claude" = "Last 7 days · only values the launcher has observed; Claude is never queried";
+"用量趋势未开启：请先在“系统设置 → 外观”中开启“显示本地界面用量”。" = "Usage trend is off. Turn on “Show local interface usage” in Settings → Appearance.";
+"建议下一个使用：账号 %02ld" = "Suggested next: account %02ld";
+"5 小时限额" = "5-hour limit";
+"依据：最近观察到的周用量最低，其次是 5 小时用量" = "Lowest recently observed weekly use, then 5-hour use";
+"更新于 %@" = "Updated %@";
+"建议" = "Next";
+"5 小时" = "5-hour";
+"用量平稳，暂无用完估算" = "Usage is steady; no run-out estimate";
+"打开该账号的 Claude Code 后开始记录" = "Recording starts after you open Claude Code in this account";
+"近 7 天暂无数据" = "No data in the last 7 days";
+"%@约 %@ 用完" = "%@ runs out in about %@";
+"按当前速度" = "At the current rate";
+
+"%@\n\n继续可能让账号之间共用数据，登录状态或配置可能互相影响。启动器不会修改这些文件。" = "%@\n\nContinuing may let accounts share data, so sign-in state or configuration could affect each other. The launcher will not change these files.";
+"仍然继续" = "Continue Anyway";

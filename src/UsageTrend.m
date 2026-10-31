@@ -86,40 +86,70 @@ NSInteger UsageRotationAccount(NSArray *points, NSArray<NSNumber *> *accounts, N
 @interface UsageTrendView : NSView
 @property NSArray *points;
 @property NSTimeInterval end;
+@property NSDictionary<NSString *, NSColor *> *colors;
 @end
 @implementation UsageTrendView
 - (BOOL)isFlipped { return NO; }
 - (void)drawRect:(NSRect)dirty {
-    // Own light panel so the launcher palette reads the same inside light or dark system alerts.
-    [[NSColor colorWithSRGBRed:0.99 green:0.98 blue:0.96 alpha:1] setFill]; [[NSBezierPath bezierPathWithRoundedRect:self.bounds xRadius:8 yRadius:8] fill];
-    NSRect plot = NSInsetRect(self.bounds,8,10); plot.origin.x += 28; plot.size.width -= 36;
-    NSDictionary *axis = @{NSFontAttributeName:[NSFont systemFontOfSize:9],NSForegroundColorAttributeName:[NSColor colorWithSRGBRed:0.48 green:0.44 blue:0.39 alpha:1]};
+    // Transparent: the host card supplies the launcher palette, so light and dark themes both read correctly.
+    NSRect plot = NSMakeRect(30,18,NSWidth(self.bounds)-38,NSHeight(self.bounds)-24);
+    NSDictionary *axis = @{NSFontAttributeName:[NSFont systemFontOfSize:9],NSForegroundColorAttributeName:self.colors[@"axis"]};
     for (NSInteger p = 0; p <= 100; p += 50) {
-        CGFloat y = NSMinY(plot)+NSHeight(plot)*p/100.0;
-        [[NSColor colorWithSRGBRed:0.94 green:0.91 blue:0.86 alpha:1] setFill]; NSRectFill(NSMakeRect(NSMinX(plot),y,NSWidth(plot),1));
-        [[NSString stringWithFormat:@"%ld%%",(long)p] drawAtPoint:NSMakePoint(NSMinX(self.bounds)+2,y-6) withAttributes:axis];
+        CGFloat y = round(NSMinY(plot)+NSHeight(plot)*p/100.0)+0.5;
+        NSBezierPath *rule = [NSBezierPath bezierPath]; [rule moveToPoint:NSMakePoint(NSMinX(plot),y)]; [rule lineToPoint:NSMakePoint(NSMaxX(plot),y)];
+        if (p) { CGFloat dash[] = {2,3}; [rule setLineDash:dash count:2 phase:0]; }
+        rule.lineWidth = 1; [self.colors[@"grid"] setStroke]; [rule stroke];
+        [[NSString stringWithFormat:@"%ld%%",(long)p] drawAtPoint:NSMakePoint(0,y-6) withAttributes:axis];
     }
-    NSTimeInterval begin = self.end-7*86400;
-    for (NSString *key in @[@"sd",@"fh"]) {
-        NSBezierPath *line = [NSBezierPath bezierPath], *dots = [NSBezierPath bezierPath]; BOOL started = NO; double previous = -1;
+    // Fit the axis to the observed span (24 hours to 7 days) so a short history is not squeezed into one edge.
+    NSTimeInterval first = self.points.count ? [self.points.firstObject[@"time"] doubleValue] : self.end;
+    NSTimeInterval span = MIN(7*86400,MAX(86400,(self.end-first)*1.08)), begin = self.end-span;
+    CGFloat (^xAt)(NSTimeInterval) = ^CGFloat(NSTimeInterval t) { return NSMinX(plot)+NSWidth(plot)*(t-begin)/span; };
+    BOOL hourly = span <= 2*86400; NSTimeInterval step = hourly ? 6*3600 : 86400;
+    NSDateFormatter *format = [NSDateFormatter new]; format.dateFormat = hourly ? @"HH:mm" : @"M/d";
+    NSDate *anchor = [NSCalendar.currentCalendar startOfDayForDate:[NSDate dateWithTimeIntervalSince1970:self.end]];
+    NSTimeInterval tick = anchor.timeIntervalSince1970; while (tick+step <= self.end) tick += step;
+    for (; tick >= begin; tick -= step) {
+        NSString *label = [format stringFromDate:[NSDate dateWithTimeIntervalSince1970:tick]]; CGFloat x = xAt(tick);
+        [label drawAtPoint:NSMakePoint(MAX(NSMinX(plot),MIN(x-[label sizeWithAttributes:axis].width/2,NSMaxX(plot)-26)),0) withAttributes:axis];
+    }
+    for (NSString *key in @[@"fh",@"sd"]) {
+        // Split into runs that never decrease; a drop is a quota reset and must not be bridged by a line.
+        NSMutableArray<NSMutableArray<NSValue *> *> *runs = [NSMutableArray array]; double previous = -1;
         for (NSDictionary *point in self.points) {
             if (!point[key] || [point[@"time"] doubleValue] < begin) continue;
             double value = [point[key] doubleValue];
-            NSPoint at = NSMakePoint(NSMinX(plot)+NSWidth(plot)*([point[@"time"] doubleValue]-begin)/(7*86400), NSMinY(plot)+NSHeight(plot)*value/100);
-            if (!started || value < previous) [line moveToPoint:at]; else [line lineToPoint:at]; // Never draw a line across a reset.
-            started = YES; previous = value;
-            [dots appendBezierPath:[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(at.x-2.5,at.y-2.5,5,5)]];
+            NSPoint at = NSMakePoint(xAt([point[@"time"] doubleValue]), NSMinY(plot)+NSHeight(plot)*value/100);
+            if (!runs.count || value < previous) [runs addObject:[NSMutableArray array]];
+            [runs.lastObject addObject:[NSValue valueWithPoint:at]]; previous = value;
         }
-        line.lineWidth = [key isEqual:@"sd"] ? 2 : 1.4;
-        NSColor *color = [key isEqual:@"sd"] ? [NSColor colorWithSRGBRed:0.55 green:0.36 blue:0.25 alpha:1] : [NSColor colorWithSRGBRed:0.93 green:0.55 blue:0.30 alpha:1];
-        [color set]; [line stroke]; [dots fill];
+        NSColor *color = self.colors[key];
+        for (NSArray<NSValue *> *run in runs) {
+            NSBezierPath *line = [NSBezierPath bezierPath];
+            for (NSValue *value in run) { if (line.isEmpty) [line moveToPoint:value.pointValue]; else [line lineToPoint:value.pointValue]; }
+            if (run.count > 1 && [key isEqual:@"sd"]) {
+                NSBezierPath *area = line.copy;
+                [area lineToPoint:NSMakePoint(run.lastObject.pointValue.x,NSMinY(plot))]; [area lineToPoint:NSMakePoint(run.firstObject.pointValue.x,NSMinY(plot))]; [area closePath];
+                [[color colorWithAlphaComponent:0.12] setFill]; [area fill];
+            }
+            // Five-hour use resets several times a day; keep it light so the weekly line stays readable.
+            line.lineWidth = [key isEqual:@"sd"] ? 2.2 : 1; line.lineJoinStyle = NSLineJoinStyleRound; line.lineCapStyle = NSLineCapStyleRound;
+            [([key isEqual:@"sd"] ? color : [color colorWithAlphaComponent:0.45]) setStroke]; [line stroke];
+            if (run.count == 1) { [color setFill]; NSPoint at = run[0].pointValue; [[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(at.x-2,at.y-2,4,4)] fill]; }
+        }
+        NSValue *last = runs.lastObject.lastObject;
+        if (last) {
+            NSPoint at = last.pointValue;
+            [[color colorWithAlphaComponent:0.22] setFill]; [[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(at.x-5,at.y-5,10,10)] fill];
+            [color setFill]; [[NSBezierPath bezierPathWithOvalInRect:NSMakeRect(at.x-2.5,at.y-2.5,5,5)] fill];
+        }
     }
 }
 @end
 
-NSView *UsageTrendChart(NSArray *points, NSInteger account, NSRect frame, NSDate *now) {
+NSView *UsageTrendChart(NSArray *points, NSInteger account, NSRect frame, NSDate *now, NSDictionary<NSString *, NSColor *> *colors) {
     UsageTrendView *view = [[UsageTrendView alloc] initWithFrame:frame];
-    view.points = AccountPoints(points,account,nil); view.end = now.timeIntervalSince1970;
+    view.points = AccountPoints(points,account,nil); view.end = now.timeIntervalSince1970; view.colors = colors;
     view.accessibilityLabel = [NSString stringWithFormat:L(@"账号 %02ld 近 7 天用量趋势"),(long)account];
     return view;
 }

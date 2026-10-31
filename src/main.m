@@ -106,12 +106,41 @@ static NSString *CodeConfigPath(NSInteger n) {
 static NSString *Canonical(NSString *path) {
     return [[path stringByStandardizingPath] stringByResolvingSymlinksInPath];
 }
+static BOOL PathWithin(NSString *path, NSString *parent) {
+    NSString *a = path.lowercaseString, *b = parent.lowercaseString;
+    return [a isEqual:b] || [a hasPrefix:[b stringByAppendingString:@"/"]];
+}
+// Config sync may link whitelisted entries (docs/SPEC.md「存储校验」); targets must stay out of account and launcher data.
+static BOOL SharedConfigLinkAllowed(NSString *path, NSString *config) {
+    if (!config || path.length <= config.length || !ConfigSyncEntryAllowed([path substringFromIndex:config.length+1])) return NO;
+    NSString *destination = [NSFileManager.defaultManager destinationOfSymbolicLinkAtPath:path error:nil];
+    if (!destination) return NO;
+    if (!destination.isAbsolutePath) destination = [path.stringByDeletingLastPathComponent stringByAppendingPathComponent:destination];
+    NSString *target = Canonical(destination), *home = NSHomeDirectory();
+    struct stat info;
+    if (stat(target.fileSystemRepresentation,&info) == 0 && info.st_uid != getuid()) return NO;
+    if (PathWithin(target,Canonical([home stringByAppendingPathComponent:@".claude.json"]))) return NO;
+    NSString *launcher = Canonical([home stringByAppendingPathComponent:@"Library/Application Support/Claude Launcher"]);
+    if (PathWithin(target,launcher) || PathWithin(launcher,target)) return NO;
+    NSMutableArray *roots = [NSMutableArray arrayWithObject:@[Canonical([home stringByAppendingPathComponent:@".claude"]),Canonical([home stringByAppendingPathComponent:@".claude"])]];
+    for (NSInteger n = 1; n <= 10; n++) {
+        NSString *root = Canonical(ProfilePath(n));
+        [roots addObject:@[root,Canonical([root stringByAppendingPathComponent:@"ClaudeCodeConfig"])]];
+    }
+    for (NSArray *pair in roots) {
+        NSString *root = pair[0], *own = pair[1];
+        if (PathWithin(root,target)) return NO; // A link to a parent folder would expose the whole account.
+        if (!PathWithin(target,root)) continue;
+        if (target.length <= own.length || !PathWithin(target,own) || !ConfigSyncEntryAllowed([target substringFromIndex:own.length+1])) return NO;
+    }
+    return YES;
+}
 // Inspect metadata only. Never open cookies, credential stores, or account configuration contents.
-static NSString *CheckStorageNode(NSString *path, BOOL recursive) {
+static NSString *CheckStorageNode(NSString *path, BOOL recursive, NSString *config) {
     struct stat info;
     if (lstat(path.fileSystemRepresentation, &info) != 0)
         return errno == ENOENT ? nil : [NSString stringWithFormat:L(@"无法检查存储路径：%@"), path];
-    if (S_ISLNK(info.st_mode)) return [NSString stringWithFormat:L(@"隔离检查失败：路径是符号链接：%@"), path];
+    if (S_ISLNK(info.st_mode)) return SharedConfigLinkAllowed(path,config) ? nil : [NSString stringWithFormat:L(@"隔离检查失败：路径是符号链接：%@"), path];
     if (!S_ISDIR(info.st_mode) && !S_ISREG(info.st_mode)) return [NSString stringWithFormat:L(@"隔离检查失败：存储类型异常：%@"), path];
     if (info.st_uid != getuid()) return [NSString stringWithFormat:L(@"隔离检查失败：目录或文件不属于当前用户：%@"), path];
     if (S_ISREG(info.st_mode) && info.st_nlink > 1) return [NSString stringWithFormat:L(@"隔离检查失败：存储文件有硬链接：%@"), path];
@@ -120,7 +149,7 @@ static NSString *CheckStorageNode(NSString *path, BOOL recursive) {
         NSArray *names = [NSFileManager.defaultManager contentsOfDirectoryAtPath:path error:&error];
         if (!names) return [NSString stringWithFormat:L(@"无法检查存储目录：%@（%@）"),path,error.localizedDescription];
         for (NSString *name in names) {
-            NSString *failure = CheckStorageNode([path stringByAppendingPathComponent:name], YES);
+            NSString *failure = CheckStorageNode([path stringByAppendingPathComponent:name], YES, config);
             if (failure) return failure;
         }
     }
@@ -139,14 +168,15 @@ static NSString *ValidateProfileRoot(NSString *path, NSString *expected) {
         }
         if (S_ISLNK(info.st_mode) || !S_ISDIR(info.st_mode)) return [NSString stringWithFormat:L(@"账号目录或其上级是链接/非目录，已停止：%@"),prefix];
     }
-    return CheckStorageNode(path,NO);
+    return CheckStorageNode(path,NO,nil);
 }
 static NSString *ValidateProfileAtPath(NSString *path, NSString *expected) {
     NSString *failure = ValidateProfileRoot(path,expected);
     if (failure) return failure;
     // Chromium's SingletonSocket/SingletonLock are expected links; they are not credential storage.
     for (NSString *relative in @[@"Cookies",@"Cookies-journal",@"Network",@"Local Storage",@"Session Storage",@"IndexedDB",@"Partitions",@"Local State",@"Preferences",@"config.json",@"Cache",@"Code Cache",@"Service Worker",@"ClaudeCodeConfig"]) {
-        failure = CheckStorageNode([path stringByAppendingPathComponent:relative],YES);
+        NSString *item = [path stringByAppendingPathComponent:relative];
+        failure = CheckStorageNode(item,YES,[relative isEqual:@"ClaudeCodeConfig"] ? item : nil);
         if (failure) return failure;
     }
     return nil;
@@ -774,6 +804,11 @@ static const unsigned CardFill = 0xFFFCF7;
 @property NSArray<NSButton *> *settingsTabs;
 @property NSMutableArray<AccountRow *> *rows;
 @property NSView *rowsView;
+@property Canvas *accountsContent, *trendSection;
+@property NSScrollView *accountScroll;
+@property NSTextField *accountNote;
+@property CGFloat accountRowsHeight;
+@property NSString *trendSignature;
 @property NSArray<NSTextField *> *stats;
 @property NSTextField *tableFooter;
 @property ProjectStore *projectStore;
@@ -805,6 +840,7 @@ static const unsigned CardFill = 0xFFFCF7;
 @property NSMutableSet<NSNumber *> *pendingLaunches;
 @property NSMutableSet<NSNumber *> *checking;
 @property NSMutableSet<NSNumber *> *environmentConfirmed;
+@property NSMutableSet<NSNumber *> *storageRiskAccepted;
 // Only retain this launcher's successful launches; never infer configuration from a directory or read process environments.
 @property NSMutableDictionary<NSNumber *, NSRunningApplication *> *configuredApps;
 @property NSMutableDictionary<NSNumber *, NSString *> *errors;
@@ -844,7 +880,7 @@ static const unsigned CardFill = 0xFFFCF7;
         self.selectedAccounts = [NSMutableSet set]; self.launchDate = NSDate.date;
         self.starting = [NSMutableDictionary dictionary]; self.errors = [NSMutableDictionary dictionary];
         self.pendingLaunches = [NSMutableSet set];
-        self.checking = [NSMutableSet set]; self.environmentConfirmed = [NSMutableSet set]; self.configuredApps = [NSMutableDictionary dictionary];
+        self.checking = [NSMutableSet set]; self.environmentConfirmed = [NSMutableSet set]; self.storageRiskAccepted = [NSMutableSet set]; self.configuredApps = [NSMutableDictionary dictionary];
     }
     return self;
 }
@@ -952,10 +988,12 @@ static const unsigned CardFill = 0xFFFCF7;
 - (NSView *)accountsPage:(NSRect)frame {
     NSColor *ink = Hex(0x2B2622), *muted = Hex(0x6E655C);
     Canvas *page = [self pageTitled:L(@"账号管理") subtitle:L(@"统一管理本机 Claude 账号空间，直接启动或切换，查看运行状态与最近使用记录。") frame:frame];
+    __weak Launcher *weakSelf = self; self.accountRowsHeight = 318;
     page.paint = ^(NSRect bounds) {
+        CGFloat rows = weakSelf.accountRowsHeight;
         for (NSInteger i = 0; i < 3; i++) DrawPanel(NSMakeRect(36+i*248,140,240,84), 16, 0.86);
-        DrawPanel(NSMakeRect(36,292,736,404), 16, 0.86);
-        [Hex(0xEFE7DC) setFill]; NSRectFill(NSMakeRect(37,336,734,1)); NSRectFill(NSMakeRect(37,655,734,1));
+        DrawPanel(NSMakeRect(36,292,736,rows+86), 16, 0.86);
+        [Hex(0xEFE7DC) setFill]; NSRectFill(NSMakeRect(37,336,734,1)); NSRectFill(NSMakeRect(37,337+rows,734,1));
         NSDictionary *head = @{NSFontAttributeName:[NSFont systemFontOfSize:13 weight:NSFontWeightSemibold],NSForegroundColorAttributeName:Hex(0x7A6F64)};
         NSArray *columns = @[@[L(@"账号名称"),@100],@[L(@"Code 用户名"),@250],@[L(@"状态"),@400],@[L(@"最近使用"),@486],@[L(@"操作"),@572]];
         for (NSArray *column in columns) [column[0] drawAtPoint:NSMakePoint(36+[column[1] doubleValue],305) withAttributes:head];
@@ -999,11 +1037,120 @@ static const unsigned CardFill = 0xFFFCF7;
         [row addSubview:more];
         [rowsView addSubview:row]; [self.rows addObject:row];
     }
-    scroll.documentView = rowsView; [page addSubview:scroll]; self.rowsView = rowsView;
+    scroll.documentView = rowsView; [page addSubview:scroll]; self.rowsView = rowsView; self.accountScroll = scroll;
     self.tableFooter = Text(@"", NSMakeRect(60,667,300,18), [NSFont systemFontOfSize:12], muted); [page addSubview:self.tableFooter];
     NSTextField *note = Text(L(@"登录信息由各实例独立管理"), NSMakeRect(500,667,248,18), [NSFont systemFontOfSize:12], muted);
-    note.alignment = NSTextAlignmentRight; [page addSubview:note];
-    return page;
+    note.alignment = NSTextAlignmentRight; [page addSubview:note]; self.accountNote = note;
+    // Long page: the trend section sits below the table and the whole page scrolls.
+    self.trendSection = [[Canvas alloc] initWithFrame:NSMakeRect(0,712,NSWidth(frame),10)]; [page addSubview:self.trendSection];
+    self.accountsContent = page; self.trendSignature = nil;
+    NSScrollView *outer = [[NSScrollView alloc] initWithFrame:frame];
+    outer.drawsBackground = NO; outer.contentView.drawsBackground = NO; outer.hasVerticalScroller = YES; outer.autohidesScrollers = YES; outer.scrollerStyle = NSScrollerStyleOverlay;
+    outer.documentView = page; [self updateTrendSection];
+    return outer;
+}
+// The table card fits 3-6 rows so the trend section below stays close; more rows scroll inside the table.
+- (void)layoutAccountTable:(CGFloat)rows {
+    if (!self.accountScroll || rows == self.accountRowsHeight) return;
+    self.accountRowsHeight = rows;
+    [self.accountScroll setFrameSize:NSMakeSize(734,rows)];
+    for (NSView *view in @[self.tableFooter,self.accountNote]) [view setFrameOrigin:NSMakePoint(NSMinX(view.frame),349+rows)];
+    [self.trendSection setFrameOrigin:NSMakePoint(0,394+rows)];
+    [self.accountsContent setFrameSize:NSMakeSize(NSWidth(self.accountsContent.frame),NSMaxY(self.trendSection.frame))];
+    self.accountsContent.needsDisplay = YES;
+}
+- (void)updateTrendSection {
+    Canvas *section = self.trendSection; if (!section) return;
+    NSDate *now = NSDate.date; BOOL on = [self.settings[@"showUsageHistory"] boolValue];
+    NSMutableArray<NSNumber *> *accounts = [NSMutableArray array];
+    for (NSInteger n = 1; n <= (NSInteger)self.cards.count; n++) if (!self.cards[n-1].hidden) [accounts addObject:@(n)];
+    NSMutableArray *names = [NSMutableArray array]; for (NSNumber *n in accounts) [names addObject:[self accountName:n.integerValue]];
+    // Rebuild only when something shown changes; forecasts age, so refresh at least every ten minutes.
+    NSString *signature = [NSString stringWithFormat:@"%d|%@|%@|%lu|%@|%ld|%@",on,accounts,names,(unsigned long)self.usageTrend.count,self.usageTrend.lastObject[@"time"],(long)(now.timeIntervalSince1970/600),self.buttons.count ? [[self.buttons valueForKey:@"title"] componentsJoinedByString:@","] : @""];
+    if ([signature isEqual:self.trendSignature]) return;
+    self.trendSignature = signature;
+    for (NSView *view in section.subviews.copy) [view removeFromSuperview];
+    CGFloat width = NSWidth(section.frame);
+    NSColor *muted = Hex(0x6E655C), *weekly = Hex(0x8C5C40), *five = Hex(0xE0894E);
+    NSDictionary *colors = @{@"grid":Hex(0xEDE4D8),@"axis":Hex(0x9A8F84),@"sd":weekly,@"fh":five};
+    NSInteger next = on ? UsageRotationAccount(self.usageTrend,accounts,0) : 0;
+    [section addSubview:Text(L(@"用量趋势"),NSMakeRect(36,8,300,34),TitleFont(24),Hex(0x2B2622))];
+    [section addSubview:Text(L(@"近 7 天 · 只记录启动器已观察到的数值，不查询 Claude"),NSMakeRect(37,46,460,18),[NSFont systemFontOfSize:12],muted)];
+    NSString *bannerText = !on ? L(@"用量趋势未开启：请先在“系统设置 → 外观”中开启“显示本地界面用量”。")
+        : next ? [NSString stringWithFormat:L(@"建议下一个使用：账号 %02ld"),(long)next]
+        : L(@"还没有观察记录。打开账号的 Claude Code 后，启动器会记录已显示的用量。");
+    section.paint = ^(NSRect bounds) {
+        NSDictionary *legend = @{NSFontAttributeName:[NSFont systemFontOfSize:11],NSForegroundColorAttributeName:muted};
+        CGFloat x = width-36-196;
+        for (NSArray *item in @[@[L(@"周限额"),weekly,@2.0],@[L(@"5 小时限额"),five,@1.5]]) {
+            NSBezierPath *swatch = [NSBezierPath bezierPath]; [swatch moveToPoint:NSMakePoint(x,26)]; [swatch lineToPoint:NSMakePoint(x+18,26)];
+            swatch.lineWidth = [item[2] doubleValue]; swatch.lineCapStyle = NSLineCapStyleRound; [(NSColor *)item[1] setStroke]; [swatch stroke];
+            [item[0] drawAtPoint:NSMakePoint(x+24,19) withAttributes:legend]; x += 98;
+        }
+        NSRect banner = NSMakeRect(36,78,width-72,52);
+        NSBezierPath *path = [NSBezierPath bezierPathWithRoundedRect:banner xRadius:14 yRadius:14];
+        [[Hex(next ? 0xFBEEE2 : 0xFFFDFA) colorWithAlphaComponent:0.92] setFill]; [path fill];
+        [Hex(next ? 0xF0D5BD : 0xEDE4D8) setStroke]; path.lineWidth = 1; [path stroke];
+    };
+    NSImageView *icon = [NSImageView imageViewWithImage:[NSImage imageWithSystemSymbolName:next ? @"arrow.triangle.swap" : @"chart.xyaxis.line" accessibilityDescription:nil]];
+    icon.frame = NSMakeRect(54,94,20,20); icon.contentTintColor = next ? Hex(0xC0743A) : muted; [section addSubview:icon];
+    [section addSubview:Text(bannerText,NSMakeRect(84,88,next ? 300 : width-140,20),[NSFont systemFontOfSize:14 weight:NSFontWeightSemibold],next ? Hex(0x795539) : muted)];
+    if (next) {
+        [section addSubview:Text(L(@"依据：最近观察到的周用量最低，其次是 5 小时用量"),NSMakeRect(84,108,380,16),[NSFont systemFontOfSize:11],muted)];
+        ActionButton *go = [self toolButton:[NSString stringWithFormat:L(@"%@账号 %02ld"),self.buttons[next-1].title,(long)next] symbol:nil frame:NSMakeRect(width-36-150,86,136,36) action:@selector(selectAccount:)];
+        go.tag = next; go.enabled = self.buttons[next-1].enabled; [section addSubview:go];
+    }
+    CGFloat height = 146;
+    if (on) for (NSUInteger i = 0; i < accounts.count; i++) {
+        NSInteger n = accounts[i].integerValue; CGFloat cardWidth = (width-72-12)/2;
+        NSRect frame = NSMakeRect(36+(i%2)*(cardWidth+12),146+(i/2)*222,cardWidth,210);
+        Canvas *card = [[Canvas alloc] initWithFrame:frame];
+        BOOL suggested = n == next; const unsigned *palette = BadgePalette[(n-1)%4];
+        NSDictionary *latestFive = nil, *latestWeek = nil;
+        for (NSDictionary *point in self.usageTrend) if ([point[@"account"] integerValue] == n) { if (point[@"fh"]) latestFive = point; if (point[@"sd"]) latestWeek = point; }
+        card.paint = ^(NSRect bounds) {
+            NSBezierPath *path = [NSBezierPath bezierPathWithRoundedRect:NSInsetRect(bounds,0.5,0.5) xRadius:16 yRadius:16];
+            [[Hex(0xFFFDFA) colorWithAlphaComponent:0.9] setFill]; [path fill];
+            [Hex(suggested ? 0xE9C3A2 : 0xEDE4D8) setStroke]; path.lineWidth = suggested ? 1.5 : 1; [path stroke];
+            NSRect badge = NSMakeRect(18,18,28,28);
+            [Hex(palette[0]) setFill]; [[NSBezierPath bezierPathWithRoundedRect:badge xRadius:8 yRadius:8] fill];
+            DrawCentered([NSString stringWithFormat:@"%02ld",(long)n],badge,@{NSFontAttributeName:[NSFont systemFontOfSize:12 weight:NSFontWeightSemibold],NSForegroundColorAttributeName:Hex(palette[1])});
+            [Hex(0xF2EBE1) setFill]; NSRectFill(NSMakeRect(18,84,NSWidth(bounds)-36,1));
+        };
+        NSTextField *name = Text([self accountName:n],NSMakeRect(56,15,suggested ? 104 : 150,20),[NSFont systemFontOfSize:14 weight:NSFontWeightSemibold],Hex(0x2B2622));
+        name.lineBreakMode = NSLineBreakByTruncatingTail; name.toolTip = name.stringValue; [card addSubview:name];
+        [card addSubview:Text(latestFive || latestWeek ? [NSString stringWithFormat:L(@"更新于 %@"),HandoffAge([NSDate dateWithTimeIntervalSince1970:MAX([latestFive[@"time"] doubleValue],[latestWeek[@"time"] doubleValue])],now)] : L(@"尚无观察记录"),NSMakeRect(56,35,160,16),[NSFont systemFontOfSize:11],muted)];
+        if (suggested) {
+            NSTextField *tag = Text(L(@"建议"),NSMakeRect(162,17,40,18),[NSFont systemFontOfSize:11 weight:NSFontWeightSemibold],Hex(0xC0743A));
+            tag.alignment = NSTextAlignmentCenter; tag.wantsLayer = YES; tag.layer.cornerRadius = 9; tag.layer.backgroundColor = Hex(0xFBEEE2).CGColor; [card addSubview:tag];
+        }
+        NSArray *metrics = @[@[L(@"5 小时"),latestFive[@"fh"] ?: NSNull.null,five],@[L(@"周"),latestWeek[@"sd"] ?: NSNull.null,weekly]];
+        for (NSUInteger m = 0; m < metrics.count; m++) {
+            CGFloat x = cardWidth-18-(2-m)*70; id value = metrics[m][1];
+            NSTextField *label = Text(metrics[m][0],NSMakeRect(x,14,64,14),[NSFont systemFontOfSize:10],muted); label.alignment = NSTextAlignmentRight; [card addSubview:label];
+            NSTextField *percent = Text(value == NSNull.null ? @"—" : [NSString stringWithFormat:@"%.0f%%",[value doubleValue]],NSMakeRect(x,28,64,24),[NSFont monospacedDigitSystemFontOfSize:19 weight:NSFontWeightMedium],metrics[m][2]);
+            percent.alignment = NSTextAlignmentRight; [card addSubview:percent];
+        }
+        NSMutableArray *forecast = [NSMutableArray array];
+        for (NSArray *pair in @[@[@"fh",L(@"5 小时")],@[@"sd",L(@"周")]]) {
+            NSNumber *hours = UsageHoursLeft(self.usageTrend,n,pair[0],now);
+            if (hours) [forecast addObject:[NSString stringWithFormat:L(@"%@约 %@ 用完"),pair[1],hours.doubleValue >= 48 ? [NSString stringWithFormat:L(@"%.1f 天"),hours.doubleValue/24] : [NSString stringWithFormat:L(@"%.1f 小时"),hours.doubleValue]]];
+        }
+        if (forecast.count) [forecast insertObject:L(@"按当前速度") atIndex:0];
+        NSString *outlook = forecast.count ? [[forecast[0] stringByAppendingString:@"："] stringByAppendingString:[[forecast subarrayWithRange:NSMakeRange(1,forecast.count-1)] componentsJoinedByString:@" · "]] : latestFive || latestWeek ? L(@"用量平稳，暂无用完估算") : L(@"打开该账号的 Claude Code 后开始记录");
+        NSTextField *note = Text(outlook,NSMakeRect(18,60,cardWidth-36,16),[NSFont systemFontOfSize:11 weight:forecast.count ? NSFontWeightMedium : NSFontWeightRegular],forecast.count ? Hex(0x9A5A32) : muted);
+        note.lineBreakMode = NSLineBreakByTruncatingTail; note.toolTip = outlook; [card addSubview:note];
+        // Canvas is flipped; the chart draws in its own unflipped space.
+        if (latestFive || latestWeek) [card addSubview:UsageTrendChart(self.usageTrend,n,NSMakeRect(12,92,cardWidth-24,108),now,colors)];
+        else {
+            NSImageView *empty = [NSImageView imageViewWithImage:[NSImage imageWithSystemSymbolName:@"chart.line.flattrend.xyaxis" accessibilityDescription:nil]];
+            empty.frame = NSMakeRect(cardWidth/2-14,112,28,28); empty.contentTintColor = Hex(0xC9BEB1); [card addSubview:empty];
+            NSTextField *hint = Text(L(@"近 7 天暂无数据"),NSMakeRect(0,148,cardWidth,18),[NSFont systemFontOfSize:12],Hex(0x9A8F84)); hint.alignment = NSTextAlignmentCenter; [card addSubview:hint];
+        }
+        [section addSubview:card]; height = NSMaxY(frame)+28;
+    }
+    [section setFrameSize:NSMakeSize(width,height)]; section.needsDisplay = YES;
+    [self.accountsContent setFrameSize:NSMakeSize(NSWidth(self.accountsContent.frame),NSMaxY(section.frame))];
 }
 - (NSArray<NSDictionary *> *)projectRecords { return self.snapshotProjects ?: self.projectStore.projects ?: @[]; }
 - (void)projectNotice:(NSString *)text {
@@ -1247,34 +1394,6 @@ static BOOL ConfigFolderExists(NSInteger n) {
             [self alert:failed ? L(@"配置同步未全部完成") : L(@"配置同步完成") detail:[lines componentsJoinedByString:@"\n"]];
         });
     });
-}
-- (void)showUsageTrend:(id)sender {
-    if (![self.settings[@"showUsageHistory"] boolValue]) { [self alert:L(@"用量趋势未开启") detail:L(@"请先在“系统设置”中开启“显示本地界面用量”。趋势只记录启动器已观察到的数值。")]; return; }
-    NSDate *now = NSDate.date; NSMutableArray<NSNumber *> *accounts = [NSMutableArray array];
-    for (NSInteger n = 1; n <= 10; n++) {
-        BOOL directory = NO;
-        if ([NSFileManager.defaultManager fileExistsAtPath:ProfilePath(n) isDirectory:&directory] && directory) [accounts addObject:@(n)];
-    }
-    NSAlert *alert = [NSAlert new]; alert.messageText = L(@"近 7 天用量趋势");
-    NSInteger next = UsageRotationAccount(self.usageTrend,accounts,0);
-    alert.informativeText = next ? [NSString stringWithFormat:L(@"建议下一个使用：账号 %02ld（最近观察到的周用量最低）。深色线为周限额，浅色线为 5 小时限额；只含启动器已观察到的数值。"),(long)next]
-                                 : L(@"还没有观察记录。打开账号的 Claude Code 后，启动器会记录已显示的用量。");
-    [alert addButtonWithTitle:L(@"关闭")];
-    Canvas *panel = [[Canvas alloc] initWithFrame:NSMakeRect(0,0,560,MAX(1,accounts.count)*118)];
-    for (NSUInteger i = 0; i < accounts.count; i++) {
-        NSInteger n = accounts[i].integerValue; CGFloat y = i*118;
-        NSMutableArray *forecast = [NSMutableArray array];
-        for (NSArray *pair in @[@[@"fh",L(@"5小时")],@[@"sd",L(@"周")]]) {
-            NSNumber *hours = UsageHoursLeft(self.usageTrend,n,pair[0],now);
-            if (hours) [forecast addObject:[NSString stringWithFormat:L(@"%@额度按当前速度约 %@ 后用完"),pair[1],hours.doubleValue >= 48 ? [NSString stringWithFormat:L(@"%.1f 天"),hours.doubleValue/24] : [NSString stringWithFormat:L(@"%.1f 小时"),hours.doubleValue]]];
-        }
-        NSString *title = [NSString stringWithFormat:L(@"账号 %02ld"),(long)n];
-        if (forecast.count) title = [title stringByAppendingFormat:@" · %@",[forecast componentsJoinedByString:@"；"]];
-        [panel addSubview:Text(title,NSMakeRect(0,y,560,18),[NSFont systemFontOfSize:12 weight:NSFontWeightSemibold],NSColor.labelColor)];
-        // Canvas is flipped; the chart draws in its own unflipped space.
-        [panel addSubview:UsageTrendChart(self.usageTrend,n,NSMakeRect(0,y+20,560,90),now)];
-    }
-    alert.accessoryView = panel; [alert runModal];
 }
 - (void)registerProjects:(id)sender {
     if (self.snapshotMode || self.registeringProjects || self.discoveringProjects) return;
@@ -2250,7 +2369,6 @@ static BOOL ConfigFolderExists(NSInteger n) {
     self.summaryLabel = Text(L(@"正在读取状态"), NSMakeRect(44,114,300,18), [NSFont systemFontOfSize:12], muted); [instances addSubview:self.summaryLabel];
     self.createButton = [ActionButton buttonWithTitle:L(@"+  新建实例") target:self action:@selector(newInstance:)];
     self.createButton.frame = NSMakeRect(612,52,160,48); self.createButton.bordered = NO; [instances addSubview:self.createButton];
-    [instances addSubview:[self toolButton:L(@"用量趋势") symbol:@"chart.xyaxis.line" frame:NSMakeRect(474,54,128,44) action:@selector(showUsageTrend:)]];
     NSScrollView *list = [[NSScrollView alloc] initWithFrame:NSMakeRect(16,140,776,528)];
     list.drawsBackground = NO; list.contentView.drawsBackground = NO; list.hasVerticalScroller = YES; list.autohidesScrollers = YES; list.scrollerStyle = NSScrollerStyleOverlay;
     Canvas *cardsView = [[Canvas alloc] initWithFrame:NSMakeRect(0,0,776,10*136-12)];
@@ -2388,6 +2506,7 @@ static BOOL ConfigFolderExists(NSInteger n) {
     });
 }
 - (void)updateUsageCards {
+    [self updateTrendSection];
     NSDate *now = NSDate.date; NSMutableArray *readings = [NSMutableArray array];
     for (AccountCard *card in self.cards) {
         NSDictionary *record = self.usageInterface[@(card.number)];
@@ -2661,6 +2780,7 @@ static OSStatus HotKeyHandler(EventHandlerCallRef next, EventRef event, void *co
     }];
     for (AccountRow *row in visible) { [row setFrameOrigin:NSMakePoint(0,y)]; y += 52; }
     [self.rowsView setFrameSize:NSMakeSize(734,MAX(y,1))];
+    [self layoutAccountTable:MIN(MAX(y,3*52),6*52)];
     NSArray *values = @[@(total),@(running),@(attention)];
     for (NSUInteger i = 0; i < self.stats.count; i++) self.stats[i].stringValue = [NSString stringWithFormat:@"%02lu",[values[i] unsignedLongValue]];
     self.tableFooter.stringValue = [NSString stringWithFormat:L(@"显示 %lu / %lu 个 · 选中 %lu 项"),(unsigned long)shown,(unsigned long)total,(unsigned long)selected];
@@ -2741,6 +2861,7 @@ static OSStatus HotKeyHandler(EventHandlerCallRef next, EventRef event, void *co
 }
 - (void)showPage:(NSInteger)page {
     if (page < 0 || page >= (NSInteger)self.pages.count) page = 0;
+    if (page == 1) [self.accountsContent scrollPoint:NSZeroPoint]; // Each visit starts at the table.
     self.page = page;
     if (!self.snapshotMode) [self.preferences setInteger:page forKey:@"lastLauncherPage"];
     if (page == 2) [self refreshProjects:nil];
@@ -2845,7 +2966,7 @@ static OSStatus HotKeyHandler(EventHandlerCallRef next, EventRef event, void *co
     [self refresh];
     blocker = self.scanError ?: [self deletionBlocker:account];
     if (blocker) { [self alert:L(@"已取消删除") detail:blocker]; return; }
-    [self checkAccount:account completion:^{
+    [self checkAccount:account allowRisk:NO completion:^{
         [self refresh];
         NSString *failure = self.scanError ?: [self deletionBlocker:account] ?: ValidateProfileRoot(ProfilePath(account),ProfilePath(account));
         if (failure) { [self alert:L(@"已取消删除") detail:failure]; return; }
@@ -2862,17 +2983,27 @@ static OSStatus HotKeyHandler(EventHandlerCallRef next, EventRef event, void *co
     if (self.loginAccount == account) return L(@"该账号处于登录保护中，请先结束保护。");
     return DeleteBlocker(account,self.processes[@(account)],self.starting[@(account)] != nil || [self.checking containsObject:@(account)]);
 }
-- (void)checkAccount:(NSInteger)account completion:(void (^)(void))completion {
+// allowRisk: launching warns and lets the user continue; deletion keeps stopping on any failure.
+- (void)checkAccount:(NSInteger)account allowRisk:(BOOL)allowRisk completion:(void (^)(void))completion {
     NSNumber *key = @(account);
     if (account < 1 || account > 10 || [self.checking containsObject:key] || self.starting[key]) return;
-    [self.checking addObject:key]; [self.errors removeObjectForKey:key]; [self refresh];
+    [self.checking addObject:key]; [self.errors removeObjectForKey:key]; [self.storageRiskAccepted removeObject:key]; [self refresh];
     ValidateProfileAsync(ProfilePath(account), ^(NSString *failure) {
-        [self.checking removeObject:key];
         if (failure) {
             self.errors[key] = failure;
             self.message.stringValue = [NSString stringWithFormat:L(@"账号 %02ld：%@"),(long)account,failure];
-            [self refresh]; [self alert:L(@"账号存储隔离检查未通过") detail:failure]; return;
-        }
+            [self refresh];
+            if (!allowRisk) { [self.checking removeObject:key]; [self refresh]; [self alert:L(@"账号存储隔离检查未通过") detail:failure]; return; }
+            NSAlert *warning = [NSAlert new]; warning.alertStyle = NSAlertStyleWarning;
+            warning.messageText = L(@"账号存储隔离检查未通过");
+            warning.informativeText = [NSString stringWithFormat:L(@"%@\n\n继续可能让账号之间共用数据，登录状态或配置可能互相影响。启动器不会修改这些文件。"),failure];
+            // Return cancels; continuing needs an explicit click. The account stays reserved while the modal runs.
+            [warning addButtonWithTitle:L(@"取消")]; [warning addButtonWithTitle:L(@"仍然继续")];
+            BOOL proceed = [warning runModal] == NSAlertSecondButtonReturn;
+            [self.checking removeObject:key];
+            if (!proceed) { [self refresh]; return; }
+            [self.storageRiskAccepted addObject:key];
+        } else [self.checking removeObject:key];
         completion();
         [self refresh];
     });
@@ -2963,7 +3094,7 @@ static OSStatus HotKeyHandler(EventHandlerCallRef next, EventRef event, void *co
         if (failure || self.processes[key].count) { [self alert:L(@"状态已变化，未创建") detail:failure ?: L(@"该账号已在运行，请重新点击。")]; return; }
     }
     pid_t expectedPID = self.processes[key].count == 1 ? [self.processes[key].firstObject intValue] : 0;
-    [self checkAccount:account completion:^{ [self openCheckedAccount:account expectedPID:expectedPID create:create prepare:prepare]; }];
+    [self checkAccount:account allowRisk:YES completion:^{ [self openCheckedAccount:account expectedPID:expectedPID create:create prepare:prepare]; }];
 }
 - (void)confirmEnvironment:(NSInteger)account completion:(void (^)(void))completion {
     NSNumber *key = @(account);
@@ -3004,7 +3135,8 @@ static OSStatus HotKeyHandler(EventHandlerCallRef next, EventRef event, void *co
     NSString *failure = [self openingBlocker:account expectedPID:expectedPID];
     if (failure) { [self alert:L(@"实例或保护状态已变化") detail:failure]; return; }
     NSString *storageFailure = ValidateProfileRoot(ProfilePath(account),ProfilePath(account));
-    if (storageFailure) { [self alert:L(@"账号路径已变化") detail:storageFailure]; return; }
+    BOOL riskAccepted = [self.storageRiskAccepted containsObject:key];
+    if (storageFailure && !riskAccepted) { [self alert:L(@"账号路径已变化") detail:storageFailure]; return; }
     NSArray *pids = self.processes[key];
     [self.errors removeObjectForKey:key];
     if (pids.count == 1) { [self activatePID:[pids.firstObject intValue] account:account prepare:prepare]; return; }
@@ -3034,7 +3166,7 @@ static OSStatus HotKeyHandler(EventHandlerCallRef next, EventRef event, void *co
     }
     storageFailure = ValidateProfileRoot(ProfilePath(account),ProfilePath(account));
     if (!storageFailure && codeConfig) storageFailure = ValidateProfileRoot(codeConfig,codeConfig);
-    if (storageFailure) { [self alert:L(@"创建后隔离检查未通过") detail:storageFailure]; return; }
+    if (storageFailure && !riskAccepted) { [self alert:L(@"创建后隔离检查未通过") detail:storageFailure]; return; }
     [self refresh];
     if ([self openingBlocker:account expectedPID:0] || self.processes[key].count) {
         self.message.stringValue = L(@"进程或登录保护状态已变化，未启动新实例，请重试。"); return;
@@ -3264,6 +3396,33 @@ static int SelfTest(void) {
         NSCAssert(ValidateProfileAtPath(a,a),@"recursive background policy still rejects deeply nested links");
         NSCAssert([fm removeItemAtPath:nestedLink error:nil],@"remove generated nested link only");
         NSCAssert(!ValidateProfileAtPath(a,a),@"safe nested profile remains usable");
+        // Config-sync links pass only at whitelisted entries with targets outside account and launcher data. Targets are never opened.
+        NSString *syncConfig = [a stringByAppendingPathComponent:@"ClaudeCodeConfig"], *syncSkills = [syncConfig stringByAppendingPathComponent:@"skills"];
+        NSCAssert([fm createDirectoryAtPath:[syncSkills stringByAppendingPathComponent:@"own"] withIntermediateDirectories:YES attributes:nil error:nil],@"skills fixture");
+        NSString *home = NSHomeDirectory(), *secondConfig = [ProfilePath(2) stringByAppendingPathComponent:@"ClaudeCodeConfig"];
+        NSString *support = [home stringByAppendingPathComponent:@"Library/Application Support"];
+        for (NSArray *allowed in @[@[@"settings.json",[home stringByAppendingPathComponent:@".claude/settings.json"]],@[@"CLAUDE.md",[secondConfig stringByAppendingPathComponent:@"CLAUDE.md"]],
+                                   @[@"skills/shared",b],@[@"skills/relative",@"../projects"],@[@"skills/dangling",@"/nonexistent/skill"]]) {
+            NSString *entry = [syncConfig stringByAppendingPathComponent:allowed[0]];
+            NSCAssert([fm createSymbolicLinkAtPath:entry withDestinationPath:allowed[1] error:nil],@"allowed link fixture");
+            NSCAssert(!ValidateProfileAtPath(a,a),@"config link allowed: %@ (%@)",allowed[0],ValidateProfileAtPath(a,a));
+            NSCAssert([fm removeItemAtPath:entry error:nil],@"remove generated link only");
+        }
+        NSArray *rejected = @[@[@"projects/shared",b],@[@"notes.txt",b],@[@"skills/own/deep",b],@[@".hidden.md",b],@[@"agents",b],
+                              @[@"skills/cookies",[ProfilePath(2) stringByAppendingPathComponent:@"Cookies"]],@[@"skills/first",ProfilePath(1)],
+                              @[@"skills/projects",[secondConfig stringByAppendingPathComponent:@"projects"]],@[@"settings.json",[home stringByAppendingPathComponent:@".claude/.credentials.json"]],
+                              @[@"CLAUDE.md",[home stringByAppendingPathComponent:@".claude.json"]],@[@"skills/home",home],
+                              @[@"skills/launcher",[support stringByAppendingPathComponent:@"Claude Launcher"]],@[@"skills/support",support]];
+        for (NSArray *unsafe in rejected) {
+            NSString *entry = [syncConfig stringByAppendingPathComponent:unsafe[0]];
+            NSCAssert([fm createSymbolicLinkAtPath:entry withDestinationPath:unsafe[1] error:nil],@"rejected link fixture");
+            NSCAssert(ValidateProfileAtPath(a,a),@"config link rejected: %@",unsafe[0]);
+            NSCAssert([fm removeItemAtPath:entry error:nil],@"remove generated link only");
+        }
+        NSCAssert([fm removeItemAtPath:syncConfig error:nil],@"remove generated config only");
+        NSCAssert([fm createSymbolicLinkAtPath:syncConfig withDestinationPath:b error:nil],@"config root link fixture");
+        NSCAssert(ValidateProfileAtPath(a,a),@"config root link rejected");
+        NSCAssert([fm removeItemAtPath:syncConfig error:nil],@"remove generated link only");
         NSCAssert([[NSString stringWithContentsOfFile:marker encoding:NSUTF8StringEncoding error:nil] isEqual:@"synthetic-test-only"],@"other fixture untouched");
         NSCAssert([fm removeItemAtPath:root error:nil],@"clean generated fixtures only");
         puts("PASS: login conflict guard, delete guards, duplicate overrides, exact paths, symlink and hardlink rejection; synthetic fixtures only");
@@ -3494,6 +3653,19 @@ static int UISettingsTest(NSString *output) {
         [launcher markUsed:2]; NSCAssert([[preferences dictionaryForKey:@"accountLastUsed"] count] == 3 && [launcher lastUsed:2],@"markUsed drops invalid entries");
         [launcher.accountSort selectItemAtIndex:0]; [launcher accountSortChanged:launcher.accountSort]; [preferences removeObjectForKey:@"accountLastUsed"];
         [launcher refreshAccountTable]; [launcher showPage:1]; capture(@"accounts.png");
+        NSDictionary *savedSettings = launcher.settings; NSMutableDictionary *trendOn = savedSettings.mutableCopy; trendOn[@"showUsageHistory"] = @YES; launcher.settings = trendOn;
+        NSMutableArray *synthetic = [NSMutableArray array]; NSTimeInterval end = NSDate.date.timeIntervalSince1970;
+        for (NSInteger h = 160; h >= 0; h -= 2) {
+            NSTimeInterval t = end-h*3600;
+            [synthetic addObject:@{@"account":@1,@"time":@(t),@"fh":@(fmod(160-h,5)*18+6),@"sd":@(MIN(96.0,(160-h)*0.55+8))}];
+            if (h % 6 == 0) [synthetic addObject:@{@"account":@2,@"time":@(t+60),@"fh":@(fmod(160-h,10)*7+4),@"sd":@((160-h)*0.18+12)}];
+        }
+        launcher.usageTrend = synthetic; launcher.trendSignature = nil; [launcher updateTrendSection];
+        NSCAssert(launcher.trendSection.subviews.count > 8 && NSHeight(launcher.accountsContent.frame) > 1100,@"trend section lists account cards below the table and the accounts page grows to scroll");
+        [launcher.accountsContent scrollPoint:NSMakePoint(0,700)]; capture(@"accounts-trend.png");
+        launcher.window.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua]; launcher.trendSignature = nil; [launcher updateTrendSection]; capture(@"accounts-trend-dark.png"); launcher.window.appearance = nil;
+        launcher.settings = savedSettings; launcher.usageTrend = nil; launcher.trendSignature = nil; [launcher updateTrendSection]; [launcher.accountsContent scrollPoint:NSZeroPoint];
+        NSCAssert(launcher.trendSection.subviews.count < 8,@"trend off shows only the notice");
         for (NSInteger n=1;n<=3;n++) launcher.buttons[n-1].enabled = YES;
         launcher.cards[0].usageValues = @[@86,@20]; launcher.cards[1].usageValues = @[@30,NSNull.null]; launcher.cards[2].usageValues = @[@10,@5];
         launcher.accountNames[@"1"] = @"Synthetic-Name-Only"; launcher.accountNames[@"3"] = @"Synthetic-Name-Only";
@@ -3520,7 +3692,7 @@ static int UISettingsTest(NSString *output) {
         Fetch([NSURL URLWithString:@"https://api.anthropic.com/v1/messages"],YES,100,1,nil,^(NSData *data,NSString *failure) { refused = !data && failure.length; });
         NSCAssert(refused,@"Claude requests rejected even with update opt-in"); NetworkEnabled = NO;
         NSCAssert(!launcher.timer && !launcher.statusItem && !launcher.projectStore,@"UI checks do not start normal lifecycle or load projects");
-        puts("PASS: native settings controls, immediate save/reload, reset scope, artwork/interface-usage/notifications, log retention/persistence/filter/paging, account search/status/selection, network rejection before session creation; 11 offscreen renders (2 dark)");
+        puts("PASS: native settings controls, immediate save/reload, reset scope, artwork/interface-usage/notifications, log retention/persistence/filter/paging, account search/status/selection, network rejection before session creation; 13 offscreen renders (3 dark)");
     } @finally {
         NetworkEnabled = NO; [preferences removePersistentDomainForName:suite]; [preferences synchronize];
     }

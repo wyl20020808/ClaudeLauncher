@@ -53,6 +53,12 @@ static BOOL SameItem(NSString *a, NSString *b, NSString *kind) {
     return [NSFileManager.defaultManager contentsEqualAtPath:a andPath:b];
 }
 
+BOOL ConfigSyncEntryAllowed(NSString *relative) {
+    NSArray *parts = relative.pathComponents;
+    if (![parts.lastObject length] || [parts.lastObject hasPrefix:@"."]) return NO;
+    if (parts.count == 1) return [relative isEqual:@"settings.json"] || [relative.pathExtension.lowercaseString isEqual:@"md"];
+    return parts.count == 2 && [SyncCategories() containsObject:parts[0]];
+}
 NSArray<NSDictionary *> *ConfigSyncItems(NSString *source, NSString *target) {
     if (!RealDirectory(source) || !RealDirectory(target) || [source.stringByStandardizingPath isEqual:target.stringByStandardizingPath]) return @[];
     NSMutableArray *names = [NSMutableArray array];
