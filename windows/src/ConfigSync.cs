@@ -32,6 +32,7 @@ namespace ClaudeLauncher {
         }
         internal static bool Allowed(string relative) {
             string[] parts=relative.Split(Path.DirectorySeparatorChar,Path.AltDirectorySeparatorChar);
+            if(parts[parts.Length-1].StartsWith(".")) return false;
             return parts.Length==1 ? relative=="settings.json" || relative.EndsWith(".md",StringComparison.OrdinalIgnoreCase) : parts.Length==2 && Categories.Contains(parts[0]) && parts[1].Length>0;
         }
         static bool Exists(string path) { try { File.GetAttributes(path); return true; } catch(FileNotFoundException) { return false; } catch(DirectoryNotFoundException) { return false; } }
@@ -51,13 +52,19 @@ namespace ClaudeLauncher {
             string relative=path.Substring(root.Length).TrimStart('\\','/');
             if(!Allowed(relative)) return false;
             string target=LinkTarget(path);
-            foreach(string account in Enumerable.Range(1,10).SelectMany(n=>ProfileDeletion.Candidates(n,Core.Root,ProfileDeletion.Local))) {
-                if(!Projects.Inside(target,account)) continue;
-                string config=Path.Combine(account,"ClaudeCodeConfig");
-                if(!Projects.Inside(target,config)||!Allowed(target.Substring(config.Length).TrimStart('\\'))) return false;
-            }
-            if(Projects.Inside(target,LauncherSettings.DataDirectory)) return false;
+            if(!TargetAllowed(target,Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),LauncherSettings.DataDirectory,Enumerable.Range(1,10).SelectMany(n=>ProfileDeletion.Candidates(n,Core.Root,ProfileDeletion.Local)))) return false;
             using(var guard=new LocalFiles(Path.GetDirectoryName(target),false)) { int count=0;long size=0; SafeTree(target,ref count,ref size); }
+            return true;
+        }
+        // 目标不得进入账号数据、启动器数据、~/.claude.json 或 ~/.claude 白名单之外，也不得是它们的上级（SPEC 存储校验）。
+        internal static bool TargetAllowed(string target,string home,string launcher,IEnumerable<string> accounts) {
+            if(Projects.Inside(target,Path.Combine(home,".claude.json"))||Projects.Inside(target,launcher)||Projects.Inside(launcher,target)) return false;
+            string claude=Path.Combine(home,".claude");
+            foreach(var pair in accounts.Select(a=>Tuple.Create(a,Path.Combine(a,"ClaudeCodeConfig"))).Concat(new[]{Tuple.Create(claude,claude)})) {
+                if(Projects.Inside(pair.Item1,target)) return false;
+                if(!Projects.Inside(target,pair.Item1)) continue;
+                if(!Projects.Inside(target,pair.Item2)||!Allowed(target.Substring(pair.Item2.Length).TrimStart('\\'))) return false;
+            }
             return true;
         }
         static void ValidateEntry(string source,string relative) {
@@ -95,7 +102,7 @@ namespace ClaudeLauncher {
                     relatives.AddRange(Directory.GetFileSystemEntries(path).Select(p=>Path.Combine(category,Path.GetFileName(p))));
                 }
                 var rows=new List<SyncItem>();
-                foreach(var relative in relatives) {
+                foreach(var relative in relatives.Where(r=>!Path.GetFileName(r).StartsWith("."))) {
                     var row=new SyncItem { Relative=relative,Source=Path.Combine(source,relative),Target=Path.Combine(target,relative) };
                     try {
                         ValidateEntry(row.Source,relative);

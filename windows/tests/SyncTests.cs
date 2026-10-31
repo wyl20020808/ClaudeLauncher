@@ -16,6 +16,87 @@ internal static class SyncTests {
         var frame=new DispatcherFrame(); var timer=new DispatcherTimer { Interval=TimeSpan.FromMilliseconds(5) }; DateTime end=DateTime.UtcNow.AddSeconds(5);
         timer.Tick+=delegate { if(task.IsCompleted||DateTime.UtcNow>end) frame.Continue=false; }; timer.Start(); Dispatcher.PushFrame(frame); timer.Stop(); Check(task.IsCompleted,"asynchronous callback completed"); task.GetAwaiter().GetResult();
     }
+    // 1.7.18：隔离检查未通过改为警告。用合成校验结果和替身启动，不碰真实账号。
+    static void StorageRiskChecks(string root,BindingFlags flags) {
+        System.Threading.SynchronizationContext.SetSynchronizationContext(new DispatcherSynchronizationContext());
+        var ui=new LauncherUI(new LauncherSettings(),Path.Combine(root,"risk-settings.json"));
+        ui.ScanProvider=()=>Task.FromResult(new List<Instance>());
+        typeof(LauncherUI).GetField("executable",flags).SetValue(ui,Assembly.GetExecutingAssembly().Location);
+        var open=typeof(LauncherUI).GetMethod("CheckAndOpen",flags);
+        var errors=(Dictionary<int,string>)typeof(LauncherUI).GetField("errors",flags).GetValue(ui);
+        Exception failure=new IOException("存储项含链接或重定向，已停止：fixture");int validations=0;
+        ui.ValidateStorage=n=>{ validations++;var source=new TaskCompletionSource<int>();source.SetException(failure);return source.Task; };
+        var launches=new List<bool>();ui.LaunchProvider=(n,path,accepted)=>{ launches.Add(accepted);return 4242; };
+        var risks=new List<string[]>();int riskAnswer=0,riskCancel=-1,riskDefault=-1;var alerts=new List<string>();
+        ui.AskOverride=(title,detail,buttons,cancel,standard)=>{
+            if(title=="账号存储隔离检查未通过"&&buttons.Length==2) { risks.Add(new[]{detail,buttons[0],buttons[1]});riskCancel=cancel;riskDefault=standard;return riskAnswer; }
+            if(buttons.Contains("确认启动")) return Array.IndexOf(buttons,"确认启动");
+            if(buttons.Contains("仍然启动")) return Array.IndexOf(buttons,"仍然启动");
+            alerts.Add(title);return cancel;
+        };
+        Pump((Task)open.Invoke(ui,new object[]{9,0,true}));
+        Check(risks.Count==1&&risks[0][1]=="取消"&&risks[0][2]=="仍然继续"&&riskCancel==0&&riskDefault==0,"risk warning defaults to cancel");
+        Check(risks[0][0].Contains("fixture")&&risks[0][0].Contains("启动器不会修改这些文件"),"risk warning lists reason and impact");
+        Check(launches.Count==0&&errors.ContainsKey(9),"cancel does not launch and keeps the error");
+        riskAnswer=1;validations=0;risks.Clear();
+        Pump((Task)open.Invoke(ui,new object[]{9,0,true}));
+        Check(risks.Count==1&&validations==2,"accepted risk is not asked again after the network prompt");
+        Check(launches.Count==1&&launches[0]&&!errors.ContainsKey(9),"continue launches with the accepted risk");
+        ((Dictionary<int,DateTime>)typeof(LauncherUI).GetField("pending",flags).GetValue(ui)).Remove(9);
+        risks.Clear();riskAnswer=0;launches.Clear();
+        Pump((Task)open.Invoke(ui,new object[]{9,0,true}));
+        Check(risks.Count==1&&launches.Count==0,"next click warns again");
+        ui.ValidateStorage=n=>{ var source=new TaskCompletionSource<int>();source.SetException(new StorageNotFolderException("账号目录路径不是文件夹，已停止：fixture"));return source.Task; };
+        risks.Clear();alerts.Clear();riskAnswer=1;
+        Pump((Task)open.Invoke(ui,new object[]{9,0,true}));
+        Check(risks.Count==0&&alerts.Count==1&&launches.Count==0,"non-folder path stays blocked");
+        int rounds=0;ui.ValidateStorage=n=>{ if(++rounds==1) return Task.FromResult(0);var source=new TaskCompletionSource<int>();source.SetException(failure);return source.Task; };
+        risks.Clear();riskAnswer=0;
+        Pump((Task)open.Invoke(ui,new object[]{9,0,true}));
+        Check(risks.Count==1&&launches.Count==0,"failure at the recheck also warns");
+        string fake=Path.Combine(root,"recheck"),roaming=Path.Combine(fake,"Roaming"),local=Path.Combine(fake,"Local"),profile=Path.Combine(roaming,"Claude-Profile-09"),outside=Path.Combine(fake,"outside");
+        Directory.CreateDirectory(profile);Directory.CreateDirectory(outside);Directory.CreateDirectory(local);
+        typeof(SelfTest).GetMethod("Junction",BindingFlags.NonPublic|BindingFlags.Static).Invoke(null,new object[]{Path.Combine(profile,"Cache"),outside});
+        Reject(()=>Core.Recheck(9,roaming,local,false),"launch recheck stops without acceptance");
+        Core.Recheck(9,roaming,local,true);checks++;
+        Directory.Delete(Path.Combine(profile,"Cache"));Directory.Delete(profile);File.WriteAllText(profile,"not a folder");
+        Reject(()=>Core.Recheck(9,roaming,local,true),"launch recheck stops on a non-folder path even when accepted");
+    }
+    // 对应 macOS SharedConfigLinkAllowed 的 allowed／rejected 两组用例；只判定路径，本机无符号链接权限也能运行。
+    static void LinkTargetChecks() {
+        const string home=@"C:\Users\fixture",launcher=@"C:\Users\fixture\AppData\Local\Claude-MultiLauncher";
+        const string second=@"C:\Users\fixture\AppData\Roaming\Claude-Second",config=second+@"\ClaudeCodeConfig",first=@"C:\Users\fixture\AppData\Local\Claude-Data\claude_x";
+        var accounts=new[]{first,second};
+        foreach(string target in new[]{home+@"\.claude\settings.json",home+@"\.claude\CLAUDE.md",home+@"\.claude\skills\shared",config+@"\CLAUDE.md",config+@"\skills\shared",@"D:\shared\skills\example",home+@"\Documents\rules.md"})
+            Check(ConfigSync.TargetAllowed(target,home,launcher,accounts),"link target allowed: "+target);
+        foreach(string target in new[]{home+@"\.claude.json",home+@"\.claude\.credentials.json",home+@"\.claude\projects",home+@"\.claude\projects\x",home+@"\.claude\.hidden.md",home+@"\.claude",
+            home,@"C:\Users",@"C:\",home+@"\AppData",home+@"\AppData\Roaming",second,second+@"\Cookies",first,first+@"\Network",config,config+@"\projects",config+@"\.hidden.md",launcher,launcher+@"\settings.json",home+@"\AppData\Local"})
+            Check(!ConfigSync.TargetAllowed(target,home,launcher,accounts),"link target rejected: "+target);
+        foreach(string entry in new[]{"settings.json","CLAUDE.md",@"skills\shared",@"output-styles\a.md"}) Check(ConfigSync.Allowed(entry),"entry allowed: "+entry);
+        foreach(string entry in new[]{".hidden.md",@"skills\.hidden",@"projects\shared","notes.txt",@"skills\own\deep","agents",".claude.json"}) Check(!ConfigSync.Allowed(entry),"entry rejected: "+entry);
+    }
+    // 1.7.18：趋势从实例页移到账号页表格下方。
+    static void TrendSectionChecks(string root,BindingFlags flags) {
+        var ui=new LauncherUI(new LauncherSettings(),Path.Combine(root,"trend-settings.json"));
+        ui.CodeNameFiles=n=>new string[0];
+        var state=new List<Instance>{new Instance{Number=1,ProcessId=111}};
+        Check(!LauncherTests.Children(ui.Snapshot(0,state)).OfType<System.Windows.Controls.Button>().Any(b=>"用量趋势".Equals(b.Content)),"instances page has no trend entry");
+        var section=(System.Windows.Controls.Canvas)typeof(LauncherUI).GetField("trendSection",flags).GetValue(ui);
+        var content=(System.Windows.Controls.Canvas)typeof(LauncherUI).GetField("accountsContent",flags).GetValue(ui);
+        ui.Snapshot(1,state);
+        Func<IEnumerable<string>> texts=()=>LauncherTests.Children(section).OfType<System.Windows.Controls.TextBlock>().Select(t=>t.Text);
+        Check(texts().Any(t=>t.StartsWith("还没有观察记录")),"empty trend state");
+        double empty=content.Height;
+        DateTime now=DateTime.UtcNow;
+        ui.SetTrend(new[]{new TrendPoint{Account=1,At=now.AddHours(-3),Five=10,Week=20},new TrendPoint{Account=1,At=now.AddHours(-2),Five=30,Week=25},new TrendPoint{Account=1,At=now.AddHours(-1),Five=5,Week=30}});
+        Check(texts().Any(t=>t=="建议下一个使用：账号 01")&&texts().Any(t=>t=="30%"),"suggestion and latest values shown");
+        Check(texts().Any(t=>t.StartsWith("按当前速度")),"forecast shown");
+        Check(LauncherTests.Children(section).OfType<System.Windows.Controls.Button>().Any(b=>((string)b.Content).EndsWith("账号 01")),"suggestion can open the account");
+        Check(content.Height>empty-1&&content.Height>700,"page grows to scroll");
+        typeof(LauncherUI).GetField("settings",flags).SetValue(ui,new LauncherSettings{ShowUsage=false});
+        ui.SetTrend(new TrendPoint[0]);
+        Check(texts().Any(t=>t.StartsWith("用量趋势未开启"))&&!LauncherTests.Children(section).OfType<System.Windows.Shapes.Polyline>().Any(),"trend off shows only the notice");
+    }
     internal static void Run() {
         string root=Path.Combine(Path.GetTempPath(),"launcher-sync-tests-"+Guid.NewGuid().ToString("N")); Directory.CreateDirectory(root);
         try {
@@ -83,13 +164,58 @@ internal static class SyncTests {
             var first=new TaskCompletionSource<List<Instance>>();var second=new TaskCompletionSource<List<Instance>>();int calls=0;ui.ScanProvider=()=>++calls==1?first.Task:second.Task;
             typeof(LauncherUI).GetField("executable",flags).SetValue(ui,Assembly.GetExecutingAssembly().Location);
             var scan=typeof(LauncherUI).GetMethod("ScanNow",flags);var a=(Task<bool>)scan.Invoke(ui,null);var b=(Task<bool>)scan.Invoke(ui,null);
-            second.SetResult(new List<Instance>());Pump(b); first.SetException(new IOException("stale failure"));Pump(a);Check(b.Result&&!a.Result,"new scan wins over old failure");
+            second.SetResult(new List<Instance>());Pump(b); first.SetException(new IOException("stale failure"));Pump(a);Check(b.Result&&a.Result,"old caller adopts the new scan instead of failing");
+            var third=new TaskCompletionSource<List<Instance>>();var fourth=new TaskCompletionSource<List<Instance>>();calls=0;ui.ScanProvider=()=>++calls==1?third.Task:fourth.Task;
+            var c=(Task<bool>)scan.Invoke(ui,null);var d=(Task<bool>)scan.Invoke(ui,null);third.SetResult(new List<Instance>());Check(!c.IsCompleted,"superseded caller waits for the new scan");
+            fourth.SetException(new IOException("newest failure"));Pump(d);Pump(c);Check(!c.Result&&!d.Result&&(string)typeof(LauncherUI).GetField("scanError",flags).GetValue(ui)=="newest failure","superseded caller reports the real reason");
+            var fifth=new TaskCompletionSource<List<Instance>>();ui.ScanProvider=()=>fifth.Task;var e=(Task<bool>)scan.Invoke(ui,null);fifth.SetResult(new List<Instance>());Pump(e);Check(e.Result,"scan recovers health");
             Check((bool)typeof(LauncherUI).GetField("healthy",flags).GetValue(ui),"stale failure cannot clear health");
             var finalScan=new TaskCompletionSource<List<Instance>>();ui.ScanProvider=()=>finalScan.Task;int validations=0;ui.ValidateStorage=n=>{ validations++;return Task.FromResult(0); };
             var open=typeof(LauncherUI).GetMethod("CheckAndOpen",flags);var operation=(Task)open.Invoke(ui,new object[]{2,0,false});
             var checking=(HashSet<int>)typeof(LauncherUI).GetField("checking",flags).GetValue(ui);Check(checking.Contains(2),"account stays occupied during final scan");
             var duplicate=(Task)open.Invoke(ui,new object[]{2,0,false});Check(duplicate.IsCompleted&&validations==1,"duplicate account operation rejected");
             typeof(LauncherUI).GetField("closed",flags).SetValue(ui,true);finalScan.SetResult(new List<Instance>());Pump(operation);Check(!checking.Contains(2),"account occupation released in finally");
+            StorageRiskChecks(root,flags);
+            LinkTargetChecks();
+            TrendSectionChecks(root,flags);
+            // MSIX 版 Claude 的会话目录带应用能力标识：不算其他用户，能被扫描；真正的其他用户可写仍拒绝。
+            string sessions=Path.Combine(root,"sessions"),sessionOrg=Path.Combine(sessions,Guid.NewGuid().ToString(),Guid.NewGuid().ToString());Directory.CreateDirectory(sessionOrg);string sessionProject=Path.Combine(root,"session-project");Directory.CreateDirectory(sessionProject);
+            string sessionId=Guid.NewGuid().ToString();File.WriteAllText(Path.Combine(sessionOrg,"local_"+sessionId+".json"),"{\"sessionId\":\"local_"+sessionId+"\",\"cwd\":"+new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(sessionProject)+",\"originCwd\":\"\"}",new UTF8Encoding(false));
+            Action<string> grant=sid=>{ var acl=Directory.GetAccessControl(sessions);acl.AddAccessRule(new System.Security.AccessControl.FileSystemAccessRule(new System.Security.Principal.SecurityIdentifier(sid),System.Security.AccessControl.FileSystemRights.FullControl,System.Security.AccessControl.InheritanceFlags.ContainerInherit|System.Security.AccessControl.InheritanceFlags.ObjectInherit,System.Security.AccessControl.PropagationFlags.None,System.Security.AccessControl.AccessControlType.Allow));Directory.SetAccessControl(sessions,acl); };
+            // 临时目录可能继承其他用户的写权限，断开继承后只留当前用户。
+            var isolated=new System.Security.AccessControl.DirectorySecurity();isolated.SetAccessRuleProtection(true,false);isolated.AddAccessRule(new System.Security.AccessControl.FileSystemAccessRule(System.Security.Principal.WindowsIdentity.GetCurrent().User,System.Security.AccessControl.FileSystemRights.FullControl,System.Security.AccessControl.InheritanceFlags.ContainerInherit|System.Security.AccessControl.InheritanceFlags.ObjectInherit,System.Security.AccessControl.PropagationFlags.None,System.Security.AccessControl.AccessControlType.Allow));Directory.SetAccessControl(sessions,isolated);
+            Check(Projects.Discover(new[]{sessions}).Records==1,"private session folder is scanned");
+            grant("S-1-15-3-3557520199-3666692283-3112367039-3524159787-2791857073-3163583606-3692855932");
+            Check(Projects.Discover(new[]{sessions}).Records==1,"store-app capability does not block the scan");
+            grant("S-1-1-0");Reject(()=>LocalFiles.RequirePrivateDirectory(sessions),"folder writable by everyone is refused");var exposed=Projects.Discover(new[]{sessions});Check(exposed.Records==0&&exposed.Rejected==1,"writable-by-others sessions are skipped");
+            // 项目页表格：有效目录可打开，失效目录标为不可用。
+            string pageRoot=Path.Combine(root,"project-page"),pageProject=Path.Combine(pageRoot,"页面项目");Directory.CreateDirectory(pageProject);
+            Projects.Save(Path.Combine(pageRoot,"projects.json"),new[]{new LauncherUI.LocalProject{Path=pageProject,Name="页面项目",LastAccount=2},new LauncherUI.LocalProject{Path=Path.Combine(pageRoot,"missing"),Name="失效项目",Group="工作"}});
+            var pageUi=new LauncherUI(new LauncherSettings(),Path.Combine(pageRoot,"settings.json"));var pageAll=LauncherTests.Children(pageUi.Snapshot(4,new List<Instance>())).ToList();var pageTexts=pageAll.OfType<System.Windows.Controls.TextBlock>().Select(t=>t.Text).ToList();
+            foreach(string text in new[]{"名称","分组","路径","状态","上次账号","操作","页面项目","失效项目","未分组","工作","正常","不可用","账号 02","未使用","共 2 个项目 · 上次账号仅用于默认选择，不绑定项目"}) Check(pageTexts.Contains(text),"project page shows "+text);
+            var openButtons=pageAll.OfType<System.Windows.Controls.Button>().Where(item=>"打开".Equals(item.Content)&&System.Windows.Automation.AutomationProperties.GetName(item).StartsWith("选择账号打开项目：")).ToList();
+            Check(openButtons.Count==2&&openButtons.Count(item=>item.IsEnabled)==1,"only a usable project can be opened");
+            // 手动展开用量弹窗：面板晚到时重读，读到两项即停；取整差异不算矛盾；漏掉关闭通知后仍能再次触发。
+            var watch=new PopupWatch();var usageButton=new[]{1,2};Check(watch.Accept(usageButton,true)&&!watch.Accept(usageButton,true),"duplicate expansion ignored");watch.DuplicateWindow=TimeSpan.Zero;Check(watch.Accept(usageButton,true),"expansion after a missed close is read again");
+            Func<double,UsageNode> usagePage=week=>new UsageNode{Type="Document",Url="https://claude.ai/epitaxy",Children={new UsageNode{Type="Button",Name="用量：每周 · 所有模型：53%周二18:00 重置",Expandable=true},new UsageNode{Type="Window",Children={new UsageNode{Type="Hyperlink",Url="https://claude.ai/settings/usage"},new UsageNode{Type="ProgressBar",Name="5 小时限额",Range=21},new UsageNode{Type="ProgressBar",Name="每周 · 所有模型",Range=week}}}}};
+            var rounded=UsageInterface.ReadSynthetic(usagePage(52.6),5);Check(rounded.Status==UsageInterface.Observed&&rounded.FiveHour.Percent==21,"panel value rounded by the button is consistent");
+            Check(UsageInterface.ReadSynthetic(usagePage(50),5).Status=="界面数据待核对","panel that disagrees is still refused");
+            Directory.CreateDirectory(Path.Combine(root,"popup"));var popupUi=new LauncherUI(new LauncherSettings(),Path.Combine(root,"popup","settings.json"));
+            var popupState=new List<Instance>{new Instance{Number=9,ProcessId=4321}};popupUi.ScanProvider=()=>Task.FromResult(popupState);
+            typeof(LauncherUI).GetField("instances",flags).SetValue(popupUi,popupState);typeof(LauncherUI).GetField("healthy",flags).SetValue(popupUi,true);
+            var weekOnly=new UsageRecord{Status=UsageInterface.Observed,Weekly=new UsageMetric{Percent=53,Reset=""}};var bothRead=new UsageRecord{Status=UsageInterface.Observed,FiveHour=new UsageMetric{Percent=21,Reset=""},Weekly=new UsageMetric{Percent=53,Reset=""}};
+            int panelReads=0;popupUi.UsageReader=(pid,identity)=>++panelReads==1?weekOnly:bothRead;
+            var expanded=typeof(LauncherUI).GetMethod("ReadExpandedUsage",flags);Pump((Task)expanded.Invoke(popupUi,new object[]{4321}));
+            var popupUsage=(Dictionary<int,UsageRecord>)typeof(LauncherUI).GetField("usage",flags).GetValue(popupUi);
+            Check(panelReads==2&&popupUsage[9].FiveHour.Percent==21,"late panel is read on retry");
+            panelReads=0;popupUi.UsageReader=(pid,identity)=>{ panelReads++;return weekOnly; };Pump((Task)expanded.Invoke(popupUi,new object[]{4321}));
+            Check(panelReads==3&&popupUsage[9].FiveHour.Percent==21,"retries are bounded and keep the last five-hour value");
+            string aliasRoaming=Path.Combine(root,"alias","Roaming"),aliasLocal=Path.Combine(root,"alias","Local");
+            string[] aliasPaths=ProfileDeletion.Candidates(9,aliasRoaming,aliasLocal);foreach(string path in aliasPaths) Directory.CreateDirectory(path);
+            int recycled=0;int done=ProfileDeletion.Execute(9,aliasRoaming,aliasLocal,aliasPaths,()=>{},path=>{ recycled++;foreach(string each in aliasPaths) Directory.Delete(each,true); });
+            Check(done==2&&recycled==1,"second candidate that left with the first is not a failure");
+            foreach(string path in aliasPaths) Directory.CreateDirectory(path);
+            Reject(()=>ProfileDeletion.Execute(9,aliasRoaming,aliasLocal,aliasPaths,()=>{},path=>{ }),"folder that stays behind still fails");
         } finally { Directory.Delete(root,true); }
         Console.WriteLine("SYNC PASS: "+checks+" checks (temporary fixtures only)");
     }

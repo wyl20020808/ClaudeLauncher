@@ -44,7 +44,8 @@ namespace ClaudeLauncher {
             if(!Storage.OwnedByMe((SecurityIdentifier)security.GetOwner(typeof(SecurityIdentifier)))) throw new IOException("来源目录不属于当前用户。");
             foreach(System.Security.AccessControl.FileSystemAccessRule rule in security.GetAccessRules(true,true,typeof(SecurityIdentifier))) {
                 string sid=rule.IdentityReference.Value;
-                if(rule.AccessControlType!=System.Security.AccessControl.AccessControlType.Allow || Storage.OwnedByMe((SecurityIdentifier)rule.IdentityReference) || sid=="S-1-5-18" || sid=="S-1-5-32-544") continue;
+                // S-1-15-3-* 是系统授予商店应用的能力标识（MSIX 版 Claude 的数据目录都带），不是其他用户。
+                if(rule.AccessControlType!=System.Security.AccessControl.AccessControlType.Allow || Storage.OwnedByMe((SecurityIdentifier)rule.IdentityReference) || sid=="S-1-5-18" || sid=="S-1-5-32-544" || sid.StartsWith("S-1-15-3-")) continue;
                 var write=System.Security.AccessControl.FileSystemRights.Write|System.Security.AccessControl.FileSystemRights.Delete|System.Security.AccessControl.FileSystemRights.ChangePermissions|System.Security.AccessControl.FileSystemRights.TakeOwnership;
                 if((rule.FileSystemRights&write)!=0) throw new IOException("来源目录允许其他用户写入。");
             }

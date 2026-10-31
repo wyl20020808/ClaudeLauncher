@@ -90,7 +90,8 @@ namespace ClaudeLauncher {
                 foreach (string path in actual) {
                     ensureStopped();
                     ValidateTarget(number, roaming, local, path);
-                    recycle(path);
+                    // MSIX 文件重定向下两个候选可能是同一目录，已随前一个移走时不算失败。
+                    if (Exists(path)) recycle(path);
                     if (Exists(path)) throw new IOException("目录仍然存在：" + path);
                     completed++;
                 }

@@ -816,3 +816,7 @@
 "正在写入目标账号" = "Writing to the target account";
 "%@（副本 %@）" = "%@ (Copy %@)";
 "已写入 %lu 条。打开账号 %02ld 后，它们会出现在侧栏，标题后带“副本”和同步时间。第一条消息由你发送；如果项目还没被该账号信任，发送时官方会请你确认。" = "Wrote %lu. After you open account %02ld they appear in the sidebar, with “Copy” and the sync time after the title. You send the first message. If this account does not trust the project yet, Claude asks you to confirm when you send.";
+
+"{0} 天" = "{0} days";
+"{0} 小时" = "{0} hours";
+"选择账号后会复制路径并打开资源管理器，请在 Claude 中选择此文件夹。" = "After you choose an account, the path is copied and File Explorer opens. Choose this folder in Claude.";

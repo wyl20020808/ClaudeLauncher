@@ -62,6 +62,13 @@ namespace ClaudeLauncher {
         Border toast; TextBlock toastText;
         readonly DispatcherTimer toastTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(5) };
         readonly StackPanel cardList, rowList;
+        readonly ScrollViewer rowScroll, accountsScroll;
+        readonly Canvas trendSection, accountsContent;
+        readonly Border tablePanel;
+        readonly Rectangle tableLine;
+        readonly TextBlock accountNote;
+        string trendSignature;
+        double accountRowsHeight;
         readonly Canvas logRows;
         readonly Dictionary<int, Card> cards = new Dictionary<int, Card>();
         readonly Dictionary<int, Row> rows = new Dictionary<int, Row>();
@@ -94,6 +101,11 @@ namespace ClaudeLauncher {
         int scanGeneration, updateGeneration;
         internal Func<int,bool> HasData;
         internal Func<int,Task> ValidateStorage = number => Task.Run(() => Storage.Validate(number,Core.Root,ProfileDeletion.Local));
+        internal Func<int,string,bool,int> LaunchProvider = Core.Launch;
+        internal Func<int,string,UsageRecord> UsageReader = UsageInterface.ReadProcess;
+        bool popupPanelRead;
+        // 仅供测试：替代模态对话框，返回按钮序号。
+        internal Func<string,string,string[],int,int,int> AskOverride = null;
         internal Func<Task<List<Instance>>> ScanProvider = () => Task.Run(() => Core.Scan());
         DateTime nextHeartbeat = DateTime.MinValue;
 
@@ -284,7 +296,6 @@ namespace ClaudeLauncher {
             create = At(instancesPage, Action("+  新建实例", "Pill", null, 16), 612, 52, 160, 48);
             AutomationProperties.SetAutomationId(create, "NewInstance");
             create.Click += async delegate { await NewInstance(); };
-            var trends = At(instancesPage, Action("用量趋势", "Btn", null, 13), 640, 108, 140, 26); trends.Click += delegate { ShowTrend(); };
             cardList = new StackPanel();
             At(instancesPage, new ScrollViewer { Content = cardList, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Padding = new Thickness(0, 0, 0, 0) }, 16, 140, 792, 528);
             emptyHint = At(instancesPage, T("本机还没有 Claude 账号目录。点击右上角「+ 新建实例」创建第一个。", 15, Muted, FontWeights.Normal), 40, 180, 700);
@@ -319,7 +330,7 @@ namespace ClaudeLauncher {
             copySelected.Click += delegate { CopySelectedPaths(); };
             var refresh = At(accounts, Action("刷新状态", "Btn", "", 14), 660, 240, 112, 38);
             refresh.Click += async delegate { executable = null; await ScanNow(); };
-            At(accounts, Panel(16, "#DBFFFDFA"), 36, 292, 736, 404);
+            tablePanel = At(accounts, Panel(16, "#DBFFFDFA"), 36, 292, 736, 404);
             selectAll = At(accounts, new CheckBox { IsThreeState = false, Cursor = Cursors.Hand, VerticalAlignment = VerticalAlignment.Center }, 60, 307);
             AutomationProperties.SetName(selectAll, "全选当前结果");
             selectAll.Click += delegate { ToggleSelectAll(); };
@@ -327,15 +338,27 @@ namespace ClaudeLauncher {
             double[] offsets = { 100, 250, 416, 478, 566, 660 };
             for (int i = 0; i < heads.Length; i++) At(accounts, T(heads[i], 13, "#7A6F64", FontWeights.SemiBold), 36 + offsets[i], 304);
             At(accounts, new Rectangle { Fill = B("#EFE7DC") }, 37, 336, 734, 1);
-            At(accounts, new Rectangle { Fill = B("#EFE7DC") }, 37, 655, 734, 1);
+            tableLine = At(accounts, new Rectangle { Fill = B("#EFE7DC") }, 37, 655, 734, 1);
             rowList = new StackPanel();
-            At(accounts, new ScrollViewer { Content = rowList, VerticalScrollBarVisibility = ScrollBarVisibility.Auto }, 37, 337, 734, 318);
+            rowScroll = At(accounts, new ScrollViewer { Content = rowList, VerticalScrollBarVisibility = ScrollBarVisibility.Auto }, 37, 337, 734, 318);
             for (int n = 1; n <= 10; n++) { rows[n] = BuildRow(n); rowList.Children.Add(rows[n].Root); }
             accountsEmpty = At(accounts, T("没有符合条件的账号", 13, "#8A7F74", FontWeights.Normal), 37, 470, 734);
             accountsEmpty.TextAlignment = TextAlignment.Center;
             tableFooter = At(accounts, T("", 12, Muted, FontWeights.Normal), 60, 667, 400);
-            var note = At(accounts, T("登录信息由各实例独立管理", 12, Muted, FontWeights.Normal), 500, 667, 248);
-            note.TextAlignment = TextAlignment.Right;
+            accountNote = At(accounts, T("登录信息由各实例独立管理", 12, Muted, FontWeights.Normal), 500, 667, 248);
+            accountNote.TextAlignment = TextAlignment.Right;
+            // 长页面：趋势区在表格下方，整页纵向滚动（SPEC 用量趋势）。
+            trendSection = At(accounts, new Canvas { Width = 808 }, 0, 712);
+            accountsContent = accounts; accounts.Width = 790;
+            pages[1].Children.Remove(accounts);
+            accountsScroll = new ScrollViewer { Content = accounts, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Focusable = false };
+            pages[1].Children.Add(accountsScroll);
+            // 表格滚到头或无需滚动时，滚轮交给整页，否则指针停在表格上页面不动。
+            rowScroll.PreviewMouseWheel += (sender, e) => {
+                bool canScroll = e.Delta > 0 ? rowScroll.VerticalOffset > 0 : rowScroll.VerticalOffset < rowScroll.ScrollableHeight;
+                if (canScroll) return;
+                accountsScroll.ScrollToVerticalOffset(accountsScroll.VerticalOffset - e.Delta); e.Handled = true;
+            };
 
             // 日志记录
             var logsPage = PageTitled(2, "日志记录", "查看实例启动、关闭与异常信息，便于追踪运行情况和排查问题。");
@@ -371,7 +394,7 @@ namespace ClaudeLauncher {
             logSummary.TextAlignment = TextAlignment.Right;
 
             // 系统设置：六个分类，更改即时写入启动器自己的 settings.json（SPEC 系统设置 [Windows]）。
-            BuildProjects(PageTitled(4, "项目管理", "共享本机项目目录，手动复制交接指令；启动器不代发消息。"));
+            BuildProjects(PageTitled(4, "项目管理", "所有账号共用一份本机项目入口；各自的登录与会话保持独立。"));
             BuildSettings(PageTitled(3, "系统设置", "调整启动器自身的行为、外观、本地数据与通知；不改变任何 Claude 配置。"));
 
             // SPEC 启动行为：只恢复启动器自己的页面，不启动或激活任何 Claude。
@@ -640,6 +663,7 @@ namespace ClaudeLauncher {
         List<LocalProject> projects = new List<LocalProject>();
         bool projectsUnreadable;
         StackPanel projectRows;
+        TextBlock projectFooter;
         string ProjectsPath { get { return IOPath.Combine(IOPath.GetDirectoryName(settingsPath),"projects.json"); } }
         static bool LocalProjectPath(string path) {
             try { return !string.IsNullOrWhiteSpace(path) && IOPath.IsPathRooted(path) && !path.StartsWith(@"\\") && new DriveInfo(IOPath.GetPathRoot(path)).DriveType != DriveType.Network; } catch { return false; }
@@ -654,7 +678,22 @@ namespace ClaudeLauncher {
                     SaveProjects();
                 }
             } catch (Exception error) { projectsUnreadable = true; Alert("项目清单读取失败", error.Message); }
-            var import = At(canvas, Action("识别并导入…", "Btn", null, 13), 410, 85, 160, 36);
+            // 布局与 macOS 项目页相同（docs/SPEC.md 项目清单）；Windows 未提供“同步到账号”。
+            At(canvas, Panel(14, "#DBFFFDFA"), 36, 140, 736, 72);
+            At(canvas, T("共享目录中的代码、CLAUDE.md、项目设置与 MCP 配置会互相影响。", 13, "#795539", FontWeights.Medium), 54, 154, 694);
+            At(canvas, T("同一项目请轮流使用；启动器无法检测同时编辑，不复制、同步或合并文件。", 12, Muted, FontWeights.Normal), 54, 182, 694);
+            At(canvas, T("本机目录入口 · 移除不删除文件", 13, Muted, FontWeights.Normal), 38, 238, 340);
+            var refreshProjects = At(canvas, Action("刷新状态", "Btn", "", 14), 660, 228, 112, 38); refreshProjects.Click += delegate { RenderProjects(); };
+            At(canvas, Panel(16, "#DBFFFDFA"), 36, 274, 736, 366);
+            string[] projectHeads = { "名称", "分组", "路径", "状态", "上次账号", "操作" }; double[] projectOffsets = { 18, 140, 224, 442, 508, 610 };
+            for (int i = 0; i < projectHeads.Length; i++) At(canvas, T(projectHeads[i], 12, "#7A6F64", FontWeights.SemiBold), 36 + projectOffsets[i], 289);
+            At(canvas, new Rectangle { Fill = B("#EFE7DC") }, 37, 318, 734, 1);
+            At(canvas, new Rectangle { Fill = B("#EFE7DC") }, 37, 600, 734, 1);
+            projectFooter = At(canvas, T("", 12, Muted, FontWeights.Normal), 54, 612, 690);
+            var projectHint = At(canvas, T("选择账号后会复制路径并打开资源管理器，请在 Claude 中选择此文件夹。", 12, "#795539", FontWeights.Normal), 38, 656, 734, 42);
+            projectHint.TextWrapping = TextWrapping.Wrap;
+            var import = At(canvas, Action("识别并导入", "Btn", "", 14), 484, 56, 146, 44);
+            import.IsEnabled = !projectsUnreadable;
             import.Click += async delegate {
                 import.IsEnabled=false;
                 try {
@@ -673,7 +712,8 @@ namespace ClaudeLauncher {
                     review.ShowDialog();
                 } catch(Exception error) { Alert("识别失败",error.Message); } finally { import.IsEnabled=true; }
             };
-            var add = At(canvas, Action("添加项目…", "Btn", null, 14), 590, 85, 160, 36);
+            var add = At(canvas, Action("添加目录", "Btn", "", 14), 640, 56, 132, 44);
+            add.IsEnabled = !projectsUnreadable;
             add.Click += delegate {
                 using (var picker = new System.Windows.Forms.FolderBrowserDialog()) {
                     if (picker.ShowDialog() != System.Windows.Forms.DialogResult.OK) return;
@@ -688,18 +728,40 @@ namespace ClaudeLauncher {
                 }
             };
             projectRows = new StackPanel();
-            At(canvas, new ScrollViewer { Content = projectRows, VerticalScrollBarVisibility = ScrollBarVisibility.Auto }, 36, 140, 736, 510);
+            At(canvas, new ScrollViewer { Content = projectRows, VerticalScrollBarVisibility = ScrollBarVisibility.Auto }, 37, 319, 734, 281);
             RenderProjects();
+        }
+        // 路径两端最有辨识度，超长时省略中间。
+        static string MiddleTrim(string text, int limit) {
+            return text.Length <= limit ? text : text.Substring(0, limit / 2 - 1) + "…" + text.Substring(text.Length - (limit - limit / 2));
         }
         void RenderProjects() {
             if (projectRows == null) return;
             projectRows.Children.Clear();
+            projectFooter.Text = "共 " + projects.Count + " 个项目 · 上次账号仅用于默认选择，不绑定项目";
+            if (projects.Count == 0) {
+                projectRows.Children.Add(new TextBlock { Text = "还没有项目", FontSize = 20, FontWeight = FontWeights.Medium, Foreground = B(Muted), HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(0, 86, 0, 0) });
+                projectRows.Children.Add(new TextBlock { Text = "添加一个已有文件夹，所有账号都可从这里找到它。", FontSize = 13, Foreground = B("#8A7F74"), HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(0, 10, 0, 0) });
+            }
             foreach (var project in projects) {
                 if (project == null || !LocalProjectPath(project.Path)) continue;
-                var row = new StackPanel { Margin = new Thickness(8, 8, 8, 12) };
-                row.Children.Add(new TextBlock { Text = (String.IsNullOrEmpty(project.Name)?IOPath.GetFileName(project.Path):project.Name) + " · " + project.Group + "  " + (Handoff.Age(project.Path) ?? "尚无交接文档"), FontSize = 16, TextWrapping = TextWrapping.Wrap });
-                row.Children.Add(new TextBlock { Text = project.Path + (Directory.Exists(project.Path) ? "" : "（不存在或无权限）"), TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 6, 0, 8) });
-                var more = Action("···", "Btn", null, 14); more.Width = 40; more.HorizontalAlignment = HorizontalAlignment.Right; row.Children.Add(more);
+                var canvas = new Canvas { Width = 734, Height = 64 };
+                var row = new Border { Child = canvas, BorderBrush = B("#EFE7DC"), BorderThickness = new Thickness(0, 0, 0, 1) };
+                string name = String.IsNullOrEmpty(project.Name) ? IOPath.GetFileName(project.Path) : project.Name, problem = null;
+                try { Projects.ValidatePath(project.Path); } catch (Exception error) { problem = error.Message; }
+                string age = problem == null ? Handoff.Age(project.Path) : null;
+                var title = At(canvas, T(name, 13, Muted, FontWeights.Normal), 18, age != null ? 14 : 22, 112); title.ToolTip = name;
+                if (age != null) At(canvas, T(age, 11, "#9A6447", FontWeights.Normal), 18, 36, 112);
+                string group = String.IsNullOrEmpty(project.Group) ? "未分组" : project.Group;
+                var groupText = At(canvas, T(group, 12, Muted, FontWeights.Normal), 140, 22, 74); groupText.ToolTip = group;
+                var pathText = At(canvas, T(MiddleTrim(project.Path, 34), 12, Muted, FontWeights.Normal), 224, 22, 204); pathText.ToolTip = project.Path;
+                var state = At(canvas, T(problem == null ? "正常" : "不可用", 12, problem == null ? "#3C8A68" : "#B46A45", FontWeights.Normal), 442, 22, 58); state.ToolTip = problem ?? project.Path;
+                At(canvas, T(project.LastAccount > 0 ? "账号 " + Two(project.LastAccount) : "未使用", 12, Muted, FontWeights.Normal), 508, 22, 88);
+                var open = At(canvas, Action("打开", "Primary", null, 12), 608, 16, 62, 32);
+                open.IsEnabled = problem == null; AutomationProperties.SetName(open, "选择账号打开项目：" + name);
+                open.Click += async delegate { await HandoffProject(project, false); };
+                var more = At(canvas, new Button { Style = (Style)window.FindResource("Icon"), Content = Glyph("", 14, Faint), ToolTip = "项目操作", BorderBrush = B("#E6DCCF"), BorderThickness = new Thickness(1), Background = B("White") }, 678, 16, 32, 32);
+                AutomationProperties.SetName(more, "更多项目操作：" + name);
                 var menu = new ContextMenu { PlacementTarget = more };
                 more.Click += delegate { menu.IsOpen = true; };
                 Action<string, Action> button = (label, action) => { var item = new MenuItem { Header = label }; item.Click += delegate { action(); }; menu.Items.Add(item); };
@@ -1071,6 +1133,7 @@ namespace ClaudeLauncher {
             }
             Canvas.SetTop(indicator, 188 + (index == 4 ? 2 : index >= 2 ? index + 1 : index) * 56);
             if (index == 4) RenderProjects();
+            if (index == 1) accountsScroll.ScrollToTop();
             Render();
         }
         // 仅用于测试与离屏预览：以给定进程状态渲染某页，不扫描真实进程。
@@ -1359,6 +1422,7 @@ namespace ClaudeLauncher {
             for (int i = 0; i < 3; i++) stats[i].Text = values[i].ToString("00");
             accountsEmpty.Visibility = shown > 0 && !rows.Values.Any(r => r.Root.Visibility == Visibility.Visible) ? Visibility.Visible : Visibility.Collapsed;
             accountsShown = shown;
+            LayoutAccountTable(rows.Values.Count(r => r.Root.Visibility == Visibility.Visible));
             var ordered = rows.OrderBy(p => settings.AccountSort == 2 ? p.Value.Status.Text : "").ThenByDescending(p => settings.AccountSort == 1 && accountLastUsed.ContainsKey(p.Key) ? accountLastUsed[p.Key] : DateTime.MinValue).ThenBy(p => p.Key).Select(p => p.Value.Root).ToList();
             if (!rowList.Children.Cast<UIElement>().SequenceEqual(ordered)) { rowList.Children.Clear(); foreach (var item in ordered) rowList.Children.Add(item); }
             UpdateSelection();
@@ -1391,10 +1455,10 @@ namespace ClaudeLauncher {
                         var found = before.Where(x => x.Number == n).ToList();
                         if (found.Count != 1 || (trigger != 0 && found[0].ProcessId != trigger)) continue;
                         string identity = UsageInterface.Identity(n, found[0]);
-                        read[n] = Tuple.Create(UsageInterface.ReadProcess(found[0].ProcessId, identity), identity, DateTime.Now);
+                        read[n] = Tuple.Create(UsageReader(found[0].ProcessId, identity), identity, DateTime.Now);
                     }
                     List<Instance> after = null;
-                    try { if (read.Count > 0) after = Core.Scan(); } catch (Exception) { }
+                    try { if (read.Count > 0) after = ScanProvider().Result; } catch (Exception) { }
                     foreach (int n in read.Keys.ToList()) {
                         var found = after == null ? null : after.Where(x => x.Number == n).ToList();
                         if (found == null || found.Count != 1 || UsageInterface.Identity(n, found[0]) != read[n].Item2)
@@ -1403,6 +1467,12 @@ namespace ClaudeLauncher {
                     return read;
                 });
             } finally { readingUsage = false; }
+            if (trigger != 0) foreach (var pair in results) {
+                UsageRecord fresh = pair.Value.Item1;
+                // 只记录状态和有无，不记录百分比。
+                Diagnostics.Write("usage_popup_read", "slot=" + pair.Key + "; status=" + fresh.Status + "; five=" + (fresh.FiveHour != null) + "; week=" + (fresh.Weekly != null));
+                if (fresh.FiveHour != null && fresh.Weekly != null) popupPanelRead = true;
+            }
             if (closed || generation != usageGeneration || !settings.ShowUsage || loginAccount != 0) return;
             bool changed = false;
             foreach (var pair in results) {
@@ -1431,6 +1501,15 @@ namespace ClaudeLauncher {
             RenderUsage();
             if (pendingPopups.Count > 0) { int next = pendingPopups.First(); pendingPopups.Remove(next); await ReadUsage(next); }
         }
+        // 官方面板展开后要一会儿才进入辅助功能树，读得太早只能拿到按钮上的一项。只为这一次手动展开最多读三次，读到两项就停。
+        async Task ReadExpandedUsage(int pid) {
+            popupPanelRead = false;
+            foreach (int wait in new[] { 200, 500, 1000 }) {
+                await Task.Delay(wait);
+                await ReadUsage(pid);
+                if (popupPanelRead || closed) return;
+            }
+        }
         // D3：为每个只有一个主进程、有可见窗口的账号注册一次展开通知；注册失败不重试；进程变化、登录保护、扫描失败或关闭显示时注销。
         void SyncPopupWatches() {
             if (snapshotMode) return;
@@ -1446,7 +1525,7 @@ namespace ClaudeLauncher {
                 if (popupWatches.ContainsKey(pair.Key) || Native.WindowFor(pair.Value) == IntPtr.Zero) continue; // 托盘中无窗口：等窗口出现再注册
                 string key = pair.Key; int pid = pair.Value;
                 popupWatches[key] = null;
-                Action opened = () => window.Dispatcher.BeginInvoke(new Action(async () => { await Task.Delay(200); await ReadUsage(pid); }));
+                Action opened = () => window.Dispatcher.BeginInvoke(new Action(async () => await ReadExpandedUsage(pid)));
                 Task.Run(() => PopupWatch.Start(pid, opened)).ContinueWith(task => {
                     if (!popupWatches.ContainsKey(key)) { if (task.Result != null) Task.Run(() => task.Result.Dispose()); return; }
                     popupWatches[key] = task.Result;
@@ -1480,31 +1559,136 @@ namespace ClaudeLauncher {
             var found = instances.Where(x => x.Number == n).ToList();
             return found.Count == 1 ? UsageInterface.Identity(n, found[0]) : null;
         }
-        void ShowTrend() {
-            var dialog = Dialog("用量趋势"); if (window.IsVisible) dialog.Owner = window;
-            var panel = (StackPanel)((ScrollViewer)dialog.Content).Content;
-            DateTime now = DateTime.UtcNow;
+        // 表格卡片按账号数显示 3～6 行，趋势区紧跟其后；更多账号在表格内滚动。
+        void LayoutAccountTable(int count) {
+            double height = Math.Max(3, Math.Min(6, count)) * 53;
+            if (height == accountRowsHeight) return;
+            accountRowsHeight = height;
+            rowScroll.Height = height; tablePanel.Height = 86 + height;
+            Canvas.SetTop(tableLine, 337 + height); Canvas.SetTop(accountsEmpty, 337 + height / 2 - 10);
+            Canvas.SetTop(tableFooter, 349 + height); Canvas.SetTop(accountNote, 349 + height);
+            Canvas.SetTop(trendSection, 394 + height);
+            accountsContent.Height = 394 + height + trendSection.Height;
+        }
+        // 账号页趋势区：只展示启动器已保存的观察记录，不新增读取或网络。显示内容变化或每 10 分钟才重建。
+        void UpdateTrendSection() {
+            DateTime now = DateTime.UtcNow; bool on = settings.ShowUsage;
+            var accounts = Enumerable.Range(1, 10).Where(n => cards[n].Root.Visibility == Visibility.Visible).ToList();
+            string signature = String.Join("|", new object[] { on, String.Join(",", accounts.Select(n => DisplayName(n) + cards[n].Action.Content + cards[n].Action.IsEnabled)), trend.Count, trend.Count == 0 ? 0 : trend[trend.Count - 1].At.Ticks, now.Ticks / TimeSpan.FromMinutes(10).Ticks });
+            if (signature == trendSignature) return;
+            trendSignature = signature;
+            trendSection.Children.Clear();
             var points = UsageTrend.Clean(trend, now).Where(p => p.At >= now.AddDays(-7)).ToList();
-            int recommended = UsageTrend.Recommend(points, Enumerable.Range(1,10).Where(HasData));
-            panel.Children.Add(new TextBlock { Text = "近 7 天 · 周限额（深色）/ 5 小时（浅色）" + (recommended == 0 ? "" : "\n建议下一个账号 " + Two(recommended)), TextWrapping = TextWrapping.Wrap });
-            if(points.Count == 0) panel.Children.Add(new TextBlock { Text = "尚无观察记录" });
-            foreach(var group in points.GroupBy(p => p.Account).OrderBy(g => g.Key)) {
-                double? hours = UsageTrend.HoursLeft(group,true,now);
-                panel.Children.Add(new TextBlock { Text = "账号 " + Two(group.Key) + (hours.HasValue ? " · 估算周限额剩余 " + hours.Value.ToString("0.0") + " 小时" : " · 数据不足，无法估算"), Margin = new Thickness(0,16,0,4) });
-                var plot = new Canvas { Width=440, Height=120, Background=B("#FAF6F0") }; panel.Children.Add(plot);
-                foreach(bool week in new[] { true, false }) {
-                    TrendPoint previous=null;
-                    foreach(var point in group.OrderBy(p => p.At)) {
-                        double? value=week?point.Week:point.Five; if(!value.HasValue) continue;
-                        double? before=previous==null?null:week?previous.Week:previous.Five;
-                        double x=10+(point.At-now.AddDays(-7)).TotalDays/7*420,y=110-value.Value;
-                        var dot=new Ellipse { Width=4,Height=4,Fill=B(week?Ink:Brown) }; Canvas.SetLeft(dot,x-2); Canvas.SetTop(dot,y-2); plot.Children.Add(dot);
-                        if(before.HasValue && value>=before) plot.Children.Add(new Line { X1=10+(previous.At-now.AddDays(-7)).TotalDays/7*420,Y1=110-before.Value,X2=x,Y2=y,Stroke=B(week?Ink:Brown),StrokeThickness=2 });
-                        previous=point;
-                    }
-                }
+            int next = on ? UsageTrend.Recommend(points, accounts) : 0;
+            const string Weekly = "#8C5C40", Five = "#D9894E";
+            var heading = At(trendSection, T("用量趋势", 24, Ink, FontWeights.Bold), 36, 8);
+            heading.FontFamily = new FontFamily("Source Han Serif SC, Noto Serif SC, SimSun, Microsoft YaHei UI");
+            At(trendSection, T("近 7 天 · 只记录启动器已观察到的数值，不查询 Claude", 12, Muted, FontWeights.Normal), 37, 46, 520);
+            double legend = 576;
+            foreach (var item in new[] { Tuple.Create("周限额", Weekly, 2.0), Tuple.Create("5 小时限额", Five, 1.5) }) {
+                At(trendSection, new Line { X1 = legend, X2 = legend + 18, Y1 = 26, Y2 = 26, Stroke = B(item.Item2), StrokeThickness = item.Item3, StrokeStartLineCap = PenLineCap.Round, StrokeEndLineCap = PenLineCap.Round }, 0, 0);
+                At(trendSection, T(item.Item1, 11, Muted, FontWeights.Normal), legend + 24, 19, 72); legend += 98;
             }
-            dialog.ShowDialog();
+            var banner = At(trendSection, Panel(14, next != 0 ? "#EBFBEEE2" : "#EBFFFDFA"), 36, 78, 736, 52);
+            banner.BorderBrush = B(next != 0 ? "#F0D5BD" : "#EDE4D8"); banner.BorderThickness = new Thickness(1);
+            string bannerText = !on ? "用量趋势未开启：请先在“系统设置 → 外观”中开启“显示本地界面用量”。" : next != 0 ? "建议下一个使用：账号 " + Two(next) : "还没有观察记录。打开账号的 Claude Code 后，启动器会记录已显示的用量。";
+            At(trendSection, T(bannerText, 14, next != 0 ? "#795539" : Muted, FontWeights.SemiBold), 54, next != 0 ? 86 : 94, next != 0 ? 450 : 700);
+            if (next != 0) {
+                At(trendSection, T("依据：最近观察到的周用量最低，其次是 5 小时用量", 11, Muted, FontWeights.Normal), 54, 107, 450);
+                int target = next;
+                var go = At(trendSection, Action(Appearance.Text(cards[next].Action.Content as string) + "账号 " + Two(next), "Btn", null, 13), 610, 86, 148, 36);
+                go.IsEnabled = cards[next].Action.IsEnabled;
+                go.Click += async delegate { await Select(target); };
+            }
+            double height = 146;
+            if (on) for (int i = 0; i < accounts.Count; i++) {
+                double x = 36 + (i % 2) * 374, y = 146 + (i / 2) * 222;
+                trendSection.Children.Add(TrendCard(accounts[i], accounts[i] == next, points.Where(p => p.Account == accounts[i]).OrderBy(p => p.At).ToList(), now, Weekly, Five));
+                Canvas.SetLeft(trendSection.Children[trendSection.Children.Count - 1], x); Canvas.SetTop(trendSection.Children[trendSection.Children.Count - 1], y);
+                height = y + 238;
+            }
+            trendSection.Height = height;
+            accountsContent.Height = Canvas.GetTop(trendSection) + height;
+        }
+        Border TrendCard(int n, bool suggested, List<TrendPoint> points, DateTime now, string weekly, string five) {
+            const double Width = 362;
+            var canvas = new Canvas { Width = Width, Height = 210 };
+            var card = new Border { Width = Width, Height = 210, CornerRadius = new CornerRadius(16), Background = B("#E6FFFDFA"), BorderBrush = B(suggested ? "#E9C3A2" : "#EDE4D8"), BorderThickness = new Thickness(suggested ? 1.5 : 1), Child = canvas };
+            string[] palette = Palette[(n - 1) % 4];
+            var badge = At(canvas, new Border { CornerRadius = new CornerRadius(8), Background = B(palette[0]) }, 18, 18, 28, 28);
+            badge.Child = new TextBlock { Text = Two(n), FontSize = 12, FontWeight = FontWeights.SemiBold, Foreground = B(palette[1]), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+            string name = DisplayName(n);
+            var title = At(canvas, T(name, 14, Ink, FontWeights.SemiBold), 56, 15, suggested ? 104 : 150);
+            title.TextTrimming = TextTrimming.CharacterEllipsis; title.ToolTip = name;
+            if (suggested) At(canvas, new Border { CornerRadius = new CornerRadius(9), Background = B("#FBEEE2"), Padding = new Thickness(8, 1, 8, 1), Child = T("建议", 11, "#C0743A", FontWeights.SemiBold) }, 164, 17);
+            TrendPoint latestFive = points.LastOrDefault(p => p.Five.HasValue), latestWeek = points.LastOrDefault(p => p.Week.HasValue);
+            bool any = latestFive != null || latestWeek != null;
+            At(canvas, T(any ? "更新于 " + UsageInterface.TimeLabel(new UsageMetric { Observed = points[points.Count - 1].At.ToLocalTime() }, now.ToLocalTime()) : "尚无观察记录", 11, Muted, FontWeights.Normal), 56, 35, 160);
+            for (int m = 0; m < 2; m++) {
+                double x = Width - 18 - (2 - m) * 70; double? value = m == 0 ? (latestFive == null ? null : latestFive.Five) : (latestWeek == null ? null : latestWeek.Week);
+                var label = At(canvas, T(m == 0 ? "5 小时" : "周", 10, Muted, FontWeights.Normal), x, 12, 64); label.TextAlignment = TextAlignment.Right;
+                var percent = At(canvas, T(value.HasValue ? Math.Round(value.Value).ToString("0") + "%" : "—", 19, m == 0 ? five : weekly, FontWeights.Medium), x, 26, 64); percent.TextAlignment = TextAlignment.Right;
+            }
+            var forecast = new List<string>();
+            foreach (bool week in new[] { false, true }) {
+                double? hours = UsageTrend.HoursLeft(points, week, now);
+                if (!hours.HasValue) continue;
+                string span = hours.Value >= 48 ? String.Format(Appearance.Text("{0} 天"), (hours.Value / 24).ToString("0.0")) : String.Format(Appearance.Text("{0} 小时"), hours.Value.ToString("0.0"));
+                forecast.Add(Appearance.Text(Appearance.Text(week ? "周" : "5 小时") + "约 " + span + " 用完"));
+            }
+            string outlook = forecast.Count > 0 ? Appearance.Text("按当前速度") + "：" + String.Join(" · ", forecast) : any ? "用量平稳，暂无用完估算" : "打开该账号的 Claude Code 后开始记录";
+            var note = At(canvas, T(outlook, 11, forecast.Count > 0 ? "#9A5A32" : Muted, forecast.Count > 0 ? FontWeights.Medium : FontWeights.Normal), 18, 60, Width - 36);
+            note.TextTrimming = TextTrimming.CharacterEllipsis; note.ToolTip = outlook;
+            At(canvas, new Rectangle { Fill = B("#F2EBE1") }, 18, 84, Width - 36, 1);
+            if (any) {
+                var chart = At(canvas, TrendChart(points, Width - 24, 108, now, weekly, five), 12, 92);
+                AutomationProperties.SetName(chart, "账号 " + Two(n) + " 近 7 天用量趋势");
+            } else {
+                var hint = At(canvas, T("近 7 天暂无数据", 12, "#9A8F84", FontWeights.Normal), 0, 136, Width); hint.TextAlignment = TextAlignment.Center;
+            }
+            return card;
+        }
+        Canvas TrendChart(List<TrendPoint> points, double width, double height, DateTime now, string weekly, string five) {
+            var chart = new Canvas { Width = width, Height = height };
+            double left = 30, plotWidth = width - 38, top = 6, plotHeight = height - 24, bottom = top + plotHeight;
+            foreach (int p in new[] { 0, 50, 100 }) {
+                double y = Math.Round(bottom - plotHeight * p / 100) + 0.5;
+                var rule = new Line { X1 = left, X2 = left + plotWidth, Y1 = y, Y2 = y, Stroke = B("#EDE4D8"), StrokeThickness = 1 };
+                if (p != 0) rule.StrokeDashArray = new DoubleCollection { 2, 3 };
+                At(chart, rule, 0, 0); At(chart, T(p + "%", 9, "#9A8F84", FontWeights.Normal), 0, y - 7);
+            }
+            // 时间轴按已观察跨度自适应（24 小时～7 天），短历史不挤在一侧。
+            double span = Math.Min(7 * 24, Math.Max(24, (now - points[0].At).TotalHours * 1.08));
+            DateTime begin = now.AddHours(-span);
+            Func<DateTime, double> xAt = t => left + plotWidth * (t - begin).TotalHours / span;
+            bool hourly = span <= 48; double step = hourly ? 6 : 24;
+            DateTime localNow = now.ToLocalTime(), tick = localNow.Date;
+            while (tick.AddHours(step) <= localNow) tick = tick.AddHours(step);
+            for (; tick.ToUniversalTime() >= begin; tick = tick.AddHours(-step)) {
+                At(chart, T(tick.ToString(hourly ? "HH:mm" : "M/d"), 9, "#9A8F84", FontWeights.Normal), Math.Max(left, Math.Min(xAt(tick.ToUniversalTime()) - 13, left + plotWidth - 26)), bottom + 4);
+            }
+            foreach (bool week in new[] { false, true }) {
+                // 数值回落是限额重置，不跨重置连线。
+                var runs = new List<PointCollection>(); double previous = -1;
+                foreach (var point in points) {
+                    double? value = week ? point.Week : point.Five;
+                    if (!value.HasValue || point.At < begin) continue;
+                    if (runs.Count == 0 || value.Value < previous) runs.Add(new PointCollection());
+                    runs[runs.Count - 1].Add(new Point(xAt(point.At), bottom - plotHeight * value.Value / 100)); previous = value.Value;
+                }
+                string color = week ? weekly : five;
+                foreach (var run in runs) {
+                    if (run.Count == 1) { At(chart, new Ellipse { Width = 4, Height = 4, Fill = B(color) }, run[0].X - 2, run[0].Y - 2); continue; }
+                    if (week) {
+                        var area = new PointCollection(run); area.Add(new Point(run[run.Count - 1].X, bottom)); area.Add(new Point(run[0].X, bottom));
+                        At(chart, new Polygon { Points = area, Fill = B("#1F" + color.Substring(1)) }, 0, 0);
+                    }
+                    // 5 小时限额一天重置多次，用细淡线，让周线更清楚。
+                    At(chart, new Polyline { Points = run, Stroke = B(week ? color : "#73" + color.Substring(1)), StrokeThickness = week ? 2.2 : 1, StrokeLineJoin = PenLineJoin.Round }, 0, 0);
+                }
+                if (runs.Count > 0) { Point last = runs[runs.Count - 1][runs[runs.Count - 1].Count - 1]; At(chart, new Ellipse { Width = 6, Height = 6, Fill = B(color) }, last.X - 3, last.Y - 3); }
+            }
+            return chart;
         }
         void ClearUsage() {
             usageGeneration++; usage.Clear(); savedUsage.Clear(); trend.Clear();
@@ -1547,9 +1731,11 @@ namespace ClaudeLauncher {
                     AutomationProperties.SetName(card.Values[row], (row == 0 ? "5小时已使用" : "每周已使用") + "，" + card.Values[row].Text + "，观察时间 " + card.Times[row].Text + (available ? "" : "，" + status));
                 }
             }
+            UpdateTrendSection();
         }
         // 仅供测试与离屏预览：注入一条合成观察记录，不读取真实 Claude。
         internal void SetUsage(int number, UsageRecord record) { usage[number] = record; RenderUsage(); }
+        internal void SetTrend(IEnumerable<TrendPoint> points) { trend = points.ToList(); RenderUsage(); }
 
         string Recent(int number) {
             DateTime at; return accountLastUsed.TryGetValue(number, out at) ? at.ToLocalTime().ToString("MM-dd HH:mm") : "—";
@@ -1566,23 +1752,32 @@ namespace ClaudeLauncher {
             try { await ScanNow(); } finally { scanning = false; }
         }
         // 重新扫描进程并更新状态；返回扫描是否可信。扫描失败时全局暂停启动。
-        async Task<bool> ScanNow() {
-            int generation = ++scanGeneration;
+        Task<bool> latestScan;
+        // 旧扫描被新扫描取代时不算失败：调用方改等新结果，否则定时刷新插队会让点击弹出无原因的错误。
+        Task<bool> ScanNow() { return latestScan = Scan(++scanGeneration); }
+        async Task<bool> Scan(int generation) {
+            bool superseded = false;
             try {
                 var latest = await ScanProvider();
-                if (closed || generation != scanGeneration) return false;
+                if (closed) return false;
+                if (generation != scanGeneration) return await latestScan;
                 string found = executable;
                 if (String.IsNullOrEmpty(found) || !File.Exists(found)) found = await Task.Run(() => Core.FindExecutable(latest));
-                if (closed || generation != scanGeneration) return false;
+                if (closed) return false;
+                if (generation != scanGeneration) return await latestScan;
                 Apply(latest); executable = found;
                 lastRefreshError = ""; scanError = null;
                 if (!healthy) Message("选择一个账号。已运行的账号会直接切回原窗口。", false);
                 healthy = true;
             } catch (Exception error) {
-                if (closed || generation != scanGeneration) return false;
-                if (lastRefreshError != error.Message) { Diagnostics.Error("refresh_error", error); lastRefreshError = error.Message; }
-                healthy = false; scanError = error.Message; Message(error.Message, true);
+                if (closed) return false;
+                if (generation != scanGeneration) superseded = true;
+                else {
+                    if (lastRefreshError != error.Message) { Diagnostics.Error("refresh_error", error); lastRefreshError = error.Message; }
+                    healthy = false; scanError = error.Message; Message(error.Message, true);
+                }
             }
+            if (superseded) return await latestScan;
             if (!closed) Render();
             return healthy;
         }
@@ -1650,19 +1845,28 @@ namespace ClaudeLauncher {
             checking.Add(number); errors.Remove(number); Render();
             try {
             Message("正在检查账号 " + Two(number) + " 的存储…", false);
-            string failure = null;
-            try { await ValidateStorage(number); }
-            catch (Exception error) { failure = error.Message; Diagnostics.Error("storage_check_error", error); }
-            if (closed) return;
-            if (failure != null) {
-                errors[number] = failure; Message("账号 " + Two(number) + "：" + failure, true);
-                Alert("账号存储隔离检查未通过", failure); return;
-            }
+            // 只对本次点击有效，下次点击重新检查、重新警告（SPEC 存储校验）。
+            bool riskAccepted = false;
+            Func<Task<bool>> storageCleared = async () => {
+                Exception problem = null;
+                try { await ValidateStorage(number); } catch (Exception error) { problem = error; }
+                if (problem == null) return true;
+                Diagnostics.Error("storage_check_error", problem);
+                if (closed) return false;
+                if (riskAccepted && !(problem is StorageNotFolderException)) return true;
+                errors[number] = problem.Message; Message("账号 " + Two(number) + "：" + problem.Message, true);
+                if (problem is StorageNotFolderException) { Alert("账号存储隔离检查未通过", problem.Message); return false; }
+                if (Ask("账号存储隔离检查未通过", problem.Message + "\n\n继续可能让账号之间共用数据，登录状态或配置可能互相影响。启动器不会修改这些文件。", new[] { "取消", "仍然继续" }, 0, 0) != 1) return false;
+                riskAccepted = true; errors.Remove(number);
+                return true;
+            };
+            if (!await storageCleared() || closed) return;
+            string failure;
             if (!await ScanNow()) { if(closed) return; Alert("实例或保护状态已变化", scanError); return; }
             failure = Core.OpeningBlocker(number, expectedPid, instances, loginAccount, Busy().Where(n => n != number));
             if (failure != null) { Message("账号 " + Two(number) + "：" + failure, true); Alert("实例或保护状态已变化", failure); return; }
             Instance running = instances.FirstOrDefault(x => x.Number == number);
-            if (running != null) { await Activate(number, running); return; }
+            if (running != null) { await Activate(number, running, riskAccepted); return; }
             if (!create && loginAccount == 0 && !HasData(number)) { Message("账号目录已变化，未创建新目录。请重新点击。", true); return; }
             checking.Add(number); Render();
             Message("正在检测电脑网络环境…", false);
@@ -1675,23 +1879,23 @@ namespace ClaudeLauncher {
                 int choice = Ask(title, string.Join("\n", lines) + "\n\n仅检测本机配置，不代表外网连通性。",
                     available ? new[] { "确认启动", "取消" } : new[] { "取消", "仍然启动" }, available ? 1 : 0, 0);
                 confirmed = choice == (available ? 0 : 1);
-                if (confirmed) await ValidateStorage(number);
+                if (confirmed) confirmed = await storageCleared();
             } catch (Exception error) { confirmed = false; Alert("启动前检查失败", error.Message); }
             if (!confirmed || closed) return;
             if (!await ScanNow()) { if(closed) return; Alert("实例或保护状态已变化", scanError); return; }
             failure = Core.OpeningBlocker(number, expectedPid, instances, loginAccount, Busy().Where(n => n != number));
             if (failure != null || Core.Running(number, instances) || deleting || updating) { Alert("状态已变化，未启动", failure ?? "请重新点击账号。"); return; }
             if (!create && loginAccount == 0 && !HasData(number)) { Alert("目录已变化", "请重新点击账号。"); return; }
-            await Launch(number);
+            await Launch(number, riskAccepted);
             } finally { checking.Remove(number); if (!closed) Render(); }
         }
-        async Task Launch(int number) {
+        async Task Launch(int number, bool riskAccepted) {
             pending[number] = DateTime.UtcNow; Render();
             Message("正在启动账号 " + Two(number) + "…", false);
             try {
                 string path = executable;
                 var requested = DateTime.UtcNow;
-                int pid = await Task.Run(() => Core.Launch(number, path));
+                int pid = await Task.Run(() => LaunchProvider(number, path, riskAccepted));
                 RecordUse(number);
                 if (number != 1) launched[number] = new LaunchRecord { ProcessId = pid, Requested = requested };
             } catch (Exception error) {
@@ -1701,7 +1905,7 @@ namespace ClaudeLauncher {
             }
             if (!closed) Render();
         }
-        async Task Activate(int number, Instance running) {
+        async Task Activate(int number, Instance running, bool riskAccepted) {
             IntPtr handle = Native.WindowFor(running.ProcessId);
             if (handle != IntPtr.Zero) {
                 // SPEC 启动行为：关闭“点击账号时恢复最小化窗口”时，不还原、不切换已最小化的窗口。
@@ -1719,7 +1923,7 @@ namespace ClaudeLauncher {
             pending[number] = DateTime.UtcNow; Render();
             try {
                 Diagnostics.Write("account_tray_relaunch", "slot=" + number + "; pid=" + running.ProcessId + "; claude=" + running.Executable);
-                await Task.Run(() => Core.Launch(number, running.Executable));
+                await Task.Run(() => LaunchProvider(number, running.Executable, riskAccepted));
                 // shortcut: 固定等 5 秒让转交进程退出后复查一次；若出现慢退出的误报，再改为多次复查。
                 await Task.Delay(TimeSpan.FromSeconds(5));
                 var after = await Task.Run(() => Core.Scan());
@@ -1907,6 +2111,7 @@ namespace ClaudeLauncher {
         }
         // 返回按下的按钮序号；关闭窗口或 Esc 视为 cancelIndex。
         int Ask(string title, string detail, string[] buttons, int cancelIndex, int defaultIndex) {
+            if (AskOverride != null) return AskOverride(title, detail, buttons, cancelIndex, defaultIndex);
             var dialog = Dialog(title);
             // 主窗口隐藏在通知区域时（从托盘菜单操作），对话框居中置顶显示。
             if (window.IsLoaded && window.IsVisible) dialog.Owner = window; else { dialog.WindowStartupLocation = WindowStartupLocation.CenterScreen; dialog.Topmost = true; }
