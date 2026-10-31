@@ -2,6 +2,7 @@
 
 ## macOS 1.7.19：同步会话（2026-10-31）
 
+- 发布：`macos-v1.7.19`（目标 `689496b`，dev 与 main 同一提交），`scripts/publish-macos.sh` 退出 0，草稿经 API 核对、latest/download 复核通过。DMG `ClaudeLauncher-1.7.19.dmg`，2414234 字节，SHA-256 `7fbe4201babe3ed376087e140dd8e929d87fc445de779d811bb1cd73554a8394`；Windows 沿用 `ClaudeLauncherSetup-1.8.4.exe`。发布后短时间内 latest/download 在部分 CDN 节点仍跳转到 windows-v1.8.4（返回 1.7.18），API 的 Latest 已是 macos-v1.7.19。安装版未由本轮安装，软件内更新未验证。
 - 用户要求启动器一键同步，不让用户去点官方 Help 菜单。因此路线从 A1（官方导入）改为启动器直接写 JSONL 和 8 字段记录；A1 保留为备选，不接入产品。规则见 AGENTS.md 会话同步例外和 SPEC「同步会话」。
 - 实现：`src/SessionSync.{h,m}`（列表和清理）、`PublishSyncedSession`（写入）、项目页“同步会话…”按钮。只对 Claude 4.4212.0 开放。
 - 自检：`--self-test` 通过，新增 TestSessionSync。
