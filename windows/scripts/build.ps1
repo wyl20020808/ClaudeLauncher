@@ -37,11 +37,11 @@ foreach ($name in $widths.Keys) {
     $arguments += '/resource:' + $target + ',ClaudeLauncher.UI.' + $name
 }
 $output = Join-Path $bin 'ClaudeLauncher.exe'
-$sources = @((Join-Path $projectRoot 'src/ClaudeLauncher.cs'), (Join-Path $projectRoot 'src/ProfileDeletion.cs'), (Join-Path $projectRoot 'src/Diagnostics.cs'), (Join-Path $projectRoot 'src/Updates.cs'), (Join-Path $projectRoot 'src/Usage.cs'), (Join-Path $projectRoot 'src/Settings.cs'), (Join-Path $projectRoot 'src/LocalFiles.cs'), (Join-Path $projectRoot 'src/UsageTrend.cs'), (Join-Path $projectRoot 'src/ConfigSync.cs'), (Join-Path $projectRoot 'src/Projects.cs'), (Join-Path $projectRoot 'src/Appearance.cs'), (Join-Path $projectRoot 'src/DisplayNameReader.cs'), (Join-Path $projectRoot 'src/Handoff.cs'), (Join-Path $projectRoot 'src/ProxyCheck.cs'), (Join-Path $projectRoot 'src/Storage.cs'), (Join-Path $projectRoot 'src/LauncherUI.cs'))
+$sources = @((Join-Path $projectRoot 'src/ClaudeLauncher.cs'), (Join-Path $projectRoot 'src/ProfileDeletion.cs'), (Join-Path $projectRoot 'src/Diagnostics.cs'), (Join-Path $projectRoot 'src/Updates.cs'), (Join-Path $projectRoot 'src/Usage.cs'), (Join-Path $projectRoot 'src/Settings.cs'), (Join-Path $projectRoot 'src/LocalFiles.cs'), (Join-Path $projectRoot 'src/UsageTrend.cs'), (Join-Path $projectRoot 'src/ConfigSync.cs'), (Join-Path $projectRoot 'src/Projects.cs'), (Join-Path $projectRoot 'src/Appearance.cs'), (Join-Path $projectRoot 'src/DisplayNameReader.cs'), (Join-Path $projectRoot 'src/Handoff.cs'), (Join-Path $projectRoot 'src/ProxyCheck.cs'), (Join-Path $projectRoot 'src/SessionSync.cs'), (Join-Path $projectRoot 'src/Storage.cs'), (Join-Path $projectRoot 'src/LauncherUI.cs'))
 & $compiler @arguments /target:winexe ('/win32icon:' + $icon) ('/win32manifest:' + (Join-Path $projectRoot 'src/app.manifest')) ('/out:' + $output) @sources
 if ($LASTEXITCODE -ne 0) { throw 'GUI build failed.' }
 $test = Join-Path $bin 'LauncherTests.exe'
-& $compiler @arguments /target:exe /main:LauncherTests ('/out:' + $test) @sources (Join-Path $projectRoot 'tests/LauncherTests.cs') (Join-Path $projectRoot 'tests/SyncTests.cs') (Join-Path $projectRoot 'tests/DeletionTests.cs') (Join-Path $projectRoot 'tests/UpdateTests.cs')
+& $compiler @arguments /target:exe /main:LauncherTests ('/out:' + $test) @sources (Join-Path $projectRoot 'tests/LauncherTests.cs') (Join-Path $projectRoot 'tests/SyncTests.cs') (Join-Path $projectRoot 'tests/SessionSyncTests.cs') (Join-Path $projectRoot 'tests/DeletionTests.cs') (Join-Path $projectRoot 'tests/UpdateTests.cs')
 if ($LASTEXITCODE -ne 0) { throw 'Test build failed.' }
 & $test
 if ($LASTEXITCODE -ne 0) { throw 'Launcher tests failed.' }

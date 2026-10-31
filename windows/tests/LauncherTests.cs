@@ -126,6 +126,7 @@ public static class LauncherTests {
         Check(ProxyCheck.ProxyApplications(new[] { "v2rayN", "Hiddify", "Claude", "fake-clash" }).Length == 2, "Process names only");
         TestNewFeatures();
         SyncTests.Run();
+        SessionSyncTests.Run(ui);
         Console.WriteLine("PASS: " + checks + " assertions; WPF layout loaded without showing windows.");
         return 0;
     }

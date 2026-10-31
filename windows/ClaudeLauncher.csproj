@@ -49,6 +49,7 @@
     <Compile Include="src\Usage.cs" />
     <Compile Include="src\Handoff.cs" />
     <Compile Include="src\ProxyCheck.cs" />
+    <Compile Include="src\SessionSync.cs" />
     <Compile Include="src\Storage.cs" />
     <Compile Include="src\LauncherUI.cs" />
     <EmbeddedResource Include="assets\app.ico"><LogicalName>ClaudeLauncher.Icon</LogicalName></EmbeddedResource>

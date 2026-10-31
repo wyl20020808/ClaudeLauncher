@@ -53,8 +53,15 @@ namespace ClaudeLauncher {
         internal static string Read(string path, long limit) {
             using(var guard = new LocalFiles(Path.GetDirectoryName(path),false)) using(var stream=OpenRead(path,limit)) using(var reader=new StreamReader(stream,new UTF8Encoding(false,true))) return reader.ReadToEnd();
         }
-        internal static FileStream OpenRead(string path,long limit) {
-            var handle=CreateFile(path,0x80020000,1,IntPtr.Zero,3,0x00200000,IntPtr.Zero);
+        internal static string Identity(string directory) {
+            using(var handle=CreateFile(directory,0x80,7,IntPtr.Zero,3,0x02000000,IntPtr.Zero)) {
+                Info info;
+                if(handle.IsInvalid||!GetFileInformationByHandle(handle,out info)) throw new IOException("目录无法打开。");
+                return info.Volume+":"+info.IndexHigh+":"+info.IndexLow;
+            }
+        }
+        internal static FileStream OpenRead(string path,long limit,uint share=1) {
+            var handle=CreateFile(path,0x80020000,share,IntPtr.Zero,3,0x00200000,IntPtr.Zero);
             try {
                 Info info;
                 if(handle.IsInvalid || !GetFileInformationByHandle(handle,out info) || (info.Attributes&(0x400|0x10|0x40))!=0 || info.Links!=1 || (((long)info.SizeHigh<<32)+info.SizeLow)>limit) throw new IOException("文件不是安全的单链接普通文件或超过限制。");
