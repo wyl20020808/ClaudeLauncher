@@ -145,6 +145,16 @@ static NSString *ReadRows(NSString *path, NSMutableArray<NSMutableDictionary *> 
     }
     return nil;
 }
+// Syncing a copy again replaces its old suffix instead of stacking another one.
+static NSString *SessionCopyTitle(NSString *title, NSDate *date) {
+    static NSRegularExpression *suffix; static NSDateFormatter *format; static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        suffix = [NSRegularExpression regularExpressionWithPattern:@"(?:（清理副本）| \\(cleaned copy\\)|（副本 \\d\\d/\\d\\d \\d\\d:\\d\\d）| \\(Copy \\d\\d/\\d\\d \\d\\d:\\d\\d\\))$" options:0 error:nil];
+        format = [NSDateFormatter new]; format.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"]; format.dateFormat = @"MM/dd HH:mm";
+    });
+    NSString *base = [suffix stringByReplacingMatchesInString:title options:0 range:NSMakeRange(0,title.length) withTemplate:@""];
+    return [NSString stringWithFormat:L(@"%@（副本 %@）"),base,[format stringFromDate:date]];
+}
 NSDictionary *CleanSession(NSString *sourcePath, NSString *project, NSString *home) {
     NSMutableArray<NSMutableDictionary *> *rows = [NSMutableArray array]; NSString *title = nil; NSUInteger sidechain = 0;
     NSString *failure = ReadRows(sourcePath,rows,&title,&sidechain);
@@ -162,10 +172,11 @@ NSDictionary *CleanSession(NSString *sourcePath, NSString *project, NSString *ho
         if (![parent isKindOfClass:NSString.class]) parent = row[@"logicalParentUuid"];
         row = [parent isKindOfClass:NSString.class] ? byId[parent] : nil;
     }
-    NSString *root = nil;
-    for (NSDictionary *row in chain) if ([row[@"cwd"] isKindOfClass:NSString.class] && [row[@"cwd"] length]) { root = row[@"cwd"]; break; }
-    NSString *canonical = root.stringByStandardizingPath.stringByResolvingSymlinksInPath;
-    if (!root || !root.isAbsolutePath || ![canonical isEqual:project.stringByStandardizingPath.stringByResolvingSymlinksInPath])
+    // Where the session ended up decides its project: it may have started elsewhere (Claude moves scratch sessions into a folder).
+    NSString *root = project.stringByStandardizingPath, *lastCwd = nil;
+    for (NSDictionary *row in chain) if ([row[@"cwd"] isKindOfClass:NSString.class] && [row[@"cwd"] length]) lastCwd = row[@"cwd"];
+    NSString *resolvedRoot = root.stringByResolvingSymlinksInPath;
+    if (!lastCwd.isAbsolutePath || !Within(lastCwd.stringByStandardizingPath.stringByResolvingSymlinksInPath,resolvedRoot))
         return @{@"error":L(@"来源会话的工作目录与所选项目不一致，未处理。")};
     NSString *slug = SessionProjectSlug(project); if (!slug) return @{@"error":L(@"项目路径过长，暂不支持同步会话。")};
 
@@ -181,14 +192,14 @@ NSDictionary *CleanSession(NSString *sourcePath, NSString *project, NSString *ho
     NSString *(^cwdNote)(NSString *,NSString *) = ^NSString *(NSString *rowCwd, NSString *relative) {
         if ([rowCwd.stringByStandardizingPath isEqual:currentCwd.stringByStandardizingPath]) return @"";
         currentCwd = rowCwd;
-        return [NSString stringWithFormat:@"[工作目录：%@]\n",relative.length ? relative : @"项目根目录"];
+        return [NSString stringWithFormat:@"[工作目录：%@]\n",!relative ? @"项目外" : relative.length ? relative : @"项目根目录"];
     };
     for (NSDictionary *row in chain) {
         NSString *type = row[@"type"]; id stamp = row[@"timestamp"];
         NSString *rowCwd = [row[@"cwd"] isKindOfClass:NSString.class] ? row[@"cwd"] : currentCwd;
-        NSString *relative = Within(rowCwd,root);
-        if (!relative || (relative.length && ![[rowCwd stringByResolvingSymlinksInPath] isEqual:[root.stringByResolvingSymlinksInPath stringByAppendingPathComponent:relative]] && [NSFileManager.defaultManager fileExistsAtPath:rowCwd]))
-            return @{@"error":L(@"来源会话曾进入项目目录之外，未处理。")};
+        // A link inside the project can point elsewhere, so a directory that exists is judged by its real path.
+        BOOL exists = [NSFileManager.defaultManager fileExistsAtPath:rowCwd];
+        NSString *relative = Within(exists ? rowCwd.stringByResolvingSymlinksInPath : rowCwd,exists ? resolvedRoot : root);
         NSDictionary *attachment = row[@"attachment"];
         if ([type isEqual:@"attachment"]) {
             if ([attachment isKindOfClass:NSDictionary.class] && [attachment[@"type"] isEqual:@"queued_command"] && [attachment[@"prompt"] isKindOfClass:NSString.class] &&
@@ -220,7 +231,7 @@ NSDictionary *CleanSession(NSString *sourcePath, NSString *project, NSString *ho
     if (![turns.lastObject[@"role"] isEqual:@"assistant"]) add(@"assistant",@"（同步的历史到此结束，上一条请求没有留下回复。）",turns.lastObject[@"timestamp"]);
 
     NSString *session = NSUUID.UUID.UUIDString.lowercaseString, *parent = nil;
-    NSString *clean = [(title.length ? title : L(@"未命名会话")) stringByAppendingString:L(@"（清理副本）")];
+    NSString *clean = SessionCopyTitle(title.length ? title : L(@"未命名会话"),NSDate.date);
     NSMutableData *jsonl = [NSMutableData data]; NSMutableString *body = [NSMutableString string];
     BOOL (^append)(NSDictionary *) = ^BOOL(NSDictionary *line) {
         NSData *json = [NSJSONSerialization dataWithJSONObject:line options:NSJSONWritingSortedKeys|NSJSONWritingWithoutEscapingSlashes error:nil];
@@ -292,7 +303,7 @@ void TestSessionSync(void) {
         NSString *text = [[NSString alloc] initWithData:clean[@"jsonl"] encoding:NSUTF8StringEncoding];
         for (NSString *forbidden in @[@"SOURCE",@"PRIVATETHOUGHT",@"TOOLINPUT",@"TOOLOUTPUT",@"SECRETCOMMAND",@"IMAGEDATA",@"ABANDONEDBRANCH",@"SIDECHAINTEXT",@"COMPACTSUMMARY",@"INJECTED",@"me@example.com",@"sk-abc",@"Secret/plan",@"partial"])
             NSCAssert(![text containsString:forbidden] && ![clean[@"preview"] containsString:forbidden],@"not carried: %@",forbidden);
-        for (NSString *kept in @[@"第一问",@"答一",@"答二",@"排队指令",@"src/a.m",@"[项目外路径已移除]",@"[已移除:邮箱]",@"[已移除:密钥]",@"[历史工具请求：Edit，src/a.m]",@"[历史工具请求：Read，项目外路径已省略]",@"[历史工具请求：Bash]",@"[工作目录：windows]",@"[工作目录：项目根目录]",@"清理副本"])
+        for (NSString *kept in @[@"第一问",@"答一",@"答二",@"排队指令",@"src/a.m",@"[项目外路径已移除]",@"[已移除:邮箱]",@"[已移除:密钥]",@"[历史工具请求：Edit，src/a.m]",@"[历史工具请求：Read，项目外路径已省略]",@"[历史工具请求：Bash]",@"[工作目录：windows]",@"[工作目录：项目根目录]",@"原标题（副本 "])
             NSCAssert([text containsString:kept],@"kept: %@",kept);
         NSArray *out = [[text stringByTrimmingCharactersInSet:NSCharacterSet.newlineCharacterSet] componentsSeparatedByString:@"\n"];
         NSCAssert(out.count == [clean[@"messages"] unsignedIntegerValue]+1,@"one row per merged message plus title");
@@ -308,10 +319,16 @@ void TestSessionSync(void) {
         NSDictionary *record = [NSJSONSerialization JSONObjectWithData:clean[@"record"] options:0 error:nil];
         NSCAssert(record.count == 8 && [record[@"cliSessionId"] isEqual:clean[@"sessionId"]] && [record[@"sessionId"] isEqual:[@"local_" stringByAppendingString:clean[@"sessionId"]]] && [record[@"isArchived"] isEqual:@NO],@"eight-field record");
 
+        NSDate *fixed = [NSDate dateWithTimeIntervalSince1970:1800000000];
+        NSCAssert([[SessionCopyTitle(SessionCopyTitle(@"甲",fixed),fixed) componentsSeparatedByString:@"副本"] count] == 2 && [SessionCopyTitle(@"甲（清理副本）",fixed) hasPrefix:@"甲（副本 "],@"copy suffix is replaced, not stacked");
         NSCAssert(CleanSession(source,sub,home)[@"error"] != nil,@"root must be the selected project");
         NSString *wrong = [folder stringByAppendingPathComponent:[NSUUID.UUID.UUIDString.lowercaseString stringByAppendingString:@".jsonl"]];
         [[@"{\"type\":\"user\",\"uuid\":\"u\",\"parentUuid\":null,\"cwd\":\"" stringByAppendingFormat:@"%@\",\"message\":{\"role\":\"user\",\"content\":\"a\"}}\n{\"type\":\"assistant\",\"uuid\":\"v\",\"parentUuid\":\"u\",\"cwd\":\"%@\",\"message\":{\"role\":\"assistant\",\"content\":\"b\"}}\n",project,home] writeToFile:wrong atomically:NO encoding:NSUTF8StringEncoding error:nil];
-        NSCAssert(CleanSession(wrong,project,home)[@"error"] != nil,@"cwd outside the root is refused");
+        NSCAssert(CleanSession(wrong,project,home)[@"error"] != nil,@"a session that ended outside the project is refused");
+        NSString *scratch = [home stringByAppendingPathComponent:@"scratch-gone"];
+        [[NSString stringWithFormat:@"{\"type\":\"user\",\"uuid\":\"u\",\"parentUuid\":null,\"cwd\":\"%@\",\"message\":{\"role\":\"user\",\"content\":\"a\"}}\n{\"type\":\"assistant\",\"uuid\":\"v\",\"parentUuid\":\"u\",\"cwd\":\"%@\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"b\"}]}}\n",scratch,project] writeToFile:wrong atomically:NO encoding:NSUTF8StringEncoding error:nil];
+        NSDictionary *moved = CleanSession(wrong,project,home);
+        NSCAssert(!moved[@"error"] && [moved[@"preview"] containsString:@"[工作目录：项目外]"] && ![moved[@"preview"] containsString:@"scratch-gone"],@"a session moved into the project is accepted without its old path");
         [@"not json\n" writeToFile:wrong atomically:NO encoding:NSUTF8StringEncoding error:nil];
         NSCAssert(CleanSession(wrong,project,home)[@"error"] != nil,@"unknown line is refused");
 
