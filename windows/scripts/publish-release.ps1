@@ -268,7 +268,7 @@ if ($served -ne $version) {
 } else {
     foreach ($name in @('latest-windows.json', 'latest-macos.json', $setupName, $dmgName)) {
         $download = Join-Path $staging ('check-github-' + $name)
-        $verification = Get-ReleaseVerificationResult -Download { Fetch ($github + [Uri]::EscapeDataString($name)) $download 5 600 } -Verify { [ClaudeLauncher.Updates]::Hash($download) -eq [ClaudeLauncher.Updates]::Hash((Join-Path $staging $name)) }
+        $verification = Get-ReleaseVerificationResult -DownloadStep { Fetch ($github + [Uri]::EscapeDataString($name)) $download 5 600 } -VerifyStep { [ClaudeLauncher.Updates]::Hash($download) -eq [ClaudeLauncher.Updates]::Hash((Join-Path $staging $name)) }
         if ($verification.Status -eq 'Pending') { $pendingChecks += ('GitHub ' + $name + ' pending verification: ' + $verification.Reason); continue }
         if ($verification.Status -eq 'Mismatch') { Revert ('GitHub latest/download serves a different ' + $name) }
         Write-Output ('  GitHub ' + $name + ': OK')
