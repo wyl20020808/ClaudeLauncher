@@ -1,5 +1,13 @@
 # 项目状态
 
+## Windows 1.8.4 已发布（2026-10-31，windows-v1.8.4）
+
+- 发布：目标 `b1b5690`（dev 与 main 同一提交），已转正式并为 Latest。`publish-release.ps1 -KeyFile` 退出 2（未回滚），草稿附件经 API 逐字节核对通过。附件 `ClaudeLauncherSetup-1.8.4.exe` 2883484 字节，SHA-256 `bdee1f15a91ab5a893f4672382d4f07312c772c70f1a6f6bd214f1a444d1a516`。原样带入 macOS 1.7.18：`ClaudeLauncher-1.7.18.dmg` 2332693 字节，SHA-256 `b30e6b7f…c632`，清单与 DMG 和 `macos-v1.7.18` 逐字节相同，未重签。
+- 发布后复核：从 latest/download 下载两份清单和两个文件，与发布暂存逐字节相同；两份清单验签通过，文件哈希与清单一致。这一步为手动执行。
+- 退出 2 的原因：自建服务未运行（公网地址连接被关闭，本轮未启动），`updates/public` 已切换到 1.8.4，服务恢复后需复核；脚本的 GitHub 复核因 `$download` 变量与 `Get-ReleaseVerificationResult` 的 `$Download` 参数同名而未真正下载，只报待复核。若下载成功，同样的变量问题可能被判为内容不符并触发回滚，下次发布前须修复。
+- 其他验证：`test-install.ps1` 3 个场景、`test-release-verification.ps1` 9 个场景通过；LauncherTests 350 项、SyncTests 154 项、`--self-test` 245 项。
+- 未验证：1.8.3 软件内更新到 1.8.4、真实安装后重开。
+
 ## Windows 1.8.4：同步 macOS 1.7.18（2026-10-31）
 
 - 起点：把 `origin/dev` 的 `1ff3eae` 合入工作分支，起点自检通过。已实现隔离警告、同步链接目标判定、账号页趋势区，规则见 SPEC「存储校验」「用量趋势」。用户试用测试版后确认并授权发布。
