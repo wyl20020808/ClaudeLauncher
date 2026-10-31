@@ -15,6 +15,7 @@
 #import "Settings.h"
 #import "ProxyCheck.h"
 #import "Handoff.h"
+#import "SessionSync.h"
 #import "ConfigSync.h"
 #import "UsageTrend.h"
 #import "Localization.h"
@@ -530,14 +531,17 @@ static ProjectStore *RegistrationValidator(void) {
     return [[ProjectStore alloc] initWithDirectory:[NSHomeDirectory() stringByAppendingPathComponent:@"Library/Application Support/Claude Launcher"]
         home:NSHomeDirectory() applicationPaths:@[NSBundle.mainBundle.bundlePath,@"/Applications/Claude 启动器.app",[NSHomeDirectory() stringByAppendingPathComponent:@"Applications/Claude 启动器.app"]]];
 }
+static NSString *InstalledClaudeVersion(void) {
+    for (NSString *path in @[@"/Applications/Claude.app",[NSHomeDirectory() stringByAppendingPathComponent:@"Applications/Claude.app"]]) {
+        if (![NSFileManager.defaultManager isExecutableFileAtPath:[path stringByAppendingPathComponent:@"Contents/MacOS/Claude"]]) continue;
+        return [NSDictionary dictionaryWithContentsOfFile:[path stringByAppendingPathComponent:@"Contents/Info.plist"]][@"CFBundleShortVersionString"];
+    }
+    return nil;
+}
 static NSString *RegistrationGuard(NSInteger account) {
     if (account < 1 || account > 10) return L(@"目标账号编号无效。");
     if ([NSUserDefaults.standardUserDefaults integerForKey:@"loginProtectionAccount"]) return L(@"登录保护期间不能登记项目，请先完成登录并结束保护。");
-    NSString *version = nil;
-    for (NSString *path in @[@"/Applications/Claude.app",[NSHomeDirectory() stringByAppendingPathComponent:@"Applications/Claude.app"]]) {
-        if (![NSFileManager.defaultManager isExecutableFileAtPath:[path stringByAppendingPathComponent:@"Contents/MacOS/Claude"]]) continue;
-        version = [NSDictionary dictionaryWithContentsOfFile:[path stringByAppendingPathComponent:@"Contents/Info.plist"]][@"CFBundleShortVersionString"]; break;
-    }
+    NSString *version = InstalledClaudeVersion();
     // Verified on real accounts: 4.29.0 (2026-10-28 write + restart), 4.4212.0 (2026-10-30 existing records still shown).
     if (![@[@"4.29.0",@"4.4212.0"] containsObject:version ?: @""]) return L(@"此功能只验证过 Claude 4.29.0 与 4.4212.0；当前版本不匹配，已停止写入。");
     NSString *failure = nil; NSDictionary *processes = Scan(&failure);
@@ -551,6 +555,11 @@ static NSDictionary *RegisterForAccount(NSInteger account, NSArray *paths, BOOL 
     return RegisterProjectDirectories(ProfilePath(account),paths,RegistrationValidator(),NSHomeDirectory(),apply,^NSString *{
         return RegistrationGuard(account);
     });
+}
+// Session sync was verified only on 4.4212.0 (2026-10-30: display and continuation after restart).
+static NSString *SessionSyncGuard(NSInteger account) {
+    if (![InstalledClaudeVersion() isEqual:@"4.4212.0"]) return L(@"同步会话只验证过 Claude 4.4212.0；当前版本不匹配，已停止写入。");
+    return RegistrationGuard(account) ?: ValidateProfileAtPath(ProfilePath(account),ProfilePath(account));
 }
 
 static BOOL DarkDrawing(void) {
@@ -814,7 +823,7 @@ static const unsigned CardFill = 0xFFFCF7;
 @property ProjectStore *projectStore;
 @property NSView *projectRowsView;
 @property NSTextField *projectFooter, *projectFeedback;
-@property NSButton *addProjectButton, *importProjectsButton, *registerProjectsButton;
+@property NSButton *addProjectButton, *importProjectsButton, *registerProjectsButton, *syncSessionButton;
 @property BOOL discoveringProjects, registeringProjects;
 @property NSArray<NSDictionary *> *snapshotProjects;
 @property BOOL snapshotMode;
@@ -1172,7 +1181,9 @@ static const unsigned CardFill = 0xFFFCF7;
     [page addSubview:self.addProjectButton];
     self.importProjectsButton = [self toolButton:L(@"识别并导入") symbol:@"square.and.arrow.down" frame:NSMakeRect(484,56,146,44) action:@selector(importProjects:)];
     [page addSubview:self.importProjectsButton];
-    [page addSubview:Text(L(@"本机目录入口 · 移除不删除文件"),NSMakeRect(38,238,340,20),[NSFont systemFontOfSize:13],Hex(0x6E655C))];
+    [page addSubview:Text(L(@"本机目录入口 · 移除不删除文件"),NSMakeRect(38,238,290,20),[NSFont systemFontOfSize:13],Hex(0x6E655C))];
+    self.syncSessionButton = [self toolButton:L(@"同步会话…") symbol:@"arrow.left.arrow.right" frame:NSMakeRect(336,228,146,38) action:@selector(syncSession:)];
+    [page addSubview:self.syncSessionButton];
     self.registerProjectsButton = [self toolButton:L(@"同步到账号…") symbol:@"sidebar.left" frame:NSMakeRect(492,228,156,38) action:@selector(registerProjects:)];
     [page addSubview:self.registerProjectsButton];
     [page addSubview:[self toolButton:L(@"刷新状态") symbol:@"arrow.clockwise" frame:NSMakeRect(660,228,112,38) action:@selector(refreshProjects:)]];
@@ -1194,6 +1205,7 @@ static const unsigned CardFill = 0xFFFCF7;
     self.addProjectButton.enabled = self.snapshotMode || self.projectStore.writable;
     self.importProjectsButton.enabled = !self.discoveringProjects && (self.snapshotMode || self.projectStore.writable);
     self.registerProjectsButton.enabled = !self.registeringProjects && !self.discoveringProjects && projects.count > 0;
+    self.syncSessionButton.enabled = !self.registeringProjects && !self.discoveringProjects && projects.count > 0;
     [self.projectRowsView setFrameSize:NSMakeSize(734,MAX(281,projects.count*64))];
     if (!projects.count) {
         [self.projectRowsView addSubview:Text(L(@"还没有项目"),NSMakeRect(270,86,200,28),[NSFont systemFontOfSize:20 weight:NSFontWeightMedium],Hex(0x6E655C))];
@@ -1448,6 +1460,101 @@ static BOOL ConfigFolderExists(NSInteger n) {
             self.registeringProjects = NO; [self.checking minusSet:[NSSet setWithArray:keys]]; [self refresh]; [self refreshProjects:nil];
             [self projectNotice:[lines componentsJoinedByString:@" "]];
             [self alert:failed ? L(@"同步未全部完成") : L(@"项目同步完成") detail:[lines componentsJoinedByString:@"\n"]];
+        });
+    });
+}
+- (void)syncSession:(id)sender {
+    if (self.snapshotMode || self.registeringProjects || self.discoveringProjects) return;
+    NSMutableArray *projects = [NSMutableArray array];
+    for (NSDictionary *project in [self projectRecords]) if ([[self.projectStore statusForPath:project[@"path"]] isEqual:@"正常"]) [projects addObject:project];
+    NSMutableArray<NSNumber *> *accounts = [NSMutableArray array];
+    for (NSInteger n = 1; n <= 10; n++) {
+        BOOL directory = NO;
+        if ([NSFileManager.defaultManager fileExistsAtPath:ProfilePath(n) isDirectory:&directory] && directory) [accounts addObject:@(n)];
+    }
+    self.registeringProjects = YES; [self refreshProjects:nil];
+    [self projectNotice:L(@"正在查找各账号的本地会话…")];
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0), ^{
+        NSMutableArray *sessions = [NSMutableArray array];
+        for (NSNumber *account in accounts) for (NSDictionary *project in projects) for (NSDictionary *session in SessionSyncList(CodeConfigFolder(account.integerValue),project[@"path"])) {
+            NSMutableDictionary *row = session.mutableCopy; row[@"account"] = account; row[@"project"] = project; [sessions addObject:row];
+        }
+        [sessions sortUsingDescriptors:@[[NSSortDescriptor sortDescriptorWithKey:@"modified" ascending:NO]]];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            self.registeringProjects = NO; [self refreshProjects:nil];
+            [self chooseSessionToSync:sessions accounts:accounts];
+        });
+    });
+}
+- (void)chooseSessionToSync:(NSArray *)sessions accounts:(NSArray<NSNumber *> *)accounts {
+    if (!sessions.count) { [self alert:L(@"没有可同步的会话") detail:L(@"公共清单里的项目在各账号下都没有本地会话。")] ; return; }
+    NSAlert *choice = [NSAlert new]; choice.messageText = L(@"同步会话到其他账号");
+    choice.informativeText = L(@"生成一份清理副本放到目标账号：只保留对话文字和工具请求说明，不带账号信息、权限、工具结果和图片。两边之后各自继续，不会合并。写入前可以预览。");
+    [choice addButtonWithTitle:L(@"生成预览")]; [choice addButtonWithTitle:L(@"取消")];
+    Canvas *form = [[Canvas alloc] initWithFrame:NSMakeRect(0,0,620,108)];
+    [form addSubview:Text(L(@"会话"),NSMakeRect(0,0,620,18),[NSFont systemFontOfSize:12],Hex(0x6E655C))];
+    NSPopUpButton *source = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(0,20,620,28) pullsDown:NO]; source.accessibilityLabel = L(@"要同步的会话");
+    NSDate *now = NSDate.date;
+    for (NSDictionary *session in sessions) {
+        NSString *title = [NSString stringWithFormat:L(@"账号 %02ld · %@ · %@ · %@"),(long)[session[@"account"] integerValue],session[@"project"][@"name"],session[@"title"],HandoffAge(session[@"modified"],now)];
+        [source addItemWithTitle:title]; source.lastItem.title = title;
+    }
+    [form addSubview:source];
+    [form addSubview:Text(L(@"目标账号（须已正常退出）"),NSMakeRect(0,56,620,18),[NSFont systemFontOfSize:12],Hex(0x6E655C))];
+    NSPopUpButton *target = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(0,76,300,28) pullsDown:NO]; target.autoenablesItems = NO; target.accessibilityLabel = L(@"目标账号");
+    [self refresh];
+    for (NSNumber *account in accounts) {
+        BOOL running = self.processes[account].count > 0;
+        [target addItemWithTitle:[NSString stringWithFormat:running ? L(@"账号 %02ld（运行中）") : L(@"账号 %02ld"),(long)account.integerValue]];
+        target.lastItem.tag = account.integerValue; target.lastItem.enabled = !running;
+    }
+    NSInteger firstFree = -1;
+    for (NSInteger i = 0; i < target.numberOfItems && firstFree < 0; i++) if ([target itemAtIndex:i].enabled && [target itemAtIndex:i].tag != [sessions[0][@"account"] integerValue]) firstFree = i;
+    if (firstFree >= 0) [target selectItemAtIndex:firstFree];
+    [form addSubview:target];
+    choice.accessoryView = form;
+    if ([choice runModal] != NSAlertFirstButtonReturn) return;
+    NSDictionary *session = sessions[source.indexOfSelectedItem]; NSInteger to = target.selectedTag;
+    if (!target.selectedItem.enabled) { [self alert:L(@"目标账号正在运行") detail:L(@"请先在该账号中正常退出，再同步。启动器不会替你退出。")] ; return; }
+    if (to == [session[@"account"] integerValue]) { [self alert:L(@"目标账号与来源相同") detail:L(@"请选择另一个账号。")] ; return; }
+    NSString *path = session[@"project"][@"path"];
+    self.registeringProjects = YES; [self refreshProjects:nil];
+    [self projectNotice:L(@"正在生成清理副本…")];
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0), ^{
+        NSDictionary *clean = CleanSession(session[@"path"],path,NSHomeDirectory());
+        dispatch_async(dispatch_get_main_queue(), ^{
+            self.registeringProjects = NO; [self refreshProjects:nil];
+            if (clean[@"error"]) { [self projectNotice:clean[@"error"]]; [self alert:L(@"无法同步这条会话") detail:clean[@"error"]]; return; }
+            [self confirmSessionSync:clean from:[session[@"account"] integerValue] to:to];
+        });
+    });
+}
+- (void)confirmSessionSync:(NSDictionary *)clean from:(NSInteger)from to:(NSInteger)to {
+    NSAlert *confirm = [NSAlert new]; confirm.messageText = [NSString stringWithFormat:L(@"预览：同步到账号 %02ld"),(long)to];
+    NSString *detail = [NSString stringWithFormat:L(@"「%@」\n%@\n\n脱敏只认固定格式，其他私人信息请自己看一遍。"),clean[@"title"],clean[@"report"]];
+    if ([clean[@"bytes"] unsignedIntegerValue] > 100*1000) detail = [detail stringByAppendingFormat:L(@"\n\n这份历史有 %lu KB，会占用目标账号较多额度；启动器不会自动截断。"),(unsigned long)([clean[@"bytes"] unsignedIntegerValue]/1000)];
+    if ([clean[@"images"] unsignedIntegerValue]) detail = [detail stringByAppendingString:L(@"\n\n这条会话含图片，同步后 AI 看不到它们。")];
+    confirm.informativeText = detail;
+    [confirm addButtonWithTitle:L(@"同步")]; [confirm addButtonWithTitle:L(@"取消")];
+    NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(0,0,640,360)]; scroll.hasVerticalScroller = YES; scroll.borderType = NSBezelBorder;
+    NSTextView *text = [[NSTextView alloc] initWithFrame:scroll.bounds]; text.editable = NO; text.string = clean[@"preview"];
+    text.autoresizingMask = NSViewWidthSizable; text.accessibilityLabel = L(@"将写入的对话");
+    scroll.documentView = text; confirm.accessoryView = scroll;
+    if ([confirm runModal] != NSAlertFirstButtonReturn) return;
+    if (self.loginAccount || self.starting[@(to)] || [self.checking containsObject:@(to)]) { [self alert:L(@"账号正在处理中") detail:L(@"请先结束登录保护或等待检查／启动完成。")] ; return; }
+    self.registeringProjects = YES; [self.checking addObject:@(to)]; [self refresh]; [self refreshProjects:nil];
+    [self projectNotice:L(@"正在写入目标账号；请勿从 Dock 或终端启动它。")];
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0), ^{
+        NSString *failure = PublishSyncedSession(ProfilePath(to),CodeConfigFolder(to),clean[@"slug"],clean[@"sessionId"],clean[@"jsonl"],clean[@"record"],^NSString *{ return SessionSyncGuard(to); });
+        dispatch_async(dispatch_get_main_queue(), ^{
+            self.registeringProjects = NO; [self.checking removeObject:@(to)]; [self refresh]; [self refreshProjects:nil];
+            if (failure) { [self projectNotice:failure]; [self alert:L(@"同步未完成") detail:failure]; return; }
+            NSString *log = [NSString stringWithFormat:L(@"会话同步：账号 %02ld 到账号 %02ld，%@ 条消息"),(long)from,(long)to,clean[@"messages"]];
+            [self projectNotice:log]; [self addLog:log];
+            NSAlert *done = [NSAlert new]; done.messageText = L(@"会话已同步");
+            done.informativeText = [NSString stringWithFormat:L(@"打开账号 %02ld 后，侧栏会出现「%@」。第一条消息由你发送；如果项目还没被该账号信任，发送时官方会请你确认。"),(long)to,clean[@"title"]];
+            [done addButtonWithTitle:[NSString stringWithFormat:L(@"打开账号 %02ld"),(long)to]]; [done addButtonWithTitle:L(@"完成")];
+            if ([done runModal] == NSAlertFirstButtonReturn) [self selectAccount:self.buttons[to-1]];
         });
     });
 }
@@ -3291,6 +3398,7 @@ static int SelfTest(void) {
         TestProjects();
         TestProjectImport();
         TestProjectRegistration();
+        TestSessionSync();
         TestUsageInterface();
         TestProxyCheck();
         TestHandoff();

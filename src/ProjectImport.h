@@ -12,3 +12,8 @@ void TestProjectImport(void);
 NSDictionary *RegisterProjectDirectories(NSString *profile, NSArray<NSString *> *paths,
     ProjectStore *validator, NSString *home, BOOL apply, NSString *(^guard)(void));
 void TestProjectRegistration(void);
+
+// Publishes a cleaned session: transcript first, then the record that points at it. Never overwrites; a failed
+// record removes only the transcript created here. guard is checked before each publication. Returns nil on success.
+NSString *PublishSyncedSession(NSString *profile, NSString *configFolder, NSString *slug, NSString *session,
+    NSData *transcript, NSData *record, NSString *(^guard)(void));

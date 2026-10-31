@@ -327,6 +327,55 @@ NSDictionary *RegisterProjectDirectories(NSString *profile, NSArray<NSString *> 
     return result;
 }
 
+static NSString *PublishExclusive(int directory, NSString *name, NSData *data, NSString *(^guard)(void)) {
+    NSString *temporary = [@".claude-launcher-session-" stringByAppendingString:NSUUID.UUID.UUIDString];
+    int file = openat(directory,temporary.fileSystemRepresentation,O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC,0600);
+    if (file < 0) return L(@"无法独占创建临时文件。");
+    const char *bytes = data.bytes; NSUInteger written = 0;
+    while (written < data.length) {
+        ssize_t n = write(file,bytes+written,data.length-written);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) break;
+        written += (NSUInteger)n;
+    }
+    BOOL ready = written == data.length && fsync(file) == 0; close(file);
+    NSString *failure = ready ? guard() : L(@"写入失败，原有文件未覆盖。");
+    if (!failure && renameatx_np(directory,temporary.fileSystemRepresentation,directory,name.fileSystemRepresentation,RENAME_EXCL) != 0)
+        failure = L(@"无法原子发布新文件，未覆盖任何同名文件。");
+    unlinkat(directory,temporary.fileSystemRepresentation,0);
+    if (!failure) fsync(directory);
+    return failure;
+}
+NSString *PublishSyncedSession(NSString *profile, NSString *configFolder, NSString *slug, NSString *session,
+                               NSData *transcript, NSData *record, NSString *(^guard)(void)) {
+    NSString *failure = guard();
+    if (failure) return failure;
+    if (!UUIDString(session) || !slug.length || [slug containsString:@"/"]) return L(@"会话标识或项目目录名无效。");
+    int records = RegistrationDirectory(profile);
+    if (records < 0) return L(@"目标没有唯一且安全的账号／组织记录目录。请先在该账号正常创建一次本地会话；多位置时不猜测身份。");
+    int config = ProfileDirectory(configFolder), projects = -1, folder = -1;
+    if (config >= 0) {
+        projects = ChildDirectory(config,@"projects");
+        if (projects < 0 && errno == ENOENT && mkdirat(config,"projects",0700) == 0) projects = ChildDirectory(config,@"projects");
+    }
+    if (projects >= 0) {
+        folder = ChildDirectory(projects,slug);
+        if (folder < 0 && errno == ENOENT && mkdirat(projects,slug.fileSystemRepresentation,0700) == 0) folder = ChildDirectory(projects,slug);
+    }
+    if (folder < 0) failure = L(@"目标账号的项目目录无法安全打开，未写入。");
+    NSString *name = [session stringByAppendingString:@".jsonl"];
+    if (!failure) failure = PublishExclusive(folder,name,transcript,guard);
+    if (!failure) {
+        failure = PublishExclusive(records,[NSString stringWithFormat:@"local_%@.json",session],record,guard);
+        if (failure) unlinkat(folder,name.fileSystemRepresentation,0);
+    }
+    if (config >= 0) close(config);
+    if (projects >= 0) close(projects);
+    if (folder >= 0) close(folder);
+    close(records);
+    return failure;
+}
+
 void TestProjectImport(void) {
     NSFileManager *fm = NSFileManager.defaultManager;
     NSString *root = [fm.currentDirectoryPath stringByAppendingPathComponent:[@".claude-import-tests-" stringByAppendingString:NSUUID.UUID.UUIDString]];
