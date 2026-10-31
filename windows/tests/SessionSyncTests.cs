@@ -193,6 +193,16 @@ internal static class SessionSyncTests {
         Check(SessionSync.DistinctExisting(new[] { profile, duplicate, Path.Combine(root, "missing") }).Length == 1, "the same directory reached twice counts once");
         Directory.Delete(duplicate);
 
+        // 英文：Windows 动态拼出的文字都能对上词条，也不提 Mac。
+        int language = Appearance.Language; Appearance.Language = 1;
+        try {
+            foreach (string chinese in new[] { "已选 2 条", "账号 02（运行中）", "账号 02 · 10/31 12:05", "预览：同步 3 条会话到账号 02", "会话同步：账号 02 新增 1 条，共选择 3 条", "共 12 KB。脱敏只认固定格式，其他私人信息请自己看一遍。", "3 条无法处理，不会同步：", "3 条无法处理，没有同步。", "已写入 2 条。打开账号 02 后，它们会出现在侧栏，标题后带“同步”和时间。第一条消息由你发送；如果项目还没被该账号信任，发送时官方会请你确认。", "打开账号 02", "展开或折叠：demo", "同步会话只支持商店版 Claude 4.4212.0.0；当前版本不匹配，已停止写入。", "保留 4 条消息，2 条工具说明。\n丢弃：1 个工具结果、1 个思考块、0 张图片、0 行子代理记录、2 行非主链记录。\n替换：1 处邮箱／密钥／令牌，1 个项目外路径。", "图文说明，随时翻阅。文档在本机打开，不联网。" }) {
+                string english = Appearance.Text(chinese);
+                Check(!System.Text.RegularExpressions.Regex.IsMatch(english, @"[一-鿿]") && !english.Contains("Mac"), "English text for: " + chinese + " => " + english);
+            }
+            Check(SessionSync.CopyTitle("甲（同步 10/26 12:00）", fixedDate) == "甲 (Synced 10/31 12:05)", "English title suffix");
+        } finally { Appearance.Language = language; }
+
         // 选择窗：默认折叠不选、目标账号一次一个、运行中不可选、目标自己的会话不可勾选。
         var sessions = new List<SyncSessionRow> {
             new SyncSessionRow { Path = "a", Title = "甲", Account = 1, ProjectPath = @"D:\p1", ProjectName = "p1", Modified = DateTime.Now },

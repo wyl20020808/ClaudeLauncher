@@ -240,7 +240,7 @@ namespace ClaudeLauncher {
                 window.Icon = decoder.Frames[0];
                 logo = decoder.Frames.OrderByDescending(f => f.PixelWidth).First();
             }
-            var root = new Grid { Width = 1080, Height = 720, ClipToBounds = true };
+            var root = new Grid { Width = 1080, Height = 720, ClipToBounds = true }; tutorialHost = root;
             root.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(272) });
             root.ColumnDefinitions.Add(new ColumnDefinition());
             window.Content = new ScrollViewer { Content = root, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
@@ -272,6 +272,11 @@ namespace ClaudeLauncher {
                 nav[i].Click += async delegate { ShowPage(index); RememberPage(); if (index == 0) await ReadUsage(); };
             }
             indicator = At(sidebar, new Border { Background = B("#B9825F"), CornerRadius = new CornerRadius(2) }, 6, 188, 4, 24);
+            var guideContent = new StackPanel { Orientation = Orientation.Horizontal };
+            var guideGlyph = Glyph("\uE897", 15, "#3A332D"); guideGlyph.Width = 28; guideContent.Children.Add(guideGlyph); guideContent.Children.Add(T("使用教程", 13, Ink, FontWeights.Medium));
+            tutorialEntry = At(sidebar, new Button { Style = (Style)window.FindResource("Nav"), Content = guideContent, Background = B("#E6FFFDFA"), Padding = new Thickness(12, 0, 0, 0) }, 20, 664, 128, 34);
+            AutomationProperties.SetName(tutorialEntry, Appearance.Text("使用教程"));
+            tutorialEntry.Click += delegate { ShowTutorialPicker(); };
 
             // 主区域背景：画面靠右，左侧洗白以保证文字可读。
             var main = new Grid { ClipToBounds = true };
@@ -412,6 +417,7 @@ namespace ClaudeLauncher {
             pages[0].PreviewMouseLeftButtonUp += async delegate { await ReadUsage(); };
             window.Loaded += async delegate {
                 await Refresh(); timer.Start();
+                if (!closed) StartTutorialIfFirstRun();
                 await ReadUsage();
                 // SPEC 网络边界：已保存开启时，每次打开启动器检查一次；只在有新版时提示，失败只记日志。
                 if (!closed && settings.AllowUpdates) await CheckUpdate(false);
@@ -435,6 +441,7 @@ namespace ClaudeLauncher {
                 ApplyHotkeys();
             };
             window.PreviewKeyDown += async delegate(object sender, KeyEventArgs e) {
+                if (TutorialKey(e.Key)) { e.Handled = true; return; }
                 int n = e.Key >= Key.D0 && e.Key <= Key.D9 ? (int)e.Key - (int)Key.D0 : -1;
                 if (n >= 0 && Keyboard.Modifiers == ModifierKeys.Control) { if (n == 0) n = 10; if (HasData(n)) { e.Handled = true; await Select(n); } }
             };
@@ -715,7 +722,9 @@ namespace ClaudeLauncher {
                     review.ShowDialog();
                 } catch(Exception error) { Alert("识别失败",error.Message); } finally { import.IsEnabled=true; }
             };
+            importButton = import;
             var add = At(canvas, Action("添加目录", "Btn", "", 14), 640, 56, 132, 44);
+            addProjectButton = add;
             add.IsEnabled = !projectsUnreadable;
             add.Click += delegate {
                 using (var picker = new System.Windows.Forms.FolderBrowserDialog()) {
@@ -786,12 +795,12 @@ namespace ClaudeLauncher {
             var head = new StackPanel(); DockPanel.SetDock(head, Dock.Top); root.Children.Add(head);
             head.Children.Add(new TextBlock { Text = "为勾选的会话各生成一份清理副本放到目标账号：只保留对话文字和工具请求说明，不带账号信息、权限、工具结果和图片。两边之后各自继续，不会合并；重复同步会再生成一份。写入前可以预览。", TextWrapping = TextWrapping.Wrap, Foreground = B(Muted), FontSize = 13 });
             var line = new DockPanel { Margin = new Thickness(0, 14, 0, 10) }; head.Children.Add(line);
-            var label = new TextBlock { Text = "目标账号（须已正常退出）", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 12, 0) }; DockPanel.SetDock(label, Dock.Left); line.Children.Add(label);
+            var label = new TextBlock { Text = "目标账号（须已正常退出）", Foreground = B(Ink), VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 12, 0) }; DockPanel.SetDock(label, Dock.Left); line.Children.Add(label);
             picker.Target = new ComboBox { Width = 200, HorizontalAlignment = HorizontalAlignment.Left }; AutomationProperties.SetName(picker.Target, "目标账号"); line.Children.Add(picker.Target);
             foreach (int n in accounts) picker.Target.Items.Add(new ComboBoxItem { Content = "账号 " + Two(n) + (running.Contains(n) ? "（运行中）" : ""), Tag = n, IsEnabled = !running.Contains(n) });
             var selectLine = new DockPanel { Margin = new Thickness(0, 0, 0, 6) }; DockPanel.SetDock(selectLine, Dock.Top); head.Children.Add(selectLine);
             picker.Count = new TextBlock { Foreground = B(Muted), FontSize = 12, VerticalAlignment = VerticalAlignment.Center }; DockPanel.SetDock(picker.Count, Dock.Right); selectLine.Children.Add(picker.Count);
-            picker.All = new CheckBox { Content = "全选" }; selectLine.Children.Add(picker.All);
+            picker.All = new CheckBox { Content = "全选", Foreground = B(Ink) }; selectLine.Children.Add(picker.All);
             var actions = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 14, 0, 0) }; DockPanel.SetDock(actions, Dock.Bottom); root.Children.Add(actions);
             var cancel = Action("取消", "Btn", null, 14); cancel.IsCancel = true; cancel.Margin = new Thickness(0, 0, 10, 0); cancel.Padding = new Thickness(16, 7, 16, 7); actions.Children.Add(cancel);
             picker.Confirm = Action("生成预览", "Primary", null, 14); picker.Confirm.Padding = new Thickness(16, 7, 16, 7); picker.Confirm.Click += delegate { picker.Dialog.DialogResult = true; }; actions.Children.Add(picker.Confirm);
@@ -799,15 +808,15 @@ namespace ClaudeLauncher {
             root.Children.Add(new Border { BorderBrush = B("#EDE4D8"), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(8), Child = new ScrollViewer { Content = list, VerticalScrollBarVisibility = ScrollBarVisibility.Auto } });
             foreach (var group in sessions.Select((s, i) => new { s, i }).GroupBy(x => x.s.ProjectPath, StringComparer.OrdinalIgnoreCase)) {
                 var members = group.Select(x => x.i).ToList(); int groupIndex = picker.Groups.Count; string name = group.First().s.ProjectName;
-                var check = new CheckBox { Content = name + "（" + members.Count + "）", ToolTip = group.Key, FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center };
+                var check = new CheckBox { Content = name + "（" + members.Count + "）", Foreground = B(Ink), ToolTip = group.Key, FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center };
                 check.Click += delegate { picker.Toggle(picker.Members[groupIndex]); };
                 var rows = new StackPanel { Margin = new Thickness(24, 2, 0, 6) };
-                var expander = new Expander { Header = check, Content = rows, IsExpanded = false, Margin = new Thickness(4, 3, 4, 3) };
+                var expander = new Expander { Header = check, Content = rows, IsExpanded = false, Foreground = B(Ink), Margin = new Thickness(4, 3, 4, 3) };
                 AutomationProperties.SetName(expander, Appearance.Text("展开或折叠：" + name));
                 foreach (int index in members) {
                     var session = sessions[index]; var content = new DockPanel { LastChildFill = true };
                     var detail = new TextBlock { Text = "账号 " + Two(session.Account) + " · " + session.Modified.ToString("MM/dd HH:mm"), FontSize = 11, Foreground = B(Muted), Margin = new Thickness(10, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center }; DockPanel.SetDock(detail, Dock.Right); content.Children.Add(detail);
-                    content.Children.Add(new TextBlock { Text = session.Title, TextTrimming = TextTrimming.CharacterEllipsis, FontSize = 13, Width = 400 });
+                    content.Children.Add(new TextBlock { Text = session.Title, Foreground = B(Ink), TextTrimming = TextTrimming.CharacterEllipsis, FontSize = 13, Width = 400 });
                     var row = new CheckBox { Content = content, ToolTip = session.Title, Margin = new Thickness(0, 2, 0, 2) }; AutomationProperties.SetName(row, session.Title);
                     row.Click += delegate { picker.Update(); };
                     // 行序号必须和 Sessions 下标一致；分组后乱序时按下标放回。
@@ -826,7 +835,7 @@ namespace ClaudeLauncher {
             var dialog = Dialog("预览：同步 " + cleans.Count + " 条会话到账号 " + Two(to)); dialog.Width = 700;
             var panel = (StackPanel)((ScrollViewer)dialog.Content).Content;
             int bytes = cleans.Sum(c => c.Jsonl.Length);
-            panel.Children.Add(new TextBlock { Text = "共 " + bytes / 1000 + " KB。脱敏只认固定格式，其他私人信息请自己看一遍。", TextWrapping = TextWrapping.Wrap });
+            panel.Children.Add(new TextBlock { Text = "共 " + bytes / 1000 + " KB。脱敏只认固定格式，其他私人信息请自己看一遍。", Foreground = B(Ink), TextWrapping = TextWrapping.Wrap });
             if (bytes > 100 * 1000) panel.Children.Add(new TextBlock { Text = "历史较长的会话会占用目标账号较多额度；启动器不会自动截断。", TextWrapping = TextWrapping.Wrap, Foreground = B(Muted), Margin = new Thickness(0, 4, 0, 0) });
             if (cleans.Any(c => c.Images > 0)) panel.Children.Add(new TextBlock { Text = "部分会话含图片，同步后 AI 看不到它们。", TextWrapping = TextWrapping.Wrap, Foreground = B(Muted), Margin = new Thickness(0, 4, 0, 0) });
             if (failures.Count > 0) {
@@ -835,7 +844,7 @@ namespace ClaudeLauncher {
             }
             var text = new StringBuilder();
             foreach (var clean in cleans) text.Append(Appearance.Language == 1 ? "═══ “" + clean.Title + "” from account " + Two(clean.From) + " ═══\n" : "═══ 「" + clean.Title + "」来自账号 " + Two(clean.From) + " ═══\n").Append(clean.Report).Append("\n\n").Append(clean.Preview).Append('\n');
-            var preview = new TextBox { Text = text.ToString(), IsReadOnly = true, TextWrapping = TextWrapping.Wrap, Height = 360, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Margin = new Thickness(0, 12, 0, 14), FontSize = 12 };
+            var preview = new TextBox { Text = text.ToString(), IsReadOnly = true, TextWrapping = TextWrapping.Wrap, Height = 360, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Margin = new Thickness(0, 12, 0, 14), FontSize = 12, Background = B("#FFFDFA"), Foreground = B(Ink), BorderBrush = B("#EDE4D8") };
             AutomationProperties.SetName(preview, Appearance.Text("将写入的对话")); panel.Children.Add(preview);
             var actions = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right }; panel.Children.Add(actions);
             var cancel = Action("取消", "Btn", null, 14); cancel.IsCancel = true; cancel.IsDefault = true; cancel.Margin = new Thickness(0, 0, 10, 0); cancel.Padding = new Thickness(16, 7, 16, 7); actions.Children.Add(cancel);
@@ -920,6 +929,164 @@ namespace ClaudeLauncher {
                 else Alert(title, info);
             } catch (Exception error) { Alert("无法同步所选会话", error.Message); }
             finally { syncingSessions = false; syncSessionsButton.IsEnabled = !projectsUnreadable; }
+        }
+        // ---- 新手教程（SPEC 新手教程）：遮罩接管全部点击和按键，不启动账号、不写账号数据、不联网 ----
+        sealed class TutorialStep { public string Title, Body; public int Page; public FrameworkElement[] Targets; public bool Trend; }
+        Grid tutorialHost; Canvas tutorialOverlay; Border tutorialCard, tutorialRing; System.Windows.Shapes.Path tutorialShade;
+        List<TutorialStep> tutorialSteps; int tutorialIndex = -1, tutorialReturnPage; Button tutorialEntry, importButton, addProjectButton; Window tutorialDocument;
+        string TutorialSeenPath { get { return settingsPath + ".tutorialSeen"; } }
+        // 只自动播放一次：开始时立刻记录，跳过或中途退出都不再出现；登录保护时推迟，不占用这一次。
+        internal bool StartTutorialIfFirstRun() {
+            if (File.Exists(TutorialSeenPath) || loginAccount != 0 || tutorialOverlay != null) return false;
+            try { LauncherSettings.WriteAtomic(TutorialSeenPath, "1"); } catch (Exception error) { Diagnostics.Error("tutorial_seen_write", error); }
+            StartTutorial(); return true;
+        }
+        List<TutorialStep> TutorialStepList() {
+            var steps = new List<TutorialStep> { new TutorialStep { Title = "欢迎使用 Claude 启动器", Body = "用 1 分钟认识账号、项目、同步会话和用量趋势。引导期间不会启动账号，也不会改动任何数据。", Targets = new FrameworkElement[0] } };
+            int first = Enumerable.Range(1, 10).FirstOrDefault(n => cards[n].Root.Visibility == Visibility.Visible);
+            if (first != 0) steps.Add(new TutorialStep { Title = "启动或切换账号", Body = "每个账号一张卡片。没运行的点“启动”，运行中的点“打开”切到它的窗口。各账号的登录和会话相互独立。", Targets = new FrameworkElement[] { cards[first].Action } });
+            steps.Add(new TutorialStep { Title = "新建账号", Body = "点这里创建下一个空闲账号，然后在打开的 Claude 里登录。最多 10 个。", Targets = new FrameworkElement[] { create } });
+            steps.Add(new TutorialStep { Title = "账号管理", Body = "所有账号都在这张表里：搜索、筛选、排序，看运行状态和最近使用，也能直接启动或切换。", Page = 1, Targets = new FrameworkElement[] { rowList } });
+            steps.Add(new TutorialStep { Title = "项目管理", Body = "添加常用目录，或从各账号的本机记录里识别导入。所有账号共用这份清单。", Page = 4, Targets = new FrameworkElement[] { importButton, addProjectButton } });
+            steps.Add(new TutorialStep { Title = "同步会话", Body = "把会话复制到另一个账号接着聊。原会话不变，两边不会合并。目标账号要先正常退出；有项目后才能用。", Page = 4, Targets = new FrameworkElement[] { syncSessionsButton } });
+            steps.Add(new TutorialStep { Title = "用量趋势", Body = "账号管理页下方记录近 7 天用量，并建议下一个使用的账号。只用启动器已观察到的数值，不查询 Claude。", Page = 1, Targets = new FrameworkElement[] { trendSection }, Trend = true });
+            steps.Add(new TutorialStep { Title = "随时回看", Body = "点这里可以重新播放引导，或查看文档教程。", Targets = new FrameworkElement[] { tutorialEntry } });
+            return steps;
+        }
+        void OpenTutorialOverlay() {
+            if (tutorialOverlay != null) return;
+            tutorialReturnPage = page;
+            tutorialOverlay = new Canvas { Width = 1080, Height = 720, Background = Brushes.Transparent, Focusable = true };
+            Grid.SetColumnSpan(tutorialOverlay, 2); System.Windows.Controls.Panel.SetZIndex(tutorialOverlay, 1000);
+            tutorialShade = At(tutorialOverlay, new System.Windows.Shapes.Path { Fill = new SolidColorBrush(Color.FromArgb(0x8C, 0x1E, 0x19, 0x14)), IsHitTestVisible = false }, 0, 0);
+            tutorialRing = At(tutorialOverlay, new Border { BorderBrush = B("#E8B48C"), BorderThickness = new Thickness(2), CornerRadius = new CornerRadius(12), IsHitTestVisible = false }, 0, 0);
+            tutorialOverlay.MouseDown += (sender, e) => {
+                e.Handled = true;
+                if (e.ChangedButton == MouseButton.Left && e.OriginalSource == tutorialOverlay && tutorialSteps != null && TutorialSpot().Contains(e.GetPosition(tutorialOverlay))) TutorialAdvance();
+            };
+            tutorialOverlay.PreviewMouseWheel += (sender, e) => { e.Handled = true; };
+            tutorialHost.Children.Add(tutorialOverlay);
+        }
+        internal void StartTutorial() {
+            OpenTutorialOverlay();
+            tutorialSteps = TutorialStepList();
+            ShowTutorialStep(0);
+        }
+        void TutorialButton(System.Windows.Controls.Panel parent, string text, string style, Action action) {
+            var button = Action(text, style, null, 13); button.Padding = new Thickness(14, 6, 14, 6); button.MinWidth = 64; button.Margin = new Thickness(8, 0, 0, 0);
+            button.Click += delegate { action(); }; parent.Children.Add(button);
+        }
+        void SetTutorialCard(Border card) {
+            if (tutorialCard != null) tutorialOverlay.Children.Remove(tutorialCard);
+            tutorialCard = card; tutorialOverlay.Children.Add(card);
+            if (Appearance.Language == 1) Appearance.TranslateTree(card);
+            card.Measure(new Size(card.Width, Double.PositiveInfinity));
+            // 系统关闭动画时不播放淡入。
+            if (SystemParameters.ClientAreaAnimation && window.IsLoaded) card.BeginAnimation(UIElement.OpacityProperty, new System.Windows.Media.Animation.DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(160)));
+            LayoutTutorial();
+            tutorialOverlay.Focus();
+        }
+        void ShowTutorialStep(int index) {
+            tutorialIndex = index; var step = tutorialSteps[index];
+            ShowPage(step.Page);
+            bool welcome = index == 0, last = index == tutorialSteps.Count - 1;
+            var card = new Border { Width = 400, Background = B("#FFFCF7"), BorderBrush = B("#EDE4D8"), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(14), Padding = new Thickness(24, 20, 24, 18) };
+            AutomationProperties.SetName(card, Appearance.Text(step.Title) + ". " + Appearance.Text(step.Body)); AutomationProperties.SetLiveSetting(card, System.Windows.Automation.AutomationLiveSetting.Polite);
+            var panel = new StackPanel(); card.Child = panel;
+            panel.Children.Add(new TextBlock { Text = (index + 1) + " / " + tutorialSteps.Count, FontSize = 12, Foreground = B(Muted) });
+            panel.Children.Add(new TextBlock { Text = step.Title, FontSize = welcome ? 24 : 20, FontWeight = FontWeights.SemiBold, Foreground = B(Ink), Margin = new Thickness(0, 8, 0, 6), TextWrapping = TextWrapping.Wrap });
+            panel.Children.Add(new TextBlock { Text = step.Body, FontSize = 13, Foreground = B("#5A524A"), LineHeight = 21, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 16) });
+            var actions = new DockPanel(); panel.Children.Add(actions);
+            if (!last) { var skip = new StackPanel { Orientation = Orientation.Horizontal }; DockPanel.SetDock(skip, Dock.Left); TutorialButton(skip, "跳过", "Icon", CloseTutorial); ((Button)skip.Children[0]).Margin = new Thickness(0); actions.Children.Add(skip); }
+            var right = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right }; actions.Children.Add(right);
+            if (!welcome) TutorialButton(right, "上一步", "Btn", TutorialBack);
+            TutorialButton(right, welcome ? "开始" : last ? "完成" : "下一步", "Primary", TutorialAdvance);
+            SetTutorialCard(card);
+        }
+        void TutorialAdvance() { if (tutorialSteps == null) return; if (tutorialIndex + 1 < tutorialSteps.Count) ShowTutorialStep(tutorialIndex + 1); else CloseTutorial(); }
+        void TutorialBack() { if (tutorialSteps != null && tutorialIndex > 0) ShowTutorialStep(tutorialIndex - 1); }
+        internal void CloseTutorial() {
+            if (tutorialOverlay == null) return;
+            tutorialHost.Children.Remove(tutorialOverlay); tutorialOverlay = null; tutorialCard = null; tutorialSteps = null; tutorialIndex = -1;
+            ShowPage(tutorialReturnPage);
+        }
+        internal bool TutorialKey(Key key) {
+            if (tutorialOverlay == null) return false;
+            if (key == Key.System) return false; // Alt+F4 等系统组合键保留。
+            if (key == Key.Return || key == Key.Right) TutorialAdvance();
+            else if (key == Key.Left) TutorialBack();
+            else if (key == Key.Escape) CloseTutorial();
+            return true;
+        }
+        static bool ShownOnPage(FrameworkElement element) {
+            for (DependencyObject at = element; at != null; at = System.Windows.Media.VisualTreeHelper.GetParent(at)) { var item = at as UIElement; if (item != null && item.Visibility != Visibility.Visible) return false; }
+            return element.ActualWidth > 0 && element.ActualHeight > 0;
+        }
+        Rect TutorialSpot() {
+            if (tutorialSteps == null || tutorialIndex < 0) return Rect.Empty;
+            var step = tutorialSteps[tutorialIndex]; Rect spot = Rect.Empty;
+            foreach (var target in step.Targets) { if (!ShownOnPage(target)) continue; var box = target.TransformToAncestor(tutorialHost).TransformBounds(new Rect(0, 0, target.ActualWidth, target.ActualHeight)); spot.Union(box); }
+            if (spot.IsEmpty) return spot;
+            if (step.Trend && spot.Height > 330) spot.Height = 330; // 标题、建议条和第一排图表；整个趋势区会把气泡挤出窗口。
+            spot.Inflate(6, 6); spot.Intersect(new Rect(0, 0, 1080, 720));
+            return spot;
+        }
+        // 按控件当前位置计算；账号出现或退出、状态刷新时都会重新算。
+        void LayoutTutorial() {
+            if (tutorialOverlay == null) return;
+            if (!window.IsLoaded) { tutorialHost.Measure(new Size(1080, 720)); tutorialHost.Arrange(new Rect(0, 0, 1080, 720)); }
+            tutorialHost.UpdateLayout();
+            var step = tutorialSteps != null && tutorialIndex >= 0 ? tutorialSteps[tutorialIndex] : null;
+            if (step != null && step.Trend) { accountsScroll.ScrollToVerticalOffset(Canvas.GetTop(trendSection) - 20); accountsScroll.UpdateLayout(); }
+            Rect spot = TutorialSpot(); var geometry = new GeometryGroup { FillRule = FillRule.EvenOdd };
+            geometry.Children.Add(new RectangleGeometry(new Rect(0, 0, 1080, 720)));
+            bool any = !spot.IsEmpty && spot.Width > 0;
+            if (any) geometry.Children.Add(new RectangleGeometry(spot, 12, 12));
+            tutorialShade.Data = geometry;
+            tutorialRing.Visibility = any ? Visibility.Visible : Visibility.Collapsed;
+            if (any) { Canvas.SetLeft(tutorialRing, spot.X); Canvas.SetTop(tutorialRing, spot.Y); tutorialRing.Width = spot.Width; tutorialRing.Height = spot.Height; }
+            if (tutorialCard == null) return;
+            int side; var frame = Tutorial.CardRect(new Rect(0, 0, 1080, 720), any ? spot : Rect.Empty, tutorialCard.DesiredSize, out side);
+            Canvas.SetLeft(tutorialCard, frame.X); Canvas.SetTop(tutorialCard, frame.Y);
+        }
+        Button TutorialTile(string glyph, string title, string detail, Action action) {
+            var content = new StackPanel { Width = 170, MinHeight = 150 };
+            content.Children.Add(new Border { Width = 40, Height = 40, CornerRadius = new CornerRadius(11), Background = B("#F3E3D2"), HorizontalAlignment = HorizontalAlignment.Left, Child = new TextBlock { Text = glyph, FontFamily = Icons, FontSize = 18, Foreground = B("#9A6447"), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center } });
+            content.Children.Add(new TextBlock { Text = title, FontSize = 15, FontWeight = FontWeights.SemiBold, Foreground = B(Ink), Margin = new Thickness(0, 12, 0, 4), TextWrapping = TextWrapping.Wrap });
+            content.Children.Add(new TextBlock { Text = detail, FontSize = 12, Foreground = B(Muted), LineHeight = 18, TextWrapping = TextWrapping.Wrap });
+            var tile = new Button { Style = (Style)window.FindResource("Btn"), Content = content, Padding = new Thickness(16), Width = 214, Margin = new Thickness(0, 0, 12, 0), HorizontalContentAlignment = HorizontalAlignment.Left, VerticalContentAlignment = VerticalAlignment.Top };
+            AutomationProperties.SetName(tile, Appearance.Text(title) + ". " + Appearance.Text(detail));
+            tile.Click += delegate { action(); };
+            return tile;
+        }
+        internal void ShowTutorialPicker() {
+            OpenTutorialOverlay();
+            tutorialSteps = null; tutorialIndex = -1;
+            var card = new Border { Width = 488, Background = B("#FFFCF7"), BorderBrush = B("#EDE4D8"), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(14), Padding = new Thickness(24, 20, 12, 22) };
+            var panel = new StackPanel(); card.Child = panel;
+            var head = new DockPanel(); panel.Children.Add(head);
+            var close = new Button { Style = (Style)window.FindResource("Icon"), Content = Glyph("\uE711", 12, Muted), Width = 28, Height = 28, Margin = new Thickness(0, 0, 4, 0) }; AutomationProperties.SetName(close, Appearance.Text("关闭")); close.Click += delegate { CloseTutorial(); };
+            DockPanel.SetDock(close, Dock.Right); head.Children.Add(close);
+            head.Children.Add(new TextBlock { Text = "使用教程", FontSize = 24, FontWeight = FontWeights.SemiBold, Foreground = B(Ink) });
+            panel.Children.Add(new TextBlock { Text = "选一种方式了解核心功能。", FontSize = 13, Foreground = B(Muted), Margin = new Thickness(0, 4, 0, 16) });
+            var tiles = new StackPanel { Orientation = Orientation.Horizontal }; panel.Children.Add(tiles);
+            tiles.Children.Add(TutorialTile("\uE768", "软件内播放", "在真实界面上一步步演示，约 1 分钟，不会启动账号。", StartTutorial));
+            tiles.Children.Add(TutorialTile("\uE736", "查看文档教程", "图文说明，随时翻阅。文档在本机打开，不联网。", OpenTutorialDocument));
+            SetTutorialCard(card);
+        }
+        internal Window BuildTutorialDocument() {
+            string markdown = Tutorial.Guide(Appearance.Language == 1);
+            if (markdown == null) return null;
+            var viewer = new FlowDocumentScrollViewer { Document = Tutorial.Document(markdown), VerticalScrollBarVisibility = ScrollBarVisibility.Auto, IsToolBarVisible = false };
+            return new Window { Title = Appearance.Text("文档教程"), Width = 760, Height = 720, MinHeight = 420, MinWidth = 760, Background = B("#FAF6F0"), Icon = window.Icon, WindowStartupLocation = WindowStartupLocation.CenterScreen, Content = viewer };
+        }
+        void OpenTutorialDocument() {
+            CloseTutorial();
+            if (tutorialDocument != null) { tutorialDocument.Activate(); return; }
+            tutorialDocument = BuildTutorialDocument();
+            if (tutorialDocument == null) { Alert("无法打开文档教程", "程序里缺少文档内容，请重新安装启动器。"); return; }
+            tutorialDocument.Closed += delegate { tutorialDocument = null; };
+            tutorialDocument.Show();
         }
         // 路径两端最有辨识度，超长时省略中间。
         static string MiddleTrim(string text, int limit) {
@@ -1613,6 +1780,7 @@ namespace ClaudeLauncher {
             accountsEmpty.Visibility = shown > 0 && !rows.Values.Any(r => r.Root.Visibility == Visibility.Visible) ? Visibility.Visible : Visibility.Collapsed;
             accountsShown = shown;
             LayoutAccountTable(rows.Values.Count(r => r.Root.Visibility == Visibility.Visible));
+            LayoutTutorial();
             var ordered = rows.OrderBy(p => settings.AccountSort == 2 ? p.Value.Status.Text : "").ThenByDescending(p => settings.AccountSort == 1 && accountLastUsed.ContainsKey(p.Key) ? accountLastUsed[p.Key] : DateTime.MinValue).ThenBy(p => p.Key).Select(p => p.Value.Root).ToList();
             if (!rowList.Children.Cast<UIElement>().SequenceEqual(ordered)) { rowList.Children.Clear(); foreach (var item in ordered) rowList.Children.Add(item); }
             UpdateSelection();
@@ -1751,7 +1919,8 @@ namespace ClaudeLauncher {
         }
         // 表格随账号数变高（至少 3 行），只有整页滚动，滚轮不会卡在表格里；趋势区紧跟其后。
         void LayoutAccountTable(int count) {
-            double height = Math.Max(3, count) * 53;
+            // 高 DPI 下行高会取整到设备像素（如 53.33），行多时累计误差要算进去。
+            double rowHeight = rows.Values.Max(r => r.Root.ActualHeight), height = Math.Max(3, count) * (rowHeight > 0 ? rowHeight : 53);
             if (height == accountRowsHeight) return;
             accountRowsHeight = height;
             tablePanel.Height = 86 + height;
@@ -2008,6 +2177,7 @@ namespace ClaudeLauncher {
             await Select(number);
         }
         async Task Select(int number) {
+            if (tutorialOverlay != null) return; // 托盘菜单和全局快捷键也不能在引导期间启动账号。
             if (IsBusy(number) || deleting || updating || incompleteDeletes.Contains(number)) return;
             Diagnostics.Write("account_click", "slot=" + number);
             if (!await ScanNow()) { Alert("暂时不能打开账号", scanError); return; }

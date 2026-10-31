@@ -29,7 +29,7 @@ namespace ClaudeLauncher {
                 using(var reader=new StreamReader(stream,Encoding.UTF8)) {
                     foreach(Match match in Regex.Matches(reader.ReadToEnd(),"\"((?:\\\\.|[^\"\\\\])*)\"\\s*=\\s*\"((?:\\\\.|[^\"\\\\])*)\"\\s*;")) {
                         string source=Regex.Unescape(match.Groups[1].Value), target=Regex.Unescape(match.Groups[2].Value);
-                        target=target.Replace("on this Mac","on this PC").Replace("On this Mac","On this PC");
+                        target=target.Replace("on this Mac","on this PC").Replace("On this Mac","On this PC").Replace("on your Mac","on your PC");
                         if(Regex.Matches(source,"%(?:@|[0-9.]*[dfiul])").Cast<Match>().Select(m=>m.Value).SequenceEqual(Regex.Matches(target,"%(?:@|[0-9.]*[dfiul])").Cast<Match>().Select(m=>m.Value))) result[source]=target;
                     }
                 }
@@ -41,7 +41,8 @@ namespace ClaudeLauncher {
             string translated; if(translations.TryGetValue(source,out translated)) return translated;
             if(translatedCache.TryGetValue(source,out translated)) return translated;
             if(translatedCache.Count>2000) translatedCache.Clear();
-            foreach(var pair in translations.Where(p=>p.Key.Contains("%@")||Regex.IsMatch(p.Key,"%[0-9.]*[ldiu]"))) {
+            // 字面内容最长的优先，否则 "%@ %@" 这样的宽泛词条会抢走具体词条。
+            foreach(var pair in translations.Where(p=>p.Key.Contains("%@")||Regex.IsMatch(p.Key,"%[0-9.]*[ldiu]")).OrderByDescending(p=>Regex.Replace(p.Key,"%[0-9.]*[ldiu@]+","").Length)) {
                 string pattern="^"+Regex.Replace(Regex.Escape(pair.Key),"%[0-9.]*[ldiu@]+","(.*?)")+"$";
                 Match match=Regex.Match(source,pattern); if(!match.Success) continue;
                 int index=0; return translatedCache[source]=Regex.Replace(pair.Value,"%[0-9.]*[ldiu@]+",m=>match.Groups[++index].Value);

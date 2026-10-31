@@ -127,6 +127,7 @@ public static class LauncherTests {
         TestNewFeatures();
         SyncTests.Run();
         SessionSyncTests.Run(ui);
+        TutorialTests.Run();
         Console.WriteLine("PASS: " + checks + " assertions; WPF layout loaded without showing windows.");
         return 0;
     }
