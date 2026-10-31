@@ -9,6 +9,9 @@ using System.Security.Principal;
 using Microsoft.Win32.SafeHandles;
 
 namespace ClaudeLauncher {
+    public sealed class StorageNotFolderException : IOException {
+        public StorageNotFolderException(string message) : base(message) { }
+    }
     // 只读元数据（属性、所有者、硬链接数），从不打开文件内容。
     public static class Storage {
         public static readonly string[] Items = { "Cookies", "Cookies-journal", "Network", "Local Storage", "Session Storage", "IndexedDB",
@@ -58,12 +61,18 @@ namespace ClaudeLauncher {
             return owner != null && (owner.Equals(me.User) || owner.Equals(me.Owner));
         }
         public static void Validate(int number, string roaming, string local, bool recursive) {
-            foreach (string folder in ProfileDeletion.Candidates(number, roaming, local)) {
+            string[] folders = ProfileDeletion.Candidates(number, roaming, local);
+            // 不是文件夹时确实无法启动：先于其他原因报告，“仍然继续”不能越过（SPEC 存储校验）。
+            foreach (string folder in folders)
+                for (string entry = folder; entry != null; entry = Path.GetDirectoryName(entry)) {
+                    FileAttributes? attributes = Attributes(entry);
+                    if (attributes != null && (attributes.Value & FileAttributes.Directory) == 0) throw new StorageNotFolderException("账号目录路径不是文件夹，已停止：" + entry);
+                }
+            foreach (string folder in folders) {
                 for (string entry = folder; entry != null; entry = Path.GetDirectoryName(entry)) {
                     FileAttributes? attributes = Attributes(entry);
                     if (attributes == null) continue;
                     if ((attributes.Value & FileAttributes.ReparsePoint) != 0) throw new IOException("账号目录路径含链接或重定向，已停止：" + entry);
-                    if ((attributes.Value & FileAttributes.Directory) == 0) throw new IOException("账号目录路径不是文件夹，已停止：" + entry);
                 }
                 if (Attributes(folder) == null) continue;
                 foreach (string name in Items) Check(Path.Combine(folder, name), recursive);

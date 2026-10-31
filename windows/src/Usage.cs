@@ -36,6 +36,9 @@ namespace ClaudeLauncher {
         readonly Action opened;
         readonly int processId;
         int[] open;
+        DateTime openAt;
+        // 窗口内的相同通知才算重复；超过后视为新的展开，避免漏掉一次关闭通知后再也读不到。
+        internal TimeSpan DuplicateWindow = TimeSpan.FromSeconds(2);
         internal PopupWatch() { } // 仅供自检 Accept
         PopupWatch(int pid, AutomationElement root, Action opened) {
             processId = pid; this.root = root; this.opened = opened;
@@ -54,8 +57,8 @@ namespace ClaudeLauncher {
             lock (this) {
                 bool same = open != null && open.SequenceEqual(button);
                 if (!expanded) { if (same) open = null; return false; }
-                if (same) return false;
-                open = button; return true;
+                if (same && DateTime.UtcNow - openAt < DuplicateWindow) return false;
+                open = button; openAt = DateTime.UtcNow; return true;
             }
         }
         void Changed(object sender, AutomationPropertyChangedEventArgs e) {
@@ -200,7 +203,8 @@ namespace ClaudeLauncher {
                 if (panels.Count == 1) {
                     UsageMetric same;
                     // 面板必须与按钮同项一致，才采用面板中的两项。
-                    if (!panels[0].TryGetValue(key, out same) || same.Percent != shown.Percent) return new UsageRecord { Status = "界面数据待核对" };
+                    // 按钮文字是取整后的百分比，进度值可能带小数，相差不足 1 才算一致。
+                    if (!panels[0].TryGetValue(key, out same) || Math.Abs(same.Percent - shown.Percent) >= 1) return new UsageRecord { Status = "界面数据待核对" };
                     found = panels[0];
                 }
                 UsageMetric fh, sd; found.TryGetValue("fh", out fh); found.TryGetValue("sd", out sd);

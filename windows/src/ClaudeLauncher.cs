@@ -173,13 +173,19 @@ namespace ClaudeLauncher {
             return ProfileDeletion.Candidates(number, Root, ProfileDeletion.Local).Any(Directory.Exists);
         }
         // 递归存储检查已在后台完成；这里只复查目录链与顶层存储项（含新建的 ClaudeCodeConfig），返回启动的 PID。
-        public static int Launch(int number, string executable) {
+        public static int Launch(int number, string executable, bool riskAccepted) {
             Diagnostics.Write("account_launch", "slot=" + number + "; claude=" + executable);
             if (DeletionJournal.IsPending(number, ProfileDeletion.Local)) throw new IOException("该账号删除未完成，请先重试删除。");
-            Storage.Validate(number, Root, ProfileDeletion.Local, false);
+            Recheck(number, Root, ProfileDeletion.Local, riskAccepted);
             var info = PrepareLaunch(number, executable, Root);
-            Storage.Validate(number, Root, ProfileDeletion.Local, false);
+            Recheck(number, Root, ProfileDeletion.Local, riskAccepted);
             using (var process = Process.Start(info)) return process.Id;
+        }
+        // 用户本次已接受隔离风险时，复核不再中止启动；路径不是文件夹仍然中止。
+        internal static void Recheck(int number, string roaming, string local, bool riskAccepted) {
+            try { Storage.Validate(number, roaming, local, false); }
+            catch (StorageNotFolderException) { throw; }
+            catch (Exception error) { if (!riskAccepted) throw; Diagnostics.Error("storage_risk_accepted", error); }
         }
         // 菜单中显示/复制的目录：优先已存在的候选目录。
         public static string DisplayFolder(int number) {

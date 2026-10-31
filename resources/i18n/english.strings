@@ -784,3 +784,7 @@
 
 "%@\n\n继续可能让账号之间共用数据，登录状态或配置可能互相影响。启动器不会修改这些文件。" = "%@\n\nContinuing may let accounts share data, so sign-in state or configuration could affect each other. The launcher will not change these files.";
 "仍然继续" = "Continue Anyway";
+
+"{0} 天" = "{0} days";
+"{0} 小时" = "{0} hours";
+"选择账号后会复制路径并打开资源管理器，请在 Claude 中选择此文件夹。" = "After you choose an account, the path is copied and File Explorer opens. Choose this folder in Claude.";

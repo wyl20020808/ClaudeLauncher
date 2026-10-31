@@ -30,6 +30,14 @@ public static class UiPreview {
         string[] names = { "instances", "accounts", "logs" };
         Directory.CreateDirectory(args[0]);
         for (int page = 0; page < 3; page++) Save(ui.Snapshot(page, state), new Size(1080, 720), Path.Combine(args[0], names[page] + ".png"));
+        // 合成趋势：账号页滚到趋势区。
+        DateTime now = DateTime.UtcNow; var points = new List<TrendPoint>();
+        for (int i = 40; i >= 0; i--) points.Add(new TrendPoint { Account = 1, At = now.AddHours(-i * 3), Five = (i * 7) % 60 + 5, Week = 60 - i });
+        var accountsRoot = ui.Snapshot(1, state);
+        ui.SetTrend(points); Save(accountsRoot, new Size(1080, 720), Path.Combine(args[0], "accounts-top.png"));
+        var scroll = (System.Windows.Controls.ScrollViewer)typeof(LauncherUI).GetField("accountsScroll", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance).GetValue(ui);
+        scroll.ScrollToVerticalOffset(380); scroll.UpdateLayout(); Save(accountsRoot, new Size(1080, 720), Path.Combine(args[0], "accounts-trend.png"));
+        ui.SetTrend(new TrendPoint[0]);
         Save(ui.Snapshot(4, state), new Size(1080, 720), Path.Combine(args[0], "projects.png"));
         // 系统设置六个分类各一张。
         var section = typeof(LauncherUI).GetMethod("ShowSettingsSection", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);

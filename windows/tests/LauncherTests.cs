@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -10,7 +10,7 @@ using ClaudeLauncher;
 public static class LauncherTests {
     static int checks;
     static void Check(bool condition, string message) { checks++; if (!condition) throw new Exception(message); }
-    static System.Collections.Generic.IEnumerable<DependencyObject> Children(DependencyObject root) {
+    internal static System.Collections.Generic.IEnumerable<DependencyObject> Children(DependencyObject root) {
         yield return root;
         foreach (object child in LogicalTreeHelper.GetChildren(root)) {
             var node = child as DependencyObject;
@@ -272,7 +272,8 @@ public static class LauncherTests {
         Check(shown(2) && !shown(1), "Search must match alias");
         search.Text = "";
         Check(ui.SetAlias(2, "a\nb") != null && ui.SetAlias(2, new string('长', 25)) != null && AccountNames.Load(Path.Combine(Path.GetDirectoryName(settingsFile), "account-names.json"))[2] == "工作", "Invalid alias must be rejected without changes");
-        Check(ui.SetAlias(2, "   ") == null && all.OfType<TextBlock>().Count(t => t.Text == "账号 02") == 2, "Empty alias restores default name");
+        // 实例卡片、账号表格与趋势区卡片各一处。
+        Check(ui.SetAlias(2, "   ") == null && Children(ui.Snapshot(1, state)).OfType<TextBlock>().Count(t => t.Text == "账号 02") == 3, "Empty alias restores default name");
         Check(!new LauncherSettings().ExportJson().Contains("工作"), "Aliases must not be exported with settings");
 
         // 默认用户名（合成 .claude.json，不读真实文件）：无别名时显示“用户名 · NN”，别名优先，文件变化后重读，缺失回落“账号 NN”。
@@ -280,19 +281,21 @@ public static class LauncherTests {
         File.WriteAllText(nameFile, "{\"oauthAccount\":{\"displayName\":\"Eric\",\"emailAddress\":\"x@example.invalid\"}}");
         ui.CodeNameFiles = n => n == 2 ? new[] { nameFile } : new string[0];
         var renderAccounts = typeof(LauncherUI).GetMethod("Render", flags);
+        // 实例卡片、账号表格与趋势区卡片各一处；趋势区重建后旧快照会过期，每次重新取。
+        Func<string, int> named = text => Children(ui.Snapshot(1, state)).OfType<TextBlock>().Count(t => t.Text == text);
         renderAccounts.Invoke(ui, null);
-        Check(all.OfType<TextBlock>().Count(t => t.Text == "Eric · 02") == 2 && all.OfType<TextBlock>().Count(t => t.Text == "账号 01") == 2, "Default name from local Claude Code profile");
+        Check(named("Eric · 02") == 3 && named("账号 01") == 3, "Default name from local Claude Code profile");
         search.Text = "eric";
         Check(shown(2) && !shown(1), "Search must match the default user name");
         search.Text = "";
-        Check(ui.SetAlias(2, "工作") == null && all.OfType<TextBlock>().Count(t => t.Text == "工作 · 02") == 2, "Alias overrides the default name");
-        Check(ui.SetAlias(2, "") == null && all.OfType<TextBlock>().Count(t => t.Text == "Eric · 02") == 2, "Clearing alias falls back to the default name");
+        Check(ui.SetAlias(2, "工作") == null && named("工作 · 02") == 3, "Alias overrides the default name");
+        Check(ui.SetAlias(2, "") == null && named("Eric · 02") == 3, "Clearing alias falls back to the default name");
         File.WriteAllText(nameFile, "{\"oauthAccount\":{\"displayName\":\"Eric Wang\"}}");
         renderAccounts.Invoke(ui, null);
-        Check(all.OfType<TextBlock>().Count(t => t.Text == "Eric Wang · 02") == 2, "Changed file must be re-read");
+        Check(named("Eric Wang · 02") == 3, "Changed file must be re-read");
         File.Delete(nameFile);
         renderAccounts.Invoke(ui, null);
-        Check(all.OfType<TextBlock>().Count(t => t.Text == "账号 02") == 2 && !ui.DiagnosticsText().Contains("Eric") && !new LauncherSettings().ExportJson().Contains("Eric"), "Missing file falls back; name never exported or in diagnostics");
+        Check(named("账号 02") == 3 && !ui.DiagnosticsText().Contains("Eric") && !new LauncherSettings().ExportJson().Contains("Eric"), "Missing file falls back; name never exported or in diagnostics");
         ui.CodeNameFiles = n => new string[0];
 
         // 实例卡片只显示名称与状态；目录与 Code 状态在悬停提示中。
