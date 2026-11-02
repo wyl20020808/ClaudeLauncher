@@ -7,6 +7,8 @@
 NSString *SessionProjectSlug(NSString *cwd);
 // Sessions of one project in a config folder, newest first: {path, title, modified}. Reads only each file's tail.
 NSArray<NSDictionary *> *SessionSyncList(NSString *configFolder, NSString *project);
+// Whether a title carries the suffix of an earlier sync.
+BOOL SessionIsSyncCopy(NSString *title);
 // On failure: {error}. On success: {sessionId, slug, cwd, title, jsonl, record, preview, report, messages, bytes}.
 NSDictionary *CleanSession(NSString *sourcePath, NSString *project, NSString *home);
 void TestSessionSync(void);

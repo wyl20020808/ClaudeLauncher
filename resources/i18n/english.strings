@@ -549,7 +549,7 @@
 "状态已变化，未进入保护" = "Status changed; protection not started";
 "暂时不能打开账号" = "Cannot open the account right now";
 "创建账号 %02ld？" = "Create account %02ld?";
-"将创建独立的本地数据目录。\n\n直接创建：立即启动，其他 Claude 保持运行。登录时浏览器回调可能打开其他窗口，登录后请核对身份。\n\n进入登录保护：需先正常退出其他 Claude；保护期间只允许打开这个账号，登录更稳妥。" = "A separate local data folder will be created.\n\nCreate directly: starts now while other Claude instances keep running. The browser sign-in callback may open another window; check the identity after signing in.\n\nEnter login protection: quit other Claude instances normally first; only this account can be opened during protection, which makes signing in safer.";
+"将创建独立的本地数据目录。\n\n直接创建：立即启动，其他 Claude 保持运行。登录时浏览器回调可能打开其他窗口，登录后请核对身份。\n\n进入登录保护：需先正常退出其他 Claude；保护期间只允许打开这个账号，登录更稳妥。\n\n登录后在该账号建一个本地会话并正常退出，启动器会提示把其他账号的项目和会话同步过来。" = "A separate local data folder will be created.\n\nCreate directly: starts now while other Claude instances keep running. The browser sign-in callback may open another window; check the identity after signing in.\n\nEnter login protection: quit other Claude instances normally first; only this account can be opened during protection, which makes signing in safer.\n\nAfter signing in, create one local session in this account and quit it normally. The launcher will then offer to sync projects and sessions from your other accounts.";
 "直接创建" = "Create directly";
 "进入登录保护" = "Enter login protection";
 "状态已变化，未创建" = "Status changed; not created";
@@ -851,3 +851,8 @@
 "工作" = "Work";
 "同步会话" = "Sync sessions";
 "官方按钮未显示五小时，按 0% 显示" = "The official button does not show the 5-hour limit; shown as 0%";
+"账号 %02ld 已准备好" = "Account %02ld Is Ready";
+"要把其他账号的项目和会话同步过来吗？默认勾选全部原始会话，之前同步过的副本不勾选；可以调整，写入前还会预览。\n\n写入的是清理副本：只保留对话文字和工具请求说明。\n\n选“以后再说”不再提示，之后可以在项目页点“同步会话…”。" = "Sync projects and sessions from your other accounts? All original sessions start ticked; copies from earlier syncs do not. You can adjust this, and you will see a preview before anything is written.\n\nWhat gets written is a cleaned copy: conversation text and tool request notes only.\n\nIf you choose Later, this will not ask again. You can still use Sync Session… on the Projects page.";
+"选择并同步…" = "Choose and Sync…";
+"以后再说" = "Later";
+"暂时不能同步" = "Cannot Sync Right Now";

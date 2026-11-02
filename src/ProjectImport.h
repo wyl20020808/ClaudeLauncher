@@ -11,3 +11,5 @@ void TestProjectImport(void);
 // record removes only the transcript created here. guard is checked before each publication. Returns nil on success.
 NSString *PublishSyncedSession(NSString *profile, NSString *configFolder, NSString *slug, NSString *session,
     NSData *transcript, NSData *record, NSString *(^guard)(void));
+// True once the account has its one account/organization folder; a session cannot be published before that.
+BOOL SyncTargetReady(NSString *profile);

@@ -271,6 +271,11 @@ NSString *PublishSyncedSession(NSString *profile, NSString *configFolder, NSStri
     close(records);
     return failure;
 }
+BOOL SyncTargetReady(NSString *profile) {
+    int records = RegistrationDirectory(profile);
+    if (records < 0) return NO;
+    close(records); return YES;
+}
 
 void TestProjectImport(void) {
     NSFileManager *fm = NSFileManager.defaultManager;

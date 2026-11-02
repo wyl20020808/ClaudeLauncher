@@ -145,14 +145,21 @@ static NSString *ReadRows(NSString *path, NSMutableArray<NSMutableDictionary *> 
     }
     return nil;
 }
-// Syncing a copy again replaces its old suffix instead of stacking another one.
-static NSString *SessionCopyTitle(NSString *title, NSDate *date) {
-    static NSRegularExpression *suffix; static NSDateFormatter *format; static dispatch_once_t once;
+static NSRegularExpression *SyncCopySuffix(void) {
+    static NSRegularExpression *suffix; static dispatch_once_t once;
     dispatch_once(&once, ^{
         suffix = [NSRegularExpression regularExpressionWithPattern:@"(?:（清理副本）| \\(cleaned copy\\)|（(?:副本|同步) \\d\\d/\\d\\d \\d\\d:\\d\\d）| \\((?:Copy|Synced) \\d\\d/\\d\\d \\d\\d:\\d\\d\\))$" options:0 error:nil];
+    });
+    return suffix;
+}
+BOOL SessionIsSyncCopy(NSString *title) { return [SyncCopySuffix() firstMatchInString:title options:0 range:NSMakeRange(0,title.length)] != nil; }
+// Syncing a copy again replaces its old suffix instead of stacking another one.
+static NSString *SessionCopyTitle(NSString *title, NSDate *date) {
+    static NSDateFormatter *format; static dispatch_once_t once;
+    dispatch_once(&once, ^{
         format = [NSDateFormatter new]; format.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"]; format.dateFormat = @"MM/dd HH:mm";
     });
-    NSString *base = [suffix stringByReplacingMatchesInString:title options:0 range:NSMakeRange(0,title.length) withTemplate:@""];
+    NSString *base = [SyncCopySuffix() stringByReplacingMatchesInString:title options:0 range:NSMakeRange(0,title.length) withTemplate:@""];
     return [NSString stringWithFormat:L(@"%@（同步 %@）"),base,[format stringFromDate:date]];
 }
 NSDictionary *CleanSession(NSString *sourcePath, NSString *project, NSString *home) {
@@ -348,6 +355,10 @@ void TestSessionSync(void) {
         NSString *second = [[profile stringByAppendingPathComponent:@"claude-code-sessions"] stringByAppendingPathComponent:NSUUID.UUID.UUIDString];
         [fm createDirectoryAtPath:second withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions:@0700} error:nil];
         NSCAssert(PublishSyncedSession(profile,config,@"-new-project-slug",NSUUID.UUID.UUIDString.lowercaseString,clean[@"jsonl"],clean[@"record"],safe) != nil,@"ambiguous account location refused");
+        NSCAssert(SessionIsSyncCopy(SessionCopyTitle(@"甲",fixed)) && SessionIsSyncCopy(@"甲（副本 10/26 12:00）") && !SessionIsSyncCopy(@"甲") && !SessionIsSyncCopy(@"同步 10/26 12:00"),@"copies recognised by their suffix only");
+        NSCAssert(!SyncTargetReady(profile) && SyncTargetReady(home) == NO,@"ambiguous or missing location is not ready");
+        [fm removeItemAtPath:second error:nil];
+        NSCAssert(SyncTargetReady(profile),@"one account and organization folder is ready");
         puts("PASS: session sync rebuilds from a whitelist, drops account data and publishes without overwriting");
     } @finally { [fm removeItemAtPath:root error:nil]; }
 }
