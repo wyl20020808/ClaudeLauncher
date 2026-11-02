@@ -2924,7 +2924,7 @@ static BOOL ConfigFolderExists(NSInteger n) {
             id value = card.usageValues[row];
             card.usageLabels[row].stringValue = [value isKindOfClass:NSNumber.class] ? [NSString stringWithFormat:@"%.0f%%",[value doubleValue]] : @"—";
             card.usageTimes[row].stringValue = L(UsageInterfaceTimeLabel(metric,now));
-            NSString *specific = metric ? [NSString stringWithFormat:L(@"%@\n观察时间：%@\n官方重置说明：%@"),detail,[NSDateFormatter localizedStringFromDate:metric[@"observedAt"] dateStyle:NSDateFormatterMediumStyle timeStyle:NSDateFormatterMediumStyle],[metric[@"reset"] length] ? metric[@"reset"] : L(@"未提供")] : detail;
+            NSString *specific = metric ? [NSString stringWithFormat:L(@"%@\n观察时间：%@\n官方重置说明：%@"),detail,[NSDateFormatter localizedStringFromDate:metric[@"observedAt"] dateStyle:NSDateFormatterMediumStyle timeStyle:NSDateFormatterMediumStyle],[metric[@"reset"] length] ? L(metric[@"reset"]) : L(@"未提供")] : detail;
             card.usageLabels[row].toolTip = specific; card.usageTimes[row].toolTip = specific;
             card.usageLabels[row].accessibilityLabel = [NSString stringWithFormat:L(@"%@，%@，观察时间 %@%@"),row == 0 ? L(@"5小时已使用") : L(@"每周已使用"),card.usageLabels[row].stringValue,card.usageTimes[row].stringValue,available ? @"" : [L(@"，") stringByAppendingString:L(status)]];
         }

@@ -352,8 +352,12 @@ NSDictionary *MergeUsageInterface(NSDictionary *previous, NSDictionary *snapshot
         NSDictionary *metric = snapshot[key];
         if (metric && Percent(metric[@"percent"])) {
             NSMutableDictionary *observed = [metric mutableCopy]; observed[@"observedAt"] = now; observed[@"visible"] = @YES; result[key] = observed;
-        } else if (same && previous[key] && [previous[key][@"observedAt"] isKindOfClass:NSDate.class] && [now timeIntervalSinceDate:previous[key][@"observedAt"]] >= 0) {
+        } else if (same && previous[key] && [previous[key][@"observedAt"] isKindOfClass:NSDate.class] && [now timeIntervalSinceDate:previous[key][@"observedAt"]] >= 0 &&
+                   (![key isEqual:@"fh"] || [now timeIntervalSinceDate:previous[key][@"observedAt"]] < 5*3600)) { // A five-hour value older than one window has expired.
             NSMutableDictionary *cached = [previous[key] mutableCopy]; cached[@"visible"] = @NO; result[key] = cached;
+        } else if ([key isEqual:@"fh"] && snapshot[@"sd"]) {
+            // shortcut: the button shows the higher limit, so the real value may be anywhere up to weekly; the user chose 0% (2026-11-01). Expanding the official popup reads the real value.
+            result[key] = @{@"percent":@0,@"reset":@"官方按钮未显示五小时，按 0% 显示",@"observedAt":now,@"visible":@NO};
         } else [result removeObjectForKey:key];
     }
     return result;
@@ -530,7 +534,11 @@ void TestUsageInterface(void) {
     NSCAssert([hidden[@"sd"][@"percent"] isEqual:@7] && [hidden[@"sd"][@"observedAt"] isEqual:now] && ![hidden[@"sd"][@"visible"] boolValue],@"closed interface retains last observation without fabricating freshness");
     NSCAssert(!MergeUsageInterface(restored[@1],closed,@[@2,@123,@456,@0,@[@1,@2],syntheticMarker],now)[@"sd"],@"persisted quota never crosses accounts");
     NSDictionary *weeklyOnly = LoadedUsageInterface(StoredUsageInterface(@{@1:MergeUsageInterface(nil,idle,identity,now)}),now);
-    NSCAssert([weeklyOnly[@1][@"sd"][@"percent"] isEqual:@7] && !weeklyOnly[@1][@"fh"],@"weekly-only observation persists without inventing five-hour value");
+    NSCAssert([weeklyOnly[@1][@"sd"][@"percent"] isEqual:@7] && [weeklyOnly[@1][@"fh"][@"percent"] isEqual:@0],@"weekly-only read with no known five-hour value shows 0%");
+    NSDictionary *expired = MergeUsageInterface(first,idle,@[@1,@123,@456],[now dateByAddingTimeInterval:5*3600]);
+    NSCAssert([expired[@"fh"][@"percent"] isEqual:@0] && [expired[@"fh"][@"observedAt"] isEqual:[now dateByAddingTimeInterval:5*3600]],@"five-hour value older than one window becomes 0%");
+    NSCAssert([MergeUsageInterface(first,idle,@[@1,@124,@456],now)[@"fh"][@"percent"] isEqual:@0],@"new process does not inherit the old five-hour value");
+    NSCAssert(!MergeUsageInterface(first,closed,@[@1,@124,@456],now)[@"sd"],@"five-hour-only read never invents a weekly value");
     // Production rejects shared writable ancestors; keep fixtures under the owned home directory.
     NSString *folder = [NSHomeDirectory() stringByAppendingPathComponent:[@".claude-launcher-marker-test-" stringByAppendingString:NSUUID.UUID.UUIDString]];
     NSCAssert([NSFileManager.defaultManager createDirectoryAtPath:folder withIntermediateDirectories:NO attributes:@{NSFilePosixPermissions:@0700} error:nil],@"marker fixture directory");
