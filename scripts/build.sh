@@ -31,8 +31,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 <key>CFBundleName</key><string>Claude 启动器</string>
 <key>CFBundleDisplayName</key><string>Claude 启动器</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleVersion</key><string>29</string>
-<key>CFBundleShortVersionString</key><string>1.7.22</string>
+<key>CFBundleVersion</key><string>30</string>
+<key>CFBundleShortVersionString</key><string>1.7.23</string>
 <key>CFBundleIconFile</key><string>AppIcon.icns</string>
 <key>LSMinimumSystemVersion</key><string>12.0</string>
 <key>NSHighResolutionCapable</key><true/>

@@ -768,10 +768,11 @@ static const unsigned CardFill = 0xFFFCF7;
 @property NSButton *all, *confirm;
 @property NSPopUpButton *target;
 @property NSTextField *countLabel;
+@property NSMutableIndexSet *autoTicked;
 @end
 @implementation SessionSyncPicker
 - (NSView *)viewWithSessions:(NSArray<NSDictionary *> *)sessions target:(NSPopUpButton *)target {
-    self.sessions = sessions; self.target = target; self.rows = [NSMutableArray array]; self.projectChecks = [NSMutableArray array]; self.groups = [NSMutableArray array]; self.disclosures = [NSMutableArray array]; self.details = [NSMutableArray array];
+    self.sessions = sessions; self.target = target; self.rows = [NSMutableArray array]; self.projectChecks = [NSMutableArray array]; self.groups = [NSMutableArray array]; self.disclosures = [NSMutableArray array]; self.details = [NSMutableArray array]; self.autoTicked = [NSMutableIndexSet indexSet];
     NSMutableArray *keys = [NSMutableArray array]; NSMutableDictionary *members = [NSMutableDictionary dictionary];
     for (NSUInteger i = 0; i < sessions.count; i++) {
         NSString *key = sessions[i][@"project"][@"path"];
@@ -823,11 +824,15 @@ static const unsigned CardFill = 0xFFFCF7;
 - (void)targetChanged:(id)sender {
     NSString *to = @(self.target.selectedTag).stringValue; NSDate *now = NSDate.date;
     for (NSUInteger i = 0; i < self.rows.count; i++) {
-        NSDictionary *session = self.sessions[i]; NSDate *held = session[@"versions"][to][@"modified"];
-        BOOL current = held && [held compare:session[@"modified"]] != NSOrderedAscending;
+        NSDictionary *session = self.sessions[i]; NSNumber *held = session[@"versions"][to][@"stamp"];
+        BOOL current = held && [held compare:session[@"stamp"]] != NSOrderedAscending, update = held && !current;
         self.rows[i].enabled = !current;
-        if (current) self.rows[i].state = NSControlStateValueOff;
-        else if (held) self.rows[i].state = NSControlStateValueOn;
+        // Only this method's own ticks are taken back when the target changes, never the user's.
+        if (update) { self.rows[i].state = NSControlStateValueOn; [self.autoTicked addIndex:i]; }
+        else {
+            if (current || [self.autoTicked containsIndex:i]) self.rows[i].state = NSControlStateValueOff;
+            [self.autoTicked removeIndex:i];
+        }
         NSString *where = [NSString stringWithFormat:L(@"账号 %02ld · %@"),(long)[session[@"account"] integerValue],HandoffAge(session[@"modified"],now)];
         self.details[i].stringValue = [NSString stringWithFormat:@"%@ · %@",where,current ? L(@"已是最新") : held ? L(@"有更新") : L(@"新增")];
     }
@@ -849,9 +854,9 @@ static const unsigned CardFill = 0xFFFCF7;
     [self update];
 }
 - (void)toggleRow:(NSButton *)sender { [self update]; }
-// Unlinked copies stay unticked: their originals are selected too, and would otherwise arrive twice. A linked one is the newest of its group.
+// Unlinked copies stay unticked: their originals are selected too, and would otherwise arrive twice. A linked one stands for its whole group.
 - (void)selectOriginals {
-    for (NSUInteger i = 0; i < self.rows.count; i++) if (self.rows[i].enabled && (!SessionIsSyncCopy(self.sessions[i][@"title"]) || [self.sessions[i][@"versions"] count] > 1)) self.rows[i].state = NSControlStateValueOn;
+    for (NSUInteger i = 0; i < self.rows.count; i++) if (self.rows[i].enabled && (!SessionIsSyncCopy(self.sessions[i][@"title"]) || [self.sessions[i][@"linked"] boolValue])) self.rows[i].state = NSControlStateValueOn;
     [self update];
 }
 - (NSControlStateValue)stateOf:(NSArray<NSNumber *> *)indices {
@@ -1495,7 +1500,7 @@ static NSAttributedString *TutorialDocumentText(NSString *markdown, CGFloat imag
     [page addSubview:Text(L(@"本机目录入口 · 移除不删除文件"),NSMakeRect(38,238,340,20),[NSFont systemFontOfSize:13],Hex(0x6E655C))];
     ActionButton *syncSession = [self toolButton:L(@"同步会话…") symbol:@"arrow.left.arrow.right" frame:NSMakeRect(492,228,156,38) action:@selector(syncSession:)];
     syncSession.primary = YES; self.syncSessionButton = syncSession; [page addSubview:syncSession];
-    [page addSubview:[self infoButton:L(@"把会话清理后复制到另一个账号接着聊。不带账号信息，原会话不变，两边不会合并。") frame:NSMakeRect(466,237,20,20)]];
+    [page addSubview:[self infoButton:L(@"把会话清理后同步到另一个账号接着聊。不带账号信息，不合并；同步过的会话以最新版本为准，直接替换另一边的旧版本。") frame:NSMakeRect(466,237,20,20)]];
     [page addSubview:[self infoButton:L(@"从各账号本机记录里找出用过的项目目录，加到下方清单。不读对话，不改账号数据。") frame:NSMakeRect(458,68,20,20)]];
     [page addSubview:[self toolButton:L(@"刷新状态") symbol:@"arrow.clockwise" frame:NSMakeRect(660,228,112,38) action:@selector(refreshProjects:)]];
     NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(37,319,734,281)];
@@ -1742,7 +1747,23 @@ static void TestInitialSync(void) {
     [gone removeAllObjects];
     NSInteger offered = InitialSyncAccount(@[@0,@11,@4,@5],gone,^BOOL(NSInteger n) { return n == 5; },no,yes);
     NSCAssert((offered == 5 && [gone isEqual:@[@0,@11,@4]]),@"skips invalid and gone, offers the ready one");
-    puts("PASS: new account sync prompt waits until the account is quit and has its folder, drops deleted accounts");
+    NSPopUpButton *target = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+    for (NSNumber *tag in @[@2,@4]) { [target addItemWithTitle:tag.stringValue]; target.lastItem.tag = tag.integerValue; }
+    NSDictionary *project = @{@"path":@"/p",@"name":@"p"}; NSDate *date = NSDate.date;
+    NSDictionary *(^session)(NSString *,NSDictionary *,BOOL) = ^NSDictionary *(NSString *title, NSDictionary *versions, BOOL linked) {
+        return @{@"title":title,@"account":@1,@"modified":date,@"stamp":@200,@"project":project,@"versions":versions,@"linked":@(linked)};
+    };
+    SessionSyncPicker *picker = [SessionSyncPicker new];
+    [picker viewWithSessions:@[session(@"甲",@{@"1":@{@"stamp":@200},@"2":@{@"stamp":@199}},YES),session(@"乙（同步 10/26 12:00）",@{@"1":@{@"stamp":@200}},NO),session(@"丙（同步 10/26 12:00）",@{@"1":@{@"stamp":@200}},YES),session(@"丁",@{@"1":@{@"stamp":@200},@"2":@{@"stamp":@200}},YES)] target:target];
+    [target selectItemWithTag:2]; [picker targetChanged:nil];
+    NSCAssert(picker.rows[0].state == NSControlStateValueOn && picker.rows[0].enabled && [picker.details[0].stringValue containsString:L(@"有更新")],@"one nanosecond older reads as changed and starts ticked");
+    NSCAssert(!picker.rows[3].enabled && picker.rows[3].state == NSControlStateValueOff && [picker.details[3].stringValue containsString:L(@"已是最新")],@"same version cannot be ticked");
+    picker.rows[1].state = NSControlStateValueOn;
+    [target selectItemWithTag:4]; [picker targetChanged:nil];
+    NSCAssert(picker.rows[0].state == NSControlStateValueOff && [picker.details[0].stringValue containsString:L(@"新增")] && picker.rows[1].state == NSControlStateValueOn && picker.rows[3].enabled,@"switching target takes back automatic ticks only");
+    picker.rows[1].state = NSControlStateValueOff; [picker selectOriginals];
+    NSCAssert(picker.rows[0].state == NSControlStateValueOn && picker.rows[1].state == NSControlStateValueOff && picker.rows[2].state == NSControlStateValueOn,@"unlinked copies stay unticked, a surviving linked copy is ticked");
+    puts("PASS: new account sync prompt waits until the account is quit and has its folder, drops deleted accounts; sync picker follows versions and target");
 }
 - (void)setInitialSync:(NSInteger)account pending:(BOOL)pending {
     NSMutableArray *accounts = [[NSUserDefaults.standardUserDefaults arrayForKey:InitialSyncKey] ?: @[] mutableCopy];
@@ -1807,7 +1828,7 @@ static void TestInitialSync(void) {
         for (NSNumber *account in accounts) for (NSDictionary *project in projects) for (NSDictionary *session in SessionSyncList(CodeConfigFolder(account.integerValue),project[@"path"])) {
             NSMutableDictionary *row = session.mutableCopy; row[@"account"] = account; row[@"project"] = project; [sessions addObject:row];
         }
-        [sessions sortUsingDescriptors:@[[NSSortDescriptor sortDescriptorWithKey:@"modified" ascending:NO]]];
+        [sessions sortUsingDescriptors:@[[NSSortDescriptor sortDescriptorWithKey:@"stamp" ascending:NO]]];
         dispatch_async(dispatch_get_main_queue(), ^{
             self.syncingSessions = NO; [self refreshProjects:nil];
             [self chooseSessionToSync:MergeLinkedSessions(sessions,[self.preferences arrayForKey:SessionLinksKey]) accounts:accounts newAccount:newAccount];
@@ -1892,22 +1913,21 @@ static void TestInitialSync(void) {
     self.syncingSessions = YES; [self.checking addObject:@(to)]; [self refresh]; [self refreshProjects:nil];
     [self beginSyncProgress:L(@"正在写入目标账号") total:cleans.count];
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0), ^{
-        NSUInteger written = 0, replaced = 0; NSString *failure = nil; NSMutableArray *linked = [NSMutableArray array];
+        NSUInteger written = 0, replaced = 0; NSString *failure = nil;
         NSString *(^guard)(void) = ^NSString *{ return SessionSyncGuard(to); };
         for (NSDictionary *clean in cleans) {
-            failure = [clean[@"replaces"] boolValue] ? ReplaceSyncedSession(ProfilePath(to),CodeConfigFolder(to),clean[@"slug"],clean[@"sessionId"],clean[@"jsonl"],clean[@"record"],clean[@"modified"],nil,guard)
+            failure = [clean[@"replaces"] boolValue] ? ReplaceSyncedSession(ProfilePath(to),CodeConfigFolder(to),clean[@"slug"],clean[@"sessionId"],clean[@"jsonl"],clean[@"record"],[clean[@"stamp"] longLongValue],nil,guard)
                 : PublishSyncedSession(ProfilePath(to),CodeConfigFolder(to),clean[@"slug"],clean[@"sessionId"],clean[@"jsonl"],clean[@"record"],guard);
             if (failure) break;
-            SetSyncedSessionDate(CodeConfigFolder(to),clean[@"slug"],clean[@"sessionId"],clean[@"modified"]);
-            [linked addObject:clean]; replaced += [clean[@"replaces"] boolValue];
+            SetSyncedSessionDate(CodeConfigFolder(to),clean[@"slug"],clean[@"sessionId"],[clean[@"stamp"] longLongValue]);
+            // Saved per session: quitting mid-batch must not leave published copies unlinked.
+            [self.preferences setObject:LinkSessions([self.preferences arrayForKey:SessionLinksKey] ?: @[],[clean[@"from"] integerValue],clean[@"fromId"],to,clean[@"sessionId"]) forKey:SessionLinksKey];
+            replaced += [clean[@"replaces"] boolValue];
             NSUInteger finished = ++written;
             dispatch_async(dispatch_get_main_queue(), ^{ [self updateSyncProgress:L(@"正在写入目标账号") done:finished]; });
         }
         dispatch_async(dispatch_get_main_queue(), ^{
             self.syncingSessions = NO; [self endSyncProgress]; [self.checking removeObject:@(to)]; [self refresh]; [self refreshProjects:nil];
-            NSArray *links = [self.preferences arrayForKey:SessionLinksKey] ?: @[];
-            for (NSDictionary *clean in linked) links = LinkSessions(links,[clean[@"from"] integerValue],clean[@"fromId"],to,clean[@"sessionId"]);
-            [self.preferences setObject:links forKey:SessionLinksKey];
             NSString *log = [NSString stringWithFormat:L(@"会话同步：账号 %02ld 新增 %lu 条，替换 %lu 条，共选择 %lu 条"),(long)to,(unsigned long)(written-replaced),(unsigned long)replaced,(unsigned long)(cleans.count+failures.count)];
             [self projectNotice:failure ?: log]; [self addLog:log];
             NSAlert *done = [NSAlert new]; done.messageText = written == cleans.count ? L(@"会话已同步") : L(@"同步未全部完成");
@@ -3354,7 +3374,7 @@ static OSStatus HotKeyHandler(EventHandlerCallRef next, EventRef event, void *co
         @{@"title":L(@"新建账号"),@"body":L(@"点这里创建下一个空闲账号，然后在打开的 Claude 里登录。最多 10 个。"),@"page":@0,@"targets":@[self.createButton]},
         @{@"title":L(@"账号管理"),@"body":L(@"所有账号都在这张表里：搜索、筛选、排序，看运行状态和最近使用，也能直接启动或切换。"),@"page":@1,@"targets":@[self.rowsView]},
         @{@"title":L(@"项目管理"),@"body":L(@"添加常用目录，或从各账号的本机记录里识别导入。所有账号共用这份清单。"),@"page":@2,@"targets":@[self.importProjectsButton,self.addProjectButton]},
-        @{@"title":L(@"同步会话"),@"body":L(@"把会话复制到另一个账号接着聊。原会话不变，两边不会合并。目标账号要先正常退出；有项目后才能用。"),@"page":@2,@"targets":@[self.syncSessionButton]},
+        @{@"title":L(@"同步会话"),@"body":L(@"把会话同步到另一个账号接着聊。同步过的会话以最新版本为准，直接替换旧版本，不合并。目标账号要先正常退出；有项目后才能用。"),@"page":@2,@"targets":@[self.syncSessionButton]},
         @{@"title":L(@"用量趋势"),@"body":L(@"账号管理页下方记录近 7 天用量，并建议下一个使用的账号。只用启动器已观察到的数值，不查询 Claude。"),@"page":@1,@"targets":trend,@"trend":@YES},
         @{@"title":L(@"随时回看"),@"body":L(@"点这里可以重新播放引导，或查看文档教程。"),@"page":@0,@"targets":@[self.tutorialEntry]}]];
     return steps;

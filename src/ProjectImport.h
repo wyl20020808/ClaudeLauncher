@@ -13,10 +13,10 @@ NSString *PublishSyncedSession(NSString *profile, NSString *configFolder, NSStri
     NSData *transcript, NSData *record, NSString *(^guard)(void));
 // Replaces a linked session's transcript with a newer version. The old transcript goes through trash (nil: the Trash) and is put
 // back if the new one cannot be published. The target's own record keeps its fields; only title and lastActivityAt change, or
-// record is added when it has none. Refused when the target's file is newer than modified. Returns nil on success.
+// record is added when it has none. Refused when the target's file is newer than stamp (nanoseconds) or changes meanwhile. Returns nil on success.
 NSString *ReplaceSyncedSession(NSString *profile, NSString *configFolder, NSString *slug, NSString *session,
-    NSData *transcript, NSData *record, NSDate *modified, NSURL *(^trash)(NSURL *path), NSString *(^guard)(void));
+    NSData *transcript, NSData *record, long long stamp, NSURL *(^trash)(NSURL *path), NSString *(^guard)(void));
 // Gives a published transcript the source's modification time, so both sides then read as the same version.
-void SetSyncedSessionDate(NSString *configFolder, NSString *slug, NSString *session, NSDate *modified);
+void SetSyncedSessionDate(NSString *configFolder, NSString *slug, NSString *session, long long stamp);
 // True once the account has its one account/organization folder; a session cannot be published before that.
 BOOL SyncTargetReady(NSString *profile);

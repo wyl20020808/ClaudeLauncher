@@ -275,18 +275,27 @@ NSString *PublishSyncedSession(NSString *profile, NSString *configFolder, NSStri
     return failure;
 }
 // Finds the record whose cliSessionId is this session: a record the official client made may carry another local_ name.
-static NSString *RecordForSession(int records, NSString *session, NSMutableDictionary * __strong *value) {
+// Only the leading identifiers of other records are read. A file that cannot be judged safely sets unsafe: it might be this one.
+static NSString *RecordForSession(int records, NSString *session, NSMutableDictionary * __strong *value, BOOL *unsafe) {
     int copy = dup(records); DIR *stream = copy >= 0 ? fdopendir(copy) : NULL; NSString *found = nil;
-    if (!stream) { if (copy >= 0) close(copy); return nil; }
-    for (struct dirent *entry; !found && (entry = readdir(stream)); ) {
+    if (!stream) { if (copy >= 0) close(copy); *unsafe = YES; return nil; }
+    for (struct dirent *entry; !found && !*unsafe && (entry = readdir(stream)); ) {
         NSString *name = [NSString stringWithUTF8String:entry->d_name];
         if (![name hasPrefix:@"local_"] || ![name hasSuffix:@".json"]) continue;
         int file = openat(records,entry->d_name,O_RDONLY|O_NOFOLLOW|O_NONBLOCK|O_CLOEXEC); struct stat info;
-        if (file < 0) continue;
-        if (fstat(file,&info) == 0 && S_ISREG(info.st_mode) && info.st_size <= 8*1024*1024) {
+        if (file < 0 || fstat(file,&info) != 0 || !S_ISREG(info.st_mode) || info.st_uid != getuid() || info.st_nlink != 1 || info.st_size > 8*1024*1024) {
+            *unsafe = YES;
+            if (file >= 0) close(file);
+            continue;
+        }
+        PrefixReader r = {file,0,NO};
+        BOOL match = Nonspace(&r) == '{' && [JSONString(&r,64) isEqual:@"sessionId"] && Nonspace(&r) == ':' && JSONString(&r,64) && Nonspace(&r) == ',' &&
+            [JSONString(&r,64) isEqual:@"cliSessionId"] && Nonspace(&r) == ':' && [JSONString(&r,64) isEqual:session];
+        if (match && lseek(file,0,SEEK_SET) == 0) {
             NSData *data = [[[NSFileHandle alloc] initWithFileDescriptor:file closeOnDealloc:NO] readDataToEndOfFile];
             NSMutableDictionary *row = data ? [NSJSONSerialization JSONObjectWithData:data options:NSJSONReadingMutableContainers error:nil] : nil;
-            if ([row isKindOfClass:NSDictionary.class] && [row[@"cliSessionId"] isEqual:session]) { found = name; *value = row; }
+            if ([row isKindOfClass:NSDictionary.class]) { found = name; *value = row; }
+            else *unsafe = YES;
         }
         close(file);
     }
@@ -309,38 +318,45 @@ static NSData *RecordData(NSDictionary *record) {
     return [[NSString stringWithFormat:@"{%@}",[fields componentsJoinedByString:@","]] dataUsingEncoding:NSUTF8StringEncoding];
 }
 NSString *ReplaceSyncedSession(NSString *profile, NSString *configFolder, NSString *slug, NSString *session,
-                               NSData *transcript, NSData *record, NSDate *modified, NSURL *(^trash)(NSURL *path), NSString *(^guard)(void)) {
+                               NSData *transcript, NSData *record, long long stamp, NSURL *(^trash)(NSURL *path), NSString *(^guard)(void)) {
     NSString *failure = guard();
     if (failure) return failure;
     if (!UUIDString(session) || !slug.length || [slug containsString:@"/"]) return L(@"会话标识或项目目录名无效。");
     int records = RegistrationDirectory(profile);
     if (records < 0) return L(@"目标没有唯一且安全的账号／组织记录目录。请先在该账号正常创建一次本地会话；多位置时不猜测身份。");
     int config = ProfileDirectory(configFolder), projects = config >= 0 ? ChildDirectory(config,@"projects") : -1, folder = projects >= 0 ? ChildDirectory(projects,slug) : -1;
-    NSString *name = [session stringByAppendingString:@".jsonl"]; struct stat info;
-    NSString *transcriptTemporary = nil, *recordTemporary = nil, *recordName = nil;
-    if (folder < 0 || fstatat(folder,name.fileSystemRepresentation,&info,AT_SYMLINK_NOFOLLOW) != 0 || !S_ISREG(info.st_mode) || info.st_uid != getuid()) failure = L(@"目标账号里的旧版本无法安全打开，未替换。");
-    else if (info.st_mtimespec.tv_sec > (time_t)modified.timeIntervalSince1970) failure = L(@"目标账号里的这条会话比来源更新，未替换。");
+    NSString *name = [session stringByAppendingString:@".jsonl"]; struct stat info, now;
+    NSString *transcriptTemporary = nil, *recordTemporary = nil, *recordName = nil, *freshName = [NSString stringWithFormat:@"local_%@.json",session];
+    if (folder < 0 || fstatat(folder,name.fileSystemRepresentation,&info,AT_SYMLINK_NOFOLLOW) != 0 || !S_ISREG(info.st_mode) || info.st_uid != getuid() || info.st_nlink != 1) failure = L(@"目标账号里的旧版本无法安全打开，未替换。");
+    else if (info.st_mtimespec.tv_sec*1000000000LL+info.st_mtimespec.tv_nsec > stamp) failure = L(@"目标账号里的这条会话比来源更新，未替换。");
     if (!failure) {
-        NSMutableDictionary *existing = nil, *fresh = [NSJSONSerialization JSONObjectWithData:record options:0 error:nil];
-        recordName = RecordForSession(records,session,&existing);
-        if (recordName) { existing[@"title"] = fresh[@"title"]; existing[@"lastActivityAt"] = fresh[@"lastActivityAt"]; }
+        NSMutableDictionary *existing = nil, *fresh = [NSJSONSerialization JSONObjectWithData:record options:0 error:nil]; BOOL unsafe = NO;
+        recordName = RecordForSession(records,session,&existing,&unsafe);
+        if (unsafe) failure = L(@"目标账号的记录目录里有无法安全读取的文件，未替换。");
+        // That name holding another session's record is not ours to overwrite.
+        else if (!recordName && fstatat(records,freshName.fileSystemRepresentation,&now,AT_SYMLINK_NOFOLLOW) == 0) failure = L(@"目标账号里已有同名记录，但不属于这条会话，未替换。");
+        else if (recordName) { existing[@"title"] = fresh[@"title"]; existing[@"lastActivityAt"] = fresh[@"lastActivityAt"]; }
         NSData *recordBytes = recordName ? RecordData(existing) : record;
-        if (!recordBytes) failure = L(@"无法生成清理副本。");
-        transcriptTemporary = [@".claude-launcher-session-" stringByAppendingString:NSUUID.UUID.UUIDString];
-        recordTemporary = [@".claude-launcher-session-" stringByAppendingString:NSUUID.UUID.UUIDString];
-        if (!failure) failure = WriteTemporary(folder,transcriptTemporary,transcript) ?: WriteTemporary(records,recordTemporary,recordBytes) ?: guard();
+        if (!failure && !recordBytes) failure = L(@"无法生成清理副本。");
+        if (!failure) {
+            transcriptTemporary = [@".claude-launcher-session-" stringByAppendingString:NSUUID.UUID.UUIDString];
+            recordTemporary = [@".claude-launcher-session-" stringByAppendingString:NSUUID.UUID.UUIDString];
+            failure = WriteTemporary(folder,transcriptTemporary,transcript) ?: WriteTemporary(records,recordTemporary,recordBytes) ?: guard();
+        }
     }
+    if (!failure && (fstatat(folder,name.fileSystemRepresentation,&now,AT_SYMLINK_NOFOLLOW) != 0 || now.st_dev != info.st_dev || now.st_ino != info.st_ino || now.st_size != info.st_size ||
+                     now.st_mtimespec.tv_sec != info.st_mtimespec.tv_sec || now.st_mtimespec.tv_nsec != info.st_mtimespec.tv_nsec)) failure = L(@"目标账号里的这条会话刚有变化，未替换。");
+    // The record goes first: if it fails nothing has changed, and it differs from the old one only in title and time.
+    if (!failure && (recordName ? renameat(records,recordTemporary.fileSystemRepresentation,records,recordName.fileSystemRepresentation)
+                                : renameatx_np(records,recordTemporary.fileSystemRepresentation,records,freshName.fileSystemRepresentation,RENAME_EXCL)) != 0) failure = L(@"无法更新目标账号的记录，未替换。");
     if (!failure) {
         NSURL *path = [NSURL fileURLWithPath:[[[configFolder stringByAppendingPathComponent:@"projects"] stringByAppendingPathComponent:slug] stringByAppendingPathComponent:name]];
         NSURL *trashed = nil;
         if (trash) trashed = trash(path);
         else [NSFileManager.defaultManager trashItemAtURL:path resultingItemURL:&trashed error:nil];
         if (!trashed) failure = L(@"无法把旧版本移到废纸篓，未替换。");
-        else if (renameatx_np(folder,transcriptTemporary.fileSystemRepresentation,folder,name.fileSystemRepresentation,RENAME_EXCL) != 0) {
-            [NSFileManager.defaultManager moveItemAtURL:trashed toURL:path error:nil];
-            failure = L(@"无法原子发布新文件，未覆盖任何同名文件。");
-        } else if (renameat(records,recordTemporary.fileSystemRepresentation,records,(recordName ?: [NSString stringWithFormat:@"local_%@.json",session]).fileSystemRepresentation) != 0)
-            failure = L(@"会话已替换，但记录没有更新；侧栏的标题和时间可能还是旧的。");
+        else if (renameatx_np(folder,transcriptTemporary.fileSystemRepresentation,folder,name.fileSystemRepresentation,RENAME_EXCL) != 0)
+            failure = [NSFileManager.defaultManager moveItemAtURL:trashed toURL:path error:nil] ? L(@"无法原子发布新文件，旧版本已放回。") : L(@"新版本发布失败，旧版本还在废纸篓里，需要手动放回。");
     }
     if (transcriptTemporary) unlinkat(folder,transcriptTemporary.fileSystemRepresentation,0);
     if (recordTemporary) unlinkat(records,recordTemporary.fileSystemRepresentation,0);
@@ -351,9 +367,9 @@ NSString *ReplaceSyncedSession(NSString *profile, NSString *configFolder, NSStri
     close(records);
     return failure;
 }
-void SetSyncedSessionDate(NSString *configFolder, NSString *slug, NSString *session, NSDate *modified) {
+void SetSyncedSessionDate(NSString *configFolder, NSString *slug, NSString *session, long long stamp) {
     NSString *path = [[[[configFolder stringByAppendingPathComponent:@"projects"] stringByAppendingPathComponent:slug] stringByAppendingPathComponent:session] stringByAppendingPathExtension:@"jsonl"];
-    struct timespec times[2] = {{(time_t)modified.timeIntervalSince1970,0},{(time_t)modified.timeIntervalSince1970,0}};
+    struct timespec time = {(time_t)(stamp/1000000000LL),(long)(stamp%1000000000LL)}, times[2] = {time,time};
     utimensat(AT_FDCWD,path.fileSystemRepresentation,times,AT_SYMLINK_NOFOLLOW);
 }
 BOOL SyncTargetReady(NSString *profile) {

@@ -796,7 +796,7 @@
 "%@（%lu）" = "%@ (%lu)";
 "已选 %lu 条" = "%lu selected";
 "说明" = "Info";
-"把会话清理后复制到另一个账号接着聊。不带账号信息，原会话不变，两边不会合并。" = "Cleans a session and copies it to another account so you can continue there. No account data is copied, the original stays as it is, and the two are never merged.";
+"把会话清理后同步到另一个账号接着聊。不带账号信息，不合并；同步过的会话以最新版本为准，直接替换另一边的旧版本。" = "Cleans a session and syncs it to another account so you can continue there. No account data is copied and nothing is merged. For a session synced before, the newest version replaces the old one on the other side.";
 "从各账号本机记录里找出用过的项目目录，加到下方清单。不读对话，不改账号数据。" = "Finds project folders used by each account on this Mac and adds them to the list below. Does not read conversations or change account data.";
 "为勾选的会话各生成一份清理副本放到目标账号：只保留对话文字和工具请求说明，不带账号信息、权限、工具结果和图片。同步过的会话按最新版本为准：有变动时直接替换目标里的旧版本（旧版本移到废纸篓），没变动的不可勾选。写入前可以预览。" = "Creates a cleaned copy of each selected session in the target account: conversation text and tool request notes only, with no account data, permissions, tool results or images. For a session synced before, the newest version wins: when it changed, it replaces the old version in the target (the old version goes to the Trash); unchanged ones cannot be ticked. You can preview before writing.";
 "没有生成清理副本，未写入。" = "No cleaned copies were created. Nothing was written.";
@@ -811,7 +811,12 @@
 "目标账号里的旧版本无法安全打开，未替换。" = "The old version in the target account could not be opened safely. Nothing was replaced.";
 "目标账号里的这条会话比来源更新，未替换。" = "This session is newer in the target account than in the source. Nothing was replaced.";
 "无法把旧版本移到废纸篓，未替换。" = "The old version could not be moved to the Trash. Nothing was replaced.";
-"会话已替换，但记录没有更新；侧栏的标题和时间可能还是旧的。" = "The session was replaced, but its record was not updated. The sidebar may still show the old title and time.";
+"无法更新目标账号的记录，未替换。" = "The target account's record could not be updated. Nothing was replaced.";
+"目标账号的记录目录里有无法安全读取的文件，未替换。" = "The target account's record folder holds a file that cannot be read safely. Nothing was replaced.";
+"目标账号里已有同名记录，但不属于这条会话，未替换。" = "The target account already has a record with this name for another session. Nothing was replaced.";
+"目标账号里的这条会话刚有变化，未替换。" = "This session just changed in the target account. Nothing was replaced.";
+"无法原子发布新文件，旧版本已放回。" = "The new version could not be published. The old version was put back.";
+"新版本发布失败，旧版本还在废纸篓里，需要手动放回。" = "The new version could not be published. The old version is still in the Trash and must be put back by hand.";
 "共 %lu KB。脱敏只认固定格式，其他私人信息请自己看一遍。" = "%lu KB in total. Redaction only recognizes fixed formats. Please check for other private information yourself.";
 "\n历史较长的会话会占用目标账号较多额度；启动器不会自动截断。" = "\nLong histories use more of the target account’s quota. The launcher does not shorten them.";
 "\n部分会话含图片，同步后 AI 看不到它们。" = "\nSome sessions include images. The AI will not see them after syncing.";
@@ -838,7 +843,7 @@
 "点这里创建下一个空闲账号，然后在打开的 Claude 里登录。最多 10 个。" = "Click here to create the next free account, then sign in in the Claude window that opens. Up to 10.";
 "所有账号都在这张表里：搜索、筛选、排序，看运行状态和最近使用，也能直接启动或切换。" = "Every account is in this table. Search, filter and sort, check status and recent use, or start and switch directly.";
 "添加常用目录，或从各账号的本机记录里识别导入。所有账号共用这份清单。" = "Add the folders you use, or import them from each account's local records. All accounts share this list.";
-"把会话复制到另一个账号接着聊。原会话不变，两边不会合并。目标账号要先正常退出；有项目后才能用。" = "Copy a session to another account and keep going. The original stays as it is and the two never merge. Quit the target account first. Needs at least one project.";
+"把会话同步到另一个账号接着聊。同步过的会话以最新版本为准，直接替换旧版本，不合并。目标账号要先正常退出；有项目后才能用。" = "Sync a session to another account and keep going. For a session synced before, the newest version replaces the old one; nothing is merged. Quit the target account first. Needs at least one project.";
 "账号管理页下方记录近 7 天用量，并建议下一个使用的账号。只用启动器已观察到的数值，不查询 Claude。" = "Below the Accounts table: 7 days of usage and a suggestion for the next account. It only uses values the launcher has seen and never queries Claude.";
 "随时回看" = "Come back anytime";
 "点这里可以重新播放引导，或查看文档教程。" = "Click here to replay the tour or read the guide.";

@@ -28,7 +28,7 @@ Take turns on a shared project, because the launcher can't detect simultaneous e
 When an account is running out of quota, you can take a session to another account.
 
 - On the Projects page, click Sync Session…, tick the sessions and pick a target account. Quit the target account normally first.
-- The launcher only adds a cleaned copy with no account details. The original session stays as it is, and the two never merge.
+- The launcher writes a cleaned copy with no account details, and the two never merge. For a session synced before, the newest version wins: when it changed, it replaces the old version on the other side, and the old version goes to the Trash. That side then holds cleaned content only.
 - Open the target account. The session appears in the sidebar, with "Synced" and the time after its title. You send the first message yourself.
 
 ## Usage trend: which account next
