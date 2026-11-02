@@ -190,10 +190,10 @@ NSArray *PrepareProjectImport(ProjectStore *store, NSArray<NSString *> *paths, N
     return rows;
 }
 
-static int UniqueRegistrationChild(int parent, NSString **name) {
+static NSArray<NSString *> *RegistrationChildren(int parent) {
     int copy = dup(parent); DIR *stream = copy < 0 ? NULL : fdopendir(copy);
-    if (!stream) { if (copy >= 0) close(copy); return -1; }
-    int found = -1; BOOL failed = NO; NSUInteger entries = 0;
+    if (!stream) { if (copy >= 0) close(copy); return nil; }
+    NSMutableArray *names = [NSMutableArray array]; BOOL failed = NO; NSUInteger entries = 0;
     struct dirent *entry;
     while (YES) {
         errno = 0; entry = readdir(stream);
@@ -206,20 +206,42 @@ static int UniqueRegistrationChild(int parent, NSString **name) {
             if (S_ISDIR(info.st_mode) || S_ISLNK(info.st_mode)) { failed = YES; break; }
             continue;
         }
-        if (found >= 0) { failed = YES; break; }
-        found = ChildDirectory(parent,part);
-        if (found < 0) { failed = YES; break; }
-        if (name) *name = part;
+        [names addObject:part];
     }
     closedir(stream);
+    return failed ? nil : names;
+}
+// The account level may hold several sign-ins; the same organization under two accounts is still ambiguous, so it is refused.
+static int OrganizationDirectory(int root, NSString *organization, NSUInteger *total) {
+    NSArray *accounts = RegistrationChildren(root);
+    int found = -1; NSUInteger count = 0; BOOL failed = !accounts;
+    for (NSString *name in accounts) {
+        int account = ChildDirectory(root,name);
+        NSArray *organizations = account >= 0 ? RegistrationChildren(account) : nil;
+        count += organizations.count;
+        if (!organizations) failed = YES;
+        else if (organization && [organizations containsObject:organization]) {
+            if (found >= 0) failed = YES;
+            else if ((found = ChildDirectory(account,organization)) < 0) failed = YES;
+        }
+        if (account >= 0) close(account);
+        if (failed) break;
+    }
     if (failed && found >= 0) { close(found); found = -1; }
+    if (total) *total = failed ? 0 : count;
     return found;
 }
-static int RegistrationDirectory(NSString *profile) {
+static int RegistrationDirectory(NSString *profile, NSString *organization) {
     int fd = ProfileDirectory(profile); if (fd < 0) return -1;
     int next = ChildDirectory(fd,@"claude-code-sessions"); close(fd); fd = next;
+    if (organization) {
+        next = fd >= 0 ? OrganizationDirectory(fd,organization,NULL) : -1;
+        if (fd >= 0) close(fd);
+        return next;
+    }
     for (NSUInteger level = 0; fd >= 0 && level < 2; level++) {
-        next = UniqueRegistrationChild(fd,NULL); close(fd); fd = next;
+        NSArray *names = RegistrationChildren(fd);
+        next = names.count == 1 ? ChildDirectory(fd,names[0]) : -1; close(fd); fd = next;
     }
     return fd;
 }
@@ -245,13 +267,13 @@ static NSString *PublishExclusive(int directory, NSString *name, NSData *data, N
     if (!failure) fsync(directory);
     return failure;
 }
-NSString *PublishSyncedSession(NSString *profile, NSString *configFolder, NSString *slug, NSString *session,
+NSString *PublishSyncedSession(NSString *profile, NSString *organization, NSString *configFolder, NSString *slug, NSString *session,
                                NSData *transcript, NSData *record, NSString *(^guard)(void)) {
     NSString *failure = guard();
     if (failure) return failure;
     if (!UUIDString(session) || !slug.length || [slug containsString:@"/"]) return L(@"会话标识或项目目录名无效。");
-    int records = RegistrationDirectory(profile);
-    if (records < 0) return L(@"目标没有唯一且安全的账号／组织记录目录。请先在该账号正常创建一次本地会话；多位置时不猜测身份。");
+    int records = RegistrationDirectory(profile,organization);
+    if (records < 0) return L(@"目标账号的记录目录已变化或不安全，未写入。请重新同步。");
     int config = ProfileDirectory(configFolder), projects = -1, folder = -1;
     if (config >= 0) {
         projects = ChildDirectory(config,@"projects");
@@ -317,13 +339,13 @@ static NSData *RecordData(NSDictionary *record) {
     }
     return [[NSString stringWithFormat:@"{%@}",[fields componentsJoinedByString:@","]] dataUsingEncoding:NSUTF8StringEncoding];
 }
-NSString *ReplaceSyncedSession(NSString *profile, NSString *configFolder, NSString *slug, NSString *session,
+NSString *ReplaceSyncedSession(NSString *profile, NSString *organization, NSString *configFolder, NSString *slug, NSString *session,
                                NSData *transcript, NSData *record, long long stamp, NSURL *(^trash)(NSURL *path), NSString *(^guard)(void)) {
     NSString *failure = guard();
     if (failure) return failure;
     if (!UUIDString(session) || !slug.length || [slug containsString:@"/"]) return L(@"会话标识或项目目录名无效。");
-    int records = RegistrationDirectory(profile);
-    if (records < 0) return L(@"目标没有唯一且安全的账号／组织记录目录。请先在该账号正常创建一次本地会话；多位置时不猜测身份。");
+    int records = RegistrationDirectory(profile,organization);
+    if (records < 0) return L(@"目标账号的记录目录已变化或不安全，未写入。请重新同步。");
     int config = ProfileDirectory(configFolder), projects = config >= 0 ? ChildDirectory(config,@"projects") : -1, folder = projects >= 0 ? ChildDirectory(projects,slug) : -1;
     NSString *name = [session stringByAppendingString:@".jsonl"]; struct stat info, now;
     NSString *transcriptTemporary = nil, *recordTemporary = nil, *recordName = nil, *freshName = [NSString stringWithFormat:@"local_%@.json",session];
@@ -373,9 +395,27 @@ void SetSyncedSessionDate(NSString *configFolder, NSString *slug, NSString *sess
     utimensat(AT_FDCWD,path.fileSystemRepresentation,times,AT_SYMLINK_NOFOLLOW);
 }
 BOOL SyncTargetReady(NSString *profile) {
-    int records = RegistrationDirectory(profile);
+    int records = RegistrationDirectory(profile,nil);
     if (records < 0) return NO;
     close(records); return YES;
+}
+BOOL ResolveSyncTarget(NSString *profile, NSString *(^readOrganization)(NSString **failure), NSString **organization, NSString **failure) {
+    *organization = nil;
+    if (SyncTargetReady(profile)) return YES;
+    int fd = ProfileDirectory(profile), root = fd >= 0 ? ChildDirectory(fd,@"claude-code-sessions") : -1; NSUInteger total = 0;
+    if (fd >= 0) close(fd);
+    if (root >= 0) { OrganizationDirectory(root,nil,&total); close(root); }
+    // Nothing to choose between: no reason to touch the keychain.
+    if (!total) { *failure = L(@"目标账号还没有可用的本地记录目录。请先在该账号正常创建一次本地会话。"); return NO; }
+    NSString *why = nil, *current = readOrganization(&why);
+    if (!current) {
+        *failure = [NSString stringWithFormat:L(@"目标账号有多套账号／组织记录，要读到它当前的组织才能确定写入位置，但这次没有读到（%@）。如果刚才拒绝了钥匙串提示，请重新打开启动器再试。"),L(why ?: @"组织记录不可读")];
+        return NO;
+    }
+    int records = RegistrationDirectory(profile,current);
+    if (records < 0) { *failure = L(@"目标账号当前的组织还没有可用的本地记录目录。请先在该账号正常创建一次本地会话。"); return NO; }
+    close(records); *organization = current;
+    return YES;
 }
 
 void TestProjectImport(void) {

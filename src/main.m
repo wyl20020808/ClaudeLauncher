@@ -12,6 +12,7 @@
 #import "Projects.h"
 #import "ProjectImport.h"
 #import "UsageInterface.h"
+#import "UsageHistory.h"
 #import "Settings.h"
 #import "ProxyCheck.h"
 #import "Handoff.h"
@@ -1873,6 +1874,16 @@ static void TestInitialSync(void) {
     self.syncingSessions = YES; [self refreshProjects:nil];
     [self beginSyncProgress:L(@"正在生成清理副本") total:selected.count];
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0), ^{
+        // Off the main thread: with several sign-ins this may wait on the system's keychain prompt. Asked once per sync, before the preview.
+        // shortcut: switching the target's organization during the preview is not noticed, re-read here if that ever matters.
+        NSString *organization = nil, *problem = nil; NSString *profile = ProfilePath(to);
+        if (!ResolveSyncTarget(profile,^NSString *(NSString **why) { return ReadLastActiveOrganization(profile,why); },&organization,&problem)) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                self.syncingSessions = NO; [self endSyncProgress]; [self refreshProjects:nil];
+                [self projectNotice:L(@"没有确定写入位置，未写入。")]; [self alert:L(@"无法同步到这个账号") detail:problem];
+            });
+            return;
+        }
         NSMutableArray *cleans = [NSMutableArray array], *failures = [NSMutableArray array];
         NSUInteger done = 0;
         for (NSDictionary *session in selected) @autoreleasepool {
@@ -1886,11 +1897,11 @@ static void TestInitialSync(void) {
         dispatch_async(dispatch_get_main_queue(), ^{
             self.syncingSessions = NO; [self endSyncProgress]; [self refreshProjects:nil];
             if (!cleans.count) { [self projectNotice:L(@"没有生成清理副本，未写入。")]; [self alert:L(@"无法同步所选会话") detail:[failures componentsJoinedByString:@"\n"]]; return; }
-            [self confirmSessionSync:cleans failures:failures to:to];
+            [self confirmSessionSync:cleans failures:failures to:to organization:organization];
         });
     });
 }
-- (void)confirmSessionSync:(NSArray<NSDictionary *> *)cleans failures:(NSArray<NSString *> *)failures to:(NSInteger)to {
+- (void)confirmSessionSync:(NSArray<NSDictionary *> *)cleans failures:(NSArray<NSString *> *)failures to:(NSInteger)to organization:(NSString *)organization {
     NSAlert *confirm = [NSAlert new]; confirm.messageText = [NSString stringWithFormat:L(@"预览：同步 %lu 条会话到账号 %02ld"),(unsigned long)cleans.count,(long)to];
     NSUInteger bytes = 0, images = 0, replacing = 0; NSMutableString *preview = [NSMutableString string];
     for (NSDictionary *clean in cleans) {
@@ -1916,8 +1927,8 @@ static void TestInitialSync(void) {
         NSUInteger written = 0, replaced = 0; NSString *failure = nil;
         NSString *(^guard)(void) = ^NSString *{ return SessionSyncGuard(to); };
         for (NSDictionary *clean in cleans) {
-            failure = [clean[@"replaces"] boolValue] ? ReplaceSyncedSession(ProfilePath(to),CodeConfigFolder(to),clean[@"slug"],clean[@"sessionId"],clean[@"jsonl"],clean[@"record"],[clean[@"stamp"] longLongValue],nil,guard)
-                : PublishSyncedSession(ProfilePath(to),CodeConfigFolder(to),clean[@"slug"],clean[@"sessionId"],clean[@"jsonl"],clean[@"record"],guard);
+            failure = [clean[@"replaces"] boolValue] ? ReplaceSyncedSession(ProfilePath(to),organization,CodeConfigFolder(to),clean[@"slug"],clean[@"sessionId"],clean[@"jsonl"],clean[@"record"],[clean[@"stamp"] longLongValue],nil,guard)
+                : PublishSyncedSession(ProfilePath(to),organization,CodeConfigFolder(to),clean[@"slug"],clean[@"sessionId"],clean[@"jsonl"],clean[@"record"],guard);
             if (failure) break;
             SetSyncedSessionDate(CodeConfigFolder(to),clean[@"slug"],clean[@"sessionId"],[clean[@"stamp"] longLongValue]);
             // Saved per session: quitting mid-batch must not leave published copies unlinked.
@@ -1930,8 +1941,8 @@ static void TestInitialSync(void) {
             self.syncingSessions = NO; [self endSyncProgress]; [self.checking removeObject:@(to)]; [self refresh]; [self refreshProjects:nil];
             NSString *log = [NSString stringWithFormat:L(@"会话同步：账号 %02ld 新增 %lu 条，替换 %lu 条，共选择 %lu 条"),(long)to,(unsigned long)(written-replaced),(unsigned long)replaced,(unsigned long)(cleans.count+failures.count)];
             [self projectNotice:failure ?: log]; [self addLog:log];
-            NSAlert *done = [NSAlert new]; done.messageText = written == cleans.count ? L(@"会话已同步") : L(@"同步未全部完成");
-            NSString *info = [NSString stringWithFormat:L(@"已写入 %lu 条。打开账号 %02ld 后，它们会出现在侧栏，标题后带“同步”和时间。第一条消息由你发送；如果项目还没被该账号信任，发送时官方会请你确认。"),(unsigned long)written,(long)to];
+            NSAlert *done = [NSAlert new]; done.messageText = written == cleans.count ? L(@"会话已同步") : written ? L(@"同步未全部完成") : L(@"没有写入会话");
+            NSString *info = written ? [NSString stringWithFormat:L(@"已写入 %lu 条。打开账号 %02ld 后，它们会出现在侧栏，标题后带“同步”和时间。第一条消息由你发送；如果项目还没被该账号信任，发送时官方会请你确认。"),(unsigned long)written,(long)to] : L(@"已写入 0 条。");
             if (failure) info = [info stringByAppendingFormat:@"\n\n%@",failure];
             if (failures.count) info = [info stringByAppendingFormat:L(@"\n\n%lu 条无法处理，没有同步。"),(unsigned long)failures.count];
             done.informativeText = info;
@@ -4020,6 +4031,7 @@ static int SelfTest(void) {
         TestProjectImport();
         TestSessionSync();
         TestUsageInterface();
+        TestUsageHistory();
         TestProxyCheck();
         TestHandoff();
         TestLocalization();

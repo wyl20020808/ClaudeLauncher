@@ -200,24 +200,32 @@ static NSString *ReadOrganization(int directory, NSDate *now, UsageKeyProvider p
     return org;
 }
 
-static NSDictionary *ReadUsageHistoryWithKey(NSString *profile, NSDate *now, UsageKeyProvider provider) {
-    if (!profile.isAbsolutePath || ![profile isEqual:profile.stringByStandardizingPath]) return Unavailable(@"路径不安全");
+static int OpenProfile(NSString *profile, NSString **failure) {
+    *failure = @"路径不安全";
+    if (!profile.isAbsolutePath || ![profile isEqual:profile.stringByStandardizingPath]) return -1;
     int fd = open("/",O_RDONLY|O_DIRECTORY|O_CLOEXEC);
     for (NSString *part in profile.pathComponents) {
         if ([part isEqual:@"/"]) continue;
         int next = openat(fd,part.fileSystemRepresentation,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC|O_NONBLOCK);
         int problem = errno; if (fd >= 0) close(fd); fd = next;
-        if (fd < 0) return Unavailable(problem == ENOENT ? @"暂无本地记录" : @"路径不可读取");
+        if (fd < 0) { *failure = problem == ENOENT ? @"暂无本地记录" : @"路径不可读取"; return -1; }
         struct stat directory;
         if (fstat(fd,&directory) || (directory.st_mode & 0022) || (directory.st_uid != 0 && directory.st_uid != getuid())) {
-            close(fd); return Unavailable(@"路径不安全");
+            close(fd); return -1;
         }
     }
     struct stat directory;
     if (fd < 0 || fstat(fd,&directory) || directory.st_uid != getuid()) {
-        if (fd >= 0) close(fd); return Unavailable(@"路径不安全");
+        if (fd >= 0) close(fd);
+        return -1;
     }
+    return fd;
+}
+
+static NSDictionary *ReadUsageHistoryWithKey(NSString *profile, NSDate *now, UsageKeyProvider provider) {
     NSString *failure = nil;
+    int fd = OpenProfile(profile,&failure);
+    if (fd < 0) return Unavailable(failure);
     NSString *org = ReadOrganization(fd,now,provider,&failure);
     if (!org) { close(fd); return Unavailable(failure); }
     int file = openat(fd,"plan-usage-history.json",O_RDONLY|O_NOFOLLOW|O_CLOEXEC|O_NONBLOCK);
@@ -255,6 +263,20 @@ NSDictionary *ReadUsageHistory(NSString *profile, NSDate *now) {
     });
     ClearBytes(key,sizeof(key));
     return result;
+}
+
+NSString *ReadLastActiveOrganization(NSString *profile, NSString **failure) {
+    int fd = OpenProfile(profile,failure);
+    if (fd < 0) return nil;
+    uint8_t key[kCCKeySizeAES128] = {0}; uint8_t *keyPointer = key;
+    __block BOOL attempted = NO, loaded = NO;
+    NSString *org = ReadOrganization(fd,NSDate.date,^BOOL(uint8_t *output) {
+        if (!attempted) { attempted = YES; loaded = LoadUsageKey(keyPointer); }
+        if (loaded) memcpy(output,keyPointer,kCCKeySizeAES128);
+        return loaded;
+    },failure);
+    close(fd); ClearBytes(key,sizeof(key));
+    return org;
 }
 
 void TestUsageHistory(void) {
