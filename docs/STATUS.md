@@ -1,5 +1,12 @@
 # 项目状态
 
+## macOS 1.7.22：会话同步改为最新版本替换（2026-11-01）
+
+- 用户要求：两个账号已有同一会话时，一边更新后要能同步过去；以最新版本为准，直接替换，不做增量。此前每次同步都是新 ID 的新副本，旧副本不会更新。
+- 实现：`sessionSyncLinks` 偏好记录关联（`LinkSessions`、`MergeLinkedSessions`，`src/SessionSync.m`）；`ReplaceSyncedSession`、`SetSyncedSessionDate`（`src/ProjectImport.m`）；窗口状态在 `targetChanged:`（`src/main.m`）。旧版本进废纸篓；目标记录只改标题和最后活动时间。来回同步不再叠加首条说明。AGENTS.md 增加替换例外。
+- 未解决：更新前同步的旧副本没有关联，第一次再同步会多一份，需用户在 Claude 里自行处理。替换原始会话后，目标账号的那条也只剩清理内容。Claude 打开副本时如果自己改了文件，修改时间变新，那边会被判为最新；未实测。
+- 未验证（GUI）：窗口状态显示、替换后在真实 Claude 的侧栏显示和续聊都没有实际操作。Windows 未实现。
+
 ## macOS 1.7.21：新账号同步提示（2026-11-01）
 
 - 发布：`macos-v1.7.21`（目标 `a09aad2`，dev 与 main 同一提交），`scripts/publish-macos.sh` 退出 0，API 和 latest/download 复核通过。DMG `ClaudeLauncher-1.7.21.dmg`，3822278 字节，SHA-256 `f9738727a6c872e68beb41857c99dfba69f0309a510bbc097c997b33a614cfb1`；Windows 沿用 `ClaudeLauncherSetup-1.8.4.exe`。版本 1.7.21 / build 28，同时带上 `4bf9ea4` 的五小时 0% 显示。安装版未由本轮安装，软件内更新未验证。用户要求发布时，下方 GUI 未验证项仍未验证。

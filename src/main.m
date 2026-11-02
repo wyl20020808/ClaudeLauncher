@@ -758,7 +758,7 @@ static const unsigned CardFill = 0xFFFCF7;
 }
 @end
 
-// Checkbox tree for the session sync dialog: everything, one project, or single sessions. Sessions already in the target are disabled.
+// Checkbox tree for the session sync dialog: everything, one project, or single sessions. Sessions the target already has in their newest version are disabled; changed ones start ticked.
 @interface SessionSyncPicker : NSObject
 @property NSArray<NSDictionary *> *sessions;
 @property NSMutableArray<NSButton *> *rows, *projectChecks, *disclosures;
@@ -813,7 +813,7 @@ static const unsigned CardFill = 0xFFFCF7;
         for (NSNumber *index in self.groups[i]) {
             NSButton *row = self.rows[index.unsignedIntegerValue]; NSTextField *detail = self.details[index.unsignedIntegerValue];
             row.hidden = !open; detail.hidden = !open;
-            if (open) { row.frame = NSMakeRect(54,y,400,22); detail.frame = NSMakeRect(460,y+2,150,18); y += 26; }
+            if (open) { row.frame = NSMakeRect(54,y,330,22); detail.frame = NSMakeRect(388,y+2,222,18); y += 26; }
         }
         y += 8;
     }
@@ -821,10 +821,15 @@ static const unsigned CardFill = 0xFFFCF7;
 }
 - (void)toggleDisclosure:(id)sender { [self layoutList]; }
 - (void)targetChanged:(id)sender {
+    NSString *to = @(self.target.selectedTag).stringValue; NSDate *now = NSDate.date;
     for (NSUInteger i = 0; i < self.rows.count; i++) {
-        BOOL enabled = [self.sessions[i][@"account"] integerValue] != self.target.selectedTag;
-        self.rows[i].enabled = enabled;
-        if (!enabled) self.rows[i].state = NSControlStateValueOff;
+        NSDictionary *session = self.sessions[i]; NSDate *held = session[@"versions"][to][@"modified"];
+        BOOL current = held && [held compare:session[@"modified"]] != NSOrderedAscending;
+        self.rows[i].enabled = !current;
+        if (current) self.rows[i].state = NSControlStateValueOff;
+        else if (held) self.rows[i].state = NSControlStateValueOn;
+        NSString *where = [NSString stringWithFormat:L(@"账号 %02ld · %@"),(long)[session[@"account"] integerValue],HandoffAge(session[@"modified"],now)];
+        self.details[i].stringValue = [NSString stringWithFormat:@"%@ · %@",where,current ? L(@"已是最新") : held ? L(@"有更新") : L(@"新增")];
     }
     [self update];
 }
@@ -844,9 +849,9 @@ static const unsigned CardFill = 0xFFFCF7;
     [self update];
 }
 - (void)toggleRow:(NSButton *)sender { [self update]; }
-// Copies stay unticked: their originals are selected too, and would otherwise arrive twice.
+// Unlinked copies stay unticked: their originals are selected too, and would otherwise arrive twice. A linked one is the newest of its group.
 - (void)selectOriginals {
-    for (NSUInteger i = 0; i < self.rows.count; i++) if (self.rows[i].enabled && !SessionIsSyncCopy(self.sessions[i][@"title"])) self.rows[i].state = NSControlStateValueOn;
+    for (NSUInteger i = 0; i < self.rows.count; i++) if (self.rows[i].enabled && (!SessionIsSyncCopy(self.sessions[i][@"title"]) || [self.sessions[i][@"versions"] count] > 1)) self.rows[i].state = NSControlStateValueOn;
     [self update];
 }
 - (NSControlStateValue)stateOf:(NSArray<NSNumber *> *)indices {
@@ -1717,6 +1722,7 @@ static BOOL ConfigFolderExists(NSInteger n) {
 }
 - (void)syncSession:(id)sender { [self loadSessionsToSync:0]; }
 static NSString *const InitialSyncKey = @"initialSyncAccounts";
+static NSString *const SessionLinksKey = @"sessionSyncLinks";
 // First pending account that can be offered now; 0 if none. Deleted or invalid accounts are reported so they stop waiting.
 static NSInteger InitialSyncAccount(NSArray *pending, NSMutableArray *gone, BOOL (^exists)(NSInteger), BOOL (^busy)(NSInteger), BOOL (^ready)(NSInteger)) {
     for (NSNumber *key in pending) {
@@ -1804,7 +1810,7 @@ static void TestInitialSync(void) {
         [sessions sortUsingDescriptors:@[[NSSortDescriptor sortDescriptorWithKey:@"modified" ascending:NO]]];
         dispatch_async(dispatch_get_main_queue(), ^{
             self.syncingSessions = NO; [self refreshProjects:nil];
-            [self chooseSessionToSync:sessions accounts:accounts newAccount:newAccount];
+            [self chooseSessionToSync:MergeLinkedSessions(sessions,[self.preferences arrayForKey:SessionLinksKey]) accounts:accounts newAccount:newAccount];
         });
     });
 }
@@ -1826,7 +1832,7 @@ static void TestInitialSync(void) {
 - (void)chooseSessionToSync:(NSArray *)sessions accounts:(NSArray<NSNumber *> *)accounts newAccount:(NSInteger)newAccount {
     if (!sessions.count) { [self alert:L(@"没有可同步的会话") detail:L(@"公共清单里的项目在各账号下都没有本地会话。")] ; return; }
     NSAlert *choice = [NSAlert new]; choice.messageText = L(@"同步会话到其他账号");
-    choice.informativeText = L(@"为勾选的会话各生成一份清理副本放到目标账号：只保留对话文字和工具请求说明，不带账号信息、权限、工具结果和图片。两边之后各自继续，不会合并；重复同步会再生成一份。写入前可以预览。");
+    choice.informativeText = L(@"为勾选的会话各生成一份清理副本放到目标账号：只保留对话文字和工具请求说明，不带账号信息、权限、工具结果和图片。同步过的会话按最新版本为准：有变动时直接替换目标里的旧版本（旧版本移到废纸篓），没变动的不可勾选。写入前可以预览。");
     [choice addButtonWithTitle:L(@"生成预览")]; [choice addButtonWithTitle:L(@"取消")];
     NSPopUpButton *target = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO]; target.autoenablesItems = NO; target.accessibilityLabel = L(@"目标账号");
     [self refresh];
@@ -1849,11 +1855,12 @@ static void TestInitialSync(void) {
         NSMutableArray *cleans = [NSMutableArray array], *failures = [NSMutableArray array];
         NSUInteger done = 0;
         for (NSDictionary *session in selected) @autoreleasepool {
-            NSDictionary *clean = CleanSession(session[@"path"],session[@"project"][@"path"],NSHomeDirectory());
+            NSString *existing = session[@"versions"][@(to).stringValue][@"id"];
+            NSDictionary *clean = CleanSession(session[@"path"],session[@"project"][@"path"],NSHomeDirectory(),existing);
             NSUInteger finished = ++done;
             dispatch_async(dispatch_get_main_queue(), ^{ [self updateSyncProgress:L(@"正在生成清理副本") done:finished]; });
             if (clean[@"error"]) [failures addObject:[NSString stringWithFormat:@"「%@」：%@",session[@"title"],clean[@"error"]]];
-            else { NSMutableDictionary *row = clean.mutableCopy; row[@"from"] = session[@"account"]; [cleans addObject:row]; }
+            else { NSMutableDictionary *row = clean.mutableCopy; row[@"from"] = session[@"account"]; row[@"fromId"] = session[@"id"]; row[@"replaces"] = @(existing != nil); [cleans addObject:row]; }
         }
         dispatch_async(dispatch_get_main_queue(), ^{
             self.syncingSessions = NO; [self endSyncProgress]; [self refreshProjects:nil];
@@ -1864,12 +1871,13 @@ static void TestInitialSync(void) {
 }
 - (void)confirmSessionSync:(NSArray<NSDictionary *> *)cleans failures:(NSArray<NSString *> *)failures to:(NSInteger)to {
     NSAlert *confirm = [NSAlert new]; confirm.messageText = [NSString stringWithFormat:L(@"预览：同步 %lu 条会话到账号 %02ld"),(unsigned long)cleans.count,(long)to];
-    NSUInteger bytes = 0, images = 0; NSMutableString *preview = [NSMutableString string];
+    NSUInteger bytes = 0, images = 0, replacing = 0; NSMutableString *preview = [NSMutableString string];
     for (NSDictionary *clean in cleans) {
-        bytes += [clean[@"bytes"] unsignedIntegerValue]; images += [clean[@"images"] unsignedIntegerValue];
-        [preview appendFormat:L(@"═══ 「%@」来自账号 %02ld ═══\n%@\n\n%@\n"),clean[@"title"],(long)[clean[@"from"] integerValue],clean[@"report"],clean[@"preview"]];
+        bytes += [clean[@"bytes"] unsignedIntegerValue]; images += [clean[@"images"] unsignedIntegerValue]; replacing += [clean[@"replaces"] boolValue];
+        [preview appendFormat:L(@"═══ %@「%@」来自账号 %02ld ═══\n%@\n\n%@\n"),[clean[@"replaces"] boolValue] ? L(@"替换") : L(@"新增"),clean[@"title"],(long)[clean[@"from"] integerValue],clean[@"report"],clean[@"preview"]];
     }
     NSString *detail = [NSString stringWithFormat:L(@"共 %lu KB。脱敏只认固定格式，其他私人信息请自己看一遍。"),(unsigned long)(bytes/1000)];
+    if (replacing) detail = [detail stringByAppendingFormat:L(@"\n其中 %lu 条会替换账号 %02ld 里的旧版本，旧版本移到废纸篓。替换后那边也只剩清理内容，没有工具结果和图片。"),(unsigned long)replacing,(long)to];
     if (bytes > 100*1000) detail = [detail stringByAppendingString:L(@"\n历史较长的会话会占用目标账号较多额度；启动器不会自动截断。")];
     if (images) detail = [detail stringByAppendingString:L(@"\n部分会话含图片，同步后 AI 看不到它们。")];
     if (failures.count) detail = [detail stringByAppendingFormat:L(@"\n\n%lu 条无法处理，不会同步：\n%@"),(unsigned long)failures.count,[failures componentsJoinedByString:@"\n"]];
@@ -1884,16 +1892,23 @@ static void TestInitialSync(void) {
     self.syncingSessions = YES; [self.checking addObject:@(to)]; [self refresh]; [self refreshProjects:nil];
     [self beginSyncProgress:L(@"正在写入目标账号") total:cleans.count];
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0), ^{
-        NSUInteger written = 0; NSString *failure = nil;
+        NSUInteger written = 0, replaced = 0; NSString *failure = nil; NSMutableArray *linked = [NSMutableArray array];
+        NSString *(^guard)(void) = ^NSString *{ return SessionSyncGuard(to); };
         for (NSDictionary *clean in cleans) {
-            failure = PublishSyncedSession(ProfilePath(to),CodeConfigFolder(to),clean[@"slug"],clean[@"sessionId"],clean[@"jsonl"],clean[@"record"],^NSString *{ return SessionSyncGuard(to); });
+            failure = [clean[@"replaces"] boolValue] ? ReplaceSyncedSession(ProfilePath(to),CodeConfigFolder(to),clean[@"slug"],clean[@"sessionId"],clean[@"jsonl"],clean[@"record"],clean[@"modified"],nil,guard)
+                : PublishSyncedSession(ProfilePath(to),CodeConfigFolder(to),clean[@"slug"],clean[@"sessionId"],clean[@"jsonl"],clean[@"record"],guard);
             if (failure) break;
+            SetSyncedSessionDate(CodeConfigFolder(to),clean[@"slug"],clean[@"sessionId"],clean[@"modified"]);
+            [linked addObject:clean]; replaced += [clean[@"replaces"] boolValue];
             NSUInteger finished = ++written;
             dispatch_async(dispatch_get_main_queue(), ^{ [self updateSyncProgress:L(@"正在写入目标账号") done:finished]; });
         }
         dispatch_async(dispatch_get_main_queue(), ^{
             self.syncingSessions = NO; [self endSyncProgress]; [self.checking removeObject:@(to)]; [self refresh]; [self refreshProjects:nil];
-            NSString *log = [NSString stringWithFormat:L(@"会话同步：账号 %02ld 新增 %lu 条，共选择 %lu 条"),(long)to,(unsigned long)written,(unsigned long)(cleans.count+failures.count)];
+            NSArray *links = [self.preferences arrayForKey:SessionLinksKey] ?: @[];
+            for (NSDictionary *clean in linked) links = LinkSessions(links,[clean[@"from"] integerValue],clean[@"fromId"],to,clean[@"sessionId"]);
+            [self.preferences setObject:links forKey:SessionLinksKey];
+            NSString *log = [NSString stringWithFormat:L(@"会话同步：账号 %02ld 新增 %lu 条，替换 %lu 条，共选择 %lu 条"),(long)to,(unsigned long)(written-replaced),(unsigned long)replaced,(unsigned long)(cleans.count+failures.count)];
             [self projectNotice:failure ?: log]; [self addLog:log];
             NSAlert *done = [NSAlert new]; done.messageText = written == cleans.count ? L(@"会话已同步") : L(@"同步未全部完成");
             NSString *info = [NSString stringWithFormat:L(@"已写入 %lu 条。打开账号 %02ld 后，它们会出现在侧栏，标题后带“同步”和时间。第一条消息由你发送；如果项目还没被该账号信任，发送时官方会请你确认。"),(unsigned long)written,(long)to];
