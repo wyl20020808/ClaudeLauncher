@@ -190,10 +190,10 @@ NSArray *PrepareProjectImport(ProjectStore *store, NSArray<NSString *> *paths, N
     return rows;
 }
 
-static int UniqueRegistrationChild(int parent, NSString **name) {
+static NSArray<NSString *> *RegistrationChildren(int parent) {
     int copy = dup(parent); DIR *stream = copy < 0 ? NULL : fdopendir(copy);
-    if (!stream) { if (copy >= 0) close(copy); return -1; }
-    int found = -1; BOOL failed = NO; NSUInteger entries = 0;
+    if (!stream) { if (copy >= 0) close(copy); return nil; }
+    NSMutableArray *names = [NSMutableArray array]; BOOL failed = NO; NSUInteger entries = 0;
     struct dirent *entry;
     while (YES) {
         errno = 0; entry = readdir(stream);
@@ -206,25 +206,46 @@ static int UniqueRegistrationChild(int parent, NSString **name) {
             if (S_ISDIR(info.st_mode) || S_ISLNK(info.st_mode)) { failed = YES; break; }
             continue;
         }
-        if (found >= 0) { failed = YES; break; }
-        found = ChildDirectory(parent,part);
-        if (found < 0) { failed = YES; break; }
-        if (name) *name = part;
+        [names addObject:part];
     }
     closedir(stream);
+    return failed ? nil : names;
+}
+// The account level may hold several sign-ins; the same organization under two accounts is still ambiguous, so it is refused.
+static int OrganizationDirectory(int root, NSString *organization, NSUInteger *total) {
+    NSArray *accounts = RegistrationChildren(root);
+    int found = -1; NSUInteger count = 0; BOOL failed = !accounts;
+    for (NSString *name in accounts) {
+        int account = ChildDirectory(root,name);
+        NSArray *organizations = account >= 0 ? RegistrationChildren(account) : nil;
+        count += organizations.count;
+        if (!organizations) failed = YES;
+        else if (organization && [organizations containsObject:organization]) {
+            if (found >= 0) failed = YES;
+            else if ((found = ChildDirectory(account,organization)) < 0) failed = YES;
+        }
+        if (account >= 0) close(account);
+        if (failed) break;
+    }
     if (failed && found >= 0) { close(found); found = -1; }
+    if (total) *total = failed ? 0 : count;
     return found;
 }
-static int RegistrationDirectory(NSString *profile) {
+static int RegistrationDirectory(NSString *profile, NSString *organization) {
     int fd = ProfileDirectory(profile); if (fd < 0) return -1;
     int next = ChildDirectory(fd,@"claude-code-sessions"); close(fd); fd = next;
+    if (organization) {
+        next = fd >= 0 ? OrganizationDirectory(fd,organization,NULL) : -1;
+        if (fd >= 0) close(fd);
+        return next;
+    }
     for (NSUInteger level = 0; fd >= 0 && level < 2; level++) {
-        next = UniqueRegistrationChild(fd,NULL); close(fd); fd = next;
+        NSArray *names = RegistrationChildren(fd);
+        next = names.count == 1 ? ChildDirectory(fd,names[0]) : -1; close(fd); fd = next;
     }
     return fd;
 }
-static NSString *PublishExclusive(int directory, NSString *name, NSData *data, NSString *(^guard)(void)) {
-    NSString *temporary = [@".claude-launcher-session-" stringByAppendingString:NSUUID.UUID.UUIDString];
+static NSString *WriteTemporary(int directory, NSString *temporary, NSData *data) {
     int file = openat(directory,temporary.fileSystemRepresentation,O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC,0600);
     if (file < 0) return L(@"无法独占创建临时文件。");
     const char *bytes = data.bytes; NSUInteger written = 0;
@@ -235,20 +256,24 @@ static NSString *PublishExclusive(int directory, NSString *name, NSData *data, N
         written += (NSUInteger)n;
     }
     BOOL ready = written == data.length && fsync(file) == 0; close(file);
-    NSString *failure = ready ? guard() : L(@"写入失败，原有文件未覆盖。");
+    return ready ? nil : L(@"写入失败，原有文件未覆盖。");
+}
+static NSString *PublishExclusive(int directory, NSString *name, NSData *data, NSString *(^guard)(void)) {
+    NSString *temporary = [@".claude-launcher-session-" stringByAppendingString:NSUUID.UUID.UUIDString];
+    NSString *failure = WriteTemporary(directory,temporary,data) ?: guard();
     if (!failure && renameatx_np(directory,temporary.fileSystemRepresentation,directory,name.fileSystemRepresentation,RENAME_EXCL) != 0)
         failure = L(@"无法原子发布新文件，未覆盖任何同名文件。");
     unlinkat(directory,temporary.fileSystemRepresentation,0);
     if (!failure) fsync(directory);
     return failure;
 }
-NSString *PublishSyncedSession(NSString *profile, NSString *configFolder, NSString *slug, NSString *session,
+NSString *PublishSyncedSession(NSString *profile, NSString *organization, NSString *configFolder, NSString *slug, NSString *session,
                                NSData *transcript, NSData *record, NSString *(^guard)(void)) {
     NSString *failure = guard();
     if (failure) return failure;
     if (!UUIDString(session) || !slug.length || [slug containsString:@"/"]) return L(@"会话标识或项目目录名无效。");
-    int records = RegistrationDirectory(profile);
-    if (records < 0) return L(@"目标没有唯一且安全的账号／组织记录目录。请先在该账号正常创建一次本地会话；多位置时不猜测身份。");
+    int records = RegistrationDirectory(profile,organization);
+    if (records < 0) return L(@"目标账号的记录目录已变化或不安全，未写入。请重新同步。");
     int config = ProfileDirectory(configFolder), projects = -1, folder = -1;
     if (config >= 0) {
         projects = ChildDirectory(config,@"projects");
@@ -270,6 +295,127 @@ NSString *PublishSyncedSession(NSString *profile, NSString *configFolder, NSStri
     if (folder >= 0) close(folder);
     close(records);
     return failure;
+}
+// Finds the record whose cliSessionId is this session: a record the official client made may carry another local_ name.
+// Only the leading identifiers of other records are read. A file that cannot be judged safely sets unsafe: it might be this one.
+static NSString *RecordForSession(int records, NSString *session, NSMutableDictionary * __strong *value, BOOL *unsafe) {
+    int copy = dup(records); DIR *stream = copy >= 0 ? fdopendir(copy) : NULL; NSString *found = nil;
+    if (!stream) { if (copy >= 0) close(copy); *unsafe = YES; return nil; }
+    for (struct dirent *entry; !found && !*unsafe && (entry = readdir(stream)); ) {
+        NSString *name = [NSString stringWithUTF8String:entry->d_name];
+        if (![name hasPrefix:@"local_"] || ![name hasSuffix:@".json"]) continue;
+        int file = openat(records,entry->d_name,O_RDONLY|O_NOFOLLOW|O_NONBLOCK|O_CLOEXEC); struct stat info;
+        if (file < 0 || fstat(file,&info) != 0 || !S_ISREG(info.st_mode) || info.st_uid != getuid() || info.st_nlink != 1 || info.st_size > 8*1024*1024) {
+            *unsafe = YES;
+            if (file >= 0) close(file);
+            continue;
+        }
+        PrefixReader r = {file,0,NO};
+        BOOL match = Nonspace(&r) == '{' && [JSONString(&r,64) isEqual:@"sessionId"] && Nonspace(&r) == ':' && JSONString(&r,64) && Nonspace(&r) == ',' &&
+            [JSONString(&r,64) isEqual:@"cliSessionId"] && Nonspace(&r) == ':' && [JSONString(&r,64) isEqual:session];
+        if (match && lseek(file,0,SEEK_SET) == 0) {
+            NSData *data = [[[NSFileHandle alloc] initWithFileDescriptor:file closeOnDealloc:NO] readDataToEndOfFile];
+            NSMutableDictionary *row = data ? [NSJSONSerialization JSONObjectWithData:data options:NSJSONReadingMutableContainers error:nil] : nil;
+            if ([row isKindOfClass:NSDictionary.class]) { found = name; *value = row; }
+            else *unsafe = YES;
+        }
+        close(file);
+    }
+    closedir(stream);
+    return found;
+}
+// The directory scan reads a fixed prefix, so the known fields stay first.
+static NSData *RecordData(NSDictionary *record) {
+    NSMutableArray *keys = [NSMutableArray array];
+    for (NSString *key in @[@"sessionId",@"cliSessionId",@"cwd",@"originCwd",@"title",@"createdAt",@"lastActivityAt",@"isArchived"]) if (record[key]) [keys addObject:key];
+    NSMutableArray *rest = record.allKeys.mutableCopy; [rest removeObjectsInArray:keys];
+    [keys addObjectsFromArray:[rest sortedArrayUsingSelector:@selector(compare:)]];
+    NSMutableArray *fields = [NSMutableArray array];
+    for (NSString *key in keys) {
+        NSData *json = [NSJSONSerialization dataWithJSONObject:record[key] options:NSJSONWritingFragmentsAllowed|NSJSONWritingWithoutEscapingSlashes error:nil];
+        NSData *name = [NSJSONSerialization dataWithJSONObject:key options:NSJSONWritingFragmentsAllowed error:nil];
+        if (!json || !name) return nil;
+        [fields addObject:[NSString stringWithFormat:@"%@:%@",[[NSString alloc] initWithData:name encoding:NSUTF8StringEncoding],[[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding]]];
+    }
+    return [[NSString stringWithFormat:@"{%@}",[fields componentsJoinedByString:@","]] dataUsingEncoding:NSUTF8StringEncoding];
+}
+NSString *ReplaceSyncedSession(NSString *profile, NSString *organization, NSString *configFolder, NSString *slug, NSString *session,
+                               NSData *transcript, NSData *record, long long stamp, NSURL *(^trash)(NSURL *path), NSString *(^guard)(void)) {
+    NSString *failure = guard();
+    if (failure) return failure;
+    if (!UUIDString(session) || !slug.length || [slug containsString:@"/"]) return L(@"会话标识或项目目录名无效。");
+    int records = RegistrationDirectory(profile,organization);
+    if (records < 0) return L(@"目标账号的记录目录已变化或不安全，未写入。请重新同步。");
+    int config = ProfileDirectory(configFolder), projects = config >= 0 ? ChildDirectory(config,@"projects") : -1, folder = projects >= 0 ? ChildDirectory(projects,slug) : -1;
+    NSString *name = [session stringByAppendingString:@".jsonl"]; struct stat info, now;
+    NSString *transcriptTemporary = nil, *recordTemporary = nil, *recordName = nil, *freshName = [NSString stringWithFormat:@"local_%@.json",session];
+    if (folder < 0 || fstatat(folder,name.fileSystemRepresentation,&info,AT_SYMLINK_NOFOLLOW) != 0 || !S_ISREG(info.st_mode) || info.st_uid != getuid() || info.st_nlink != 1) failure = L(@"目标账号里的旧版本无法安全打开，未替换。");
+    else if (info.st_mtimespec.tv_sec*1000000000LL+info.st_mtimespec.tv_nsec > stamp) failure = L(@"目标账号里的这条会话比来源更新，未替换。");
+    if (!failure) {
+        NSMutableDictionary *existing = nil, *fresh = [NSJSONSerialization JSONObjectWithData:record options:0 error:nil]; BOOL unsafe = NO;
+        recordName = RecordForSession(records,session,&existing,&unsafe);
+        if (unsafe) failure = L(@"目标账号的记录目录里有无法安全读取的文件，未替换。");
+        // That name holding another session's record is not ours to overwrite.
+        else if (!recordName && fstatat(records,freshName.fileSystemRepresentation,&now,AT_SYMLINK_NOFOLLOW) == 0) failure = L(@"目标账号里已有同名记录，但不属于这条会话，未替换。");
+        else if (recordName) { existing[@"title"] = fresh[@"title"]; existing[@"lastActivityAt"] = fresh[@"lastActivityAt"]; }
+        NSData *recordBytes = recordName ? RecordData(existing) : record;
+        if (!failure && !recordBytes) failure = L(@"无法生成清理副本。");
+        if (!failure) {
+            transcriptTemporary = [@".claude-launcher-session-" stringByAppendingString:NSUUID.UUID.UUIDString];
+            recordTemporary = [@".claude-launcher-session-" stringByAppendingString:NSUUID.UUID.UUIDString];
+            failure = WriteTemporary(folder,transcriptTemporary,transcript) ?: WriteTemporary(records,recordTemporary,recordBytes) ?: guard();
+        }
+    }
+    if (!failure && (fstatat(folder,name.fileSystemRepresentation,&now,AT_SYMLINK_NOFOLLOW) != 0 || now.st_dev != info.st_dev || now.st_ino != info.st_ino || now.st_size != info.st_size ||
+                     now.st_mtimespec.tv_sec != info.st_mtimespec.tv_sec || now.st_mtimespec.tv_nsec != info.st_mtimespec.tv_nsec)) failure = L(@"目标账号里的这条会话刚有变化，未替换。");
+    // The record goes first: if it fails nothing has changed, and it differs from the old one only in title and time.
+    if (!failure && (recordName ? renameat(records,recordTemporary.fileSystemRepresentation,records,recordName.fileSystemRepresentation)
+                                : renameatx_np(records,recordTemporary.fileSystemRepresentation,records,freshName.fileSystemRepresentation,RENAME_EXCL)) != 0) failure = L(@"无法更新目标账号的记录，未替换。");
+    if (!failure) {
+        NSURL *path = [NSURL fileURLWithPath:[[[configFolder stringByAppendingPathComponent:@"projects"] stringByAppendingPathComponent:slug] stringByAppendingPathComponent:name]];
+        NSURL *trashed = nil;
+        if (trash) trashed = trash(path);
+        else [NSFileManager.defaultManager trashItemAtURL:path resultingItemURL:&trashed error:nil];
+        if (!trashed) failure = L(@"无法把旧版本移到废纸篓，未替换。");
+        else if (renameatx_np(folder,transcriptTemporary.fileSystemRepresentation,folder,name.fileSystemRepresentation,RENAME_EXCL) != 0)
+            failure = [NSFileManager.defaultManager moveItemAtURL:trashed toURL:path error:nil] ? L(@"无法原子发布新文件，旧版本已放回。") : L(@"新版本发布失败，旧版本还在废纸篓里，需要手动放回。");
+    }
+    if (transcriptTemporary) unlinkat(folder,transcriptTemporary.fileSystemRepresentation,0);
+    if (recordTemporary) unlinkat(records,recordTemporary.fileSystemRepresentation,0);
+    if (!failure) { fsync(folder); fsync(records); }
+    if (config >= 0) close(config);
+    if (projects >= 0) close(projects);
+    if (folder >= 0) close(folder);
+    close(records);
+    return failure;
+}
+void SetSyncedSessionDate(NSString *configFolder, NSString *slug, NSString *session, long long stamp) {
+    NSString *path = [[[[configFolder stringByAppendingPathComponent:@"projects"] stringByAppendingPathComponent:slug] stringByAppendingPathComponent:session] stringByAppendingPathExtension:@"jsonl"];
+    struct timespec time = {(time_t)(stamp/1000000000LL),(long)(stamp%1000000000LL)}, times[2] = {time,time};
+    utimensat(AT_FDCWD,path.fileSystemRepresentation,times,AT_SYMLINK_NOFOLLOW);
+}
+BOOL SyncTargetReady(NSString *profile) {
+    int records = RegistrationDirectory(profile,nil);
+    if (records < 0) return NO;
+    close(records); return YES;
+}
+BOOL ResolveSyncTarget(NSString *profile, NSString *(^readOrganization)(NSString **failure), NSString **organization, NSString **failure) {
+    *organization = nil;
+    if (SyncTargetReady(profile)) return YES;
+    int fd = ProfileDirectory(profile), root = fd >= 0 ? ChildDirectory(fd,@"claude-code-sessions") : -1; NSUInteger total = 0;
+    if (fd >= 0) close(fd);
+    if (root >= 0) { OrganizationDirectory(root,nil,&total); close(root); }
+    // Nothing to choose between: no reason to touch the keychain.
+    if (!total) { *failure = L(@"目标账号还没有可用的本地记录目录。请先在该账号正常创建一次本地会话。"); return NO; }
+    NSString *why = nil, *current = readOrganization(&why);
+    if (!current) {
+        *failure = [NSString stringWithFormat:L(@"目标账号有多套账号／组织记录，要读到它当前的组织才能确定写入位置，但这次没有读到（%@）。如果刚才拒绝了钥匙串提示，请重新打开启动器再试。"),L(why ?: @"组织记录不可读")];
+        return NO;
+    }
+    int records = RegistrationDirectory(profile,current);
+    if (records < 0) { *failure = L(@"目标账号当前的组织还没有可用的本地记录目录。请先在该账号正常创建一次本地会话。"); return NO; }
+    close(records); *organization = current;
+    return YES;
 }
 
 void TestProjectImport(void) {
