@@ -462,7 +462,14 @@ namespace ClaudeLauncher {
             var first = UsageInterface.Merge(null, new UsageRecord { Status = UsageInterface.Observed, FiveHour = new UsageMetric { Percent = 40, Reset = "3:20 重置" } }, "2|10|5|1|x", t1);
             var second = UsageInterface.Merge(first, new UsageRecord { Status = UsageInterface.Observed, Weekly = new UsageMetric { Percent = 9 } }, "2|10|5|1|x", t2);
             Check(second.FiveHour.Percent == 40 && second.FiveHour.Observed == t1 && second.Weekly.Observed == t2, "合并应保留另一项与原时间");
-            Check(UsageInterface.Merge(first, new UsageRecord { Status = UsageInterface.Observed, Weekly = new UsageMetric { Percent = 9 } }, "2|11|5|1|x", t2).FiveHour == null, "身份变化不得沿用旧值");
+            var weekly9 = new UsageRecord { Status = UsageInterface.Observed, Weekly = new UsageMetric { Percent = 9 } };
+            var moved = UsageInterface.Merge(first, weekly9, "2|11|5|1|x", t2);
+            Check(moved.FiveHour.Percent == 0 && moved.FiveHour.Observed == t2 && moved.FiveHour.Reset == UsageInterface.FiveHourEstimate, "身份变化不得沿用旧值，只见周值时按 0% 估算");
+            var none = UsageInterface.Merge(null, weekly9, "2|10|5|1|x", t1);
+            Check(none.FiveHour.Percent == 0 && none.FiveHour.Reset == UsageInterface.FiveHourEstimate && none.Weekly.Percent == 9, "无记录只见周值时五小时按 0%");
+            var expired = UsageInterface.Merge(first, weekly9, "2|10|5|1|x", t1.AddHours(5));
+            Check(expired.FiveHour.Percent == 0 && expired.FiveHour.Observed == t1.AddHours(5), "同进程超过 5 小时的五小时值按 0%");
+            Check(UsageInterface.Merge(first, new UsageRecord { Status = UsageInterface.Observed }, "2|11|5|1|x", t2).FiveHour == null && UsageInterface.Merge(null, first, "2|10|5|1|x", t2).Weekly == null, "没有周值时不估算五小时，也不编造周值");
             Check(UsageInterface.Merge(second, new UsageRecord { Status = "界面读取未完成" }, "2|10|5|1|x", t2) == second && UsageInterface.Merge(second, new UsageRecord { Status = "多个用量界面，待核对" }, "2|10|5|1|x", t2).Status != UsageInterface.Observed, "暂不可读保留旧值，不确定结果不沿用");
             Check(UsageInterface.TimeLabel(second.FiveHour, t2) == "09:00:00" && UsageInterface.TimeLabel(second.FiveHour, t1.AddDays(1)) == "10-29 09:00" && UsageInterface.TimeLabel(null, t2) == "尚未观察到", "观察时间格式错误");
             string usageFile = Path.Combine(root, "settings", "usage-observations.json");

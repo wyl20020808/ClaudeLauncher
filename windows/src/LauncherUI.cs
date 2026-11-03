@@ -919,7 +919,7 @@ namespace ClaudeLauncher {
                         return null;
                     });
                 } finally { checking.Remove(to); Render(); }
-                string log = "会话同步：账号 " + Two(to) + " 新增 " + written + " 条，共选择 " + selected.Count + " 条";
+                string log = "会话同步：账号 " + Two(to) + " 新增 " + written + " 条，替换 0 条，共选择 " + selected.Count + " 条";
                 AddLog(log); Message(failure ?? log, failure != null);
                 string info = Appearance.Text("已写入 " + written + " 条。打开账号 " + Two(to) + " 后，它们会出现在侧栏，标题后带“同步”和时间。第一条消息由你发送；如果项目还没被该账号信任，发送时官方会请你确认。");
                 if (failure != null) info += "\n\n" + Appearance.Text(failure);
@@ -1850,9 +1850,13 @@ namespace ClaudeLauncher {
             }
             foreach (var pair in results) {
                 if (pair.Value.Item2 == null || pair.Value.Item2 != CurrentUsageIdentity(pair.Key)) continue;
-                var metric = pair.Value.Item1.Status == UsageInterface.Observed ? pair.Value.Item1.FiveHour : null;
-                ObserveUsageAlert(pair.Key, metric);
-                if (pair.Value.Item1.Status == UsageInterface.Observed) UsageTrend.Observe(trend, pair.Key, pair.Value.Item1, DateTime.UtcNow);
+                // 同 macOS：只用本次读到的值（含五小时 0% 估算），沿用的旧值保留原时间，不进入趋势和提醒。
+                UsageRecord merged = usage[pair.Key];
+                if (merged.Status != UsageInterface.Observed) { ObserveUsageAlert(pair.Key, null); continue; }
+                DateTime at = pair.Value.Item3;
+                var fresh = new UsageRecord { Status = merged.Status, FiveHour = merged.FiveHour != null && merged.FiveHour.Observed == at ? merged.FiveHour : null, Weekly = merged.Weekly != null && merged.Weekly.Observed == at ? merged.Weekly : null };
+                ObserveUsageAlert(pair.Key, fresh.FiveHour);
+                UsageTrend.Observe(trend, pair.Key, fresh, DateTime.UtcNow);
             }
             try { UsageTrend.Save(TrendPath, trend); } catch (Exception error) { Message("用量趋势保存失败：" + error.Message, true); }
             if (changed) try { UsageInterface.Save(usagePath, savedUsage.Values); } catch (Exception error) { Diagnostics.Error("usage_save_error", error); }

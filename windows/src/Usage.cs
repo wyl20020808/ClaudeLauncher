@@ -289,10 +289,14 @@ namespace ClaudeLauncher {
                 return unavailable && same ? previous : snapshot ?? new UsageRecord { Status = "未观察到 Code 用量" };
             }
             var result = new UsageRecord { Status = Observed, Identity = identity };
-            result.FiveHour = Pick(snapshot.FiveHour, same ? previous.FiveHour : null, now);
+            UsageMetric oldFive = same && previous.FiveHour != null && now - previous.FiveHour.Observed < TimeSpan.FromHours(5) ? previous.FiveHour : null; // 超过一个窗口的五小时值已失效
+            result.FiveHour = Pick(snapshot.FiveHour, oldFive, now);
             result.Weekly = Pick(snapshot.Weekly, same ? previous.Weekly : null, now);
+            // 官方按钮显示两项中较高的一项，只见周值时真实五小时值可能在 0 与周值之间；用户接受按 0% 显示（SPEC，2026-11-01）。
+            if (result.FiveHour == null && snapshot.Weekly != null) result.FiveHour = new UsageMetric { Percent = 0, Reset = FiveHourEstimate, Observed = now };
             return result;
         }
+        public const string FiveHourEstimate = "官方按钮未显示五小时，按 0% 显示";
         static UsageMetric Pick(UsageMetric fresh, UsageMetric old, DateTime now) {
             if (fresh != null) return new UsageMetric { Percent = fresh.Percent, Reset = fresh.Reset, Observed = now };
             return old != null && old.Observed <= now ? old : null;
