@@ -1,6 +1,8 @@
 # 项目状态
 
-## Windows：同步会话列表以来源记录为准（2026-11-04，未发布、未提交）
+## Windows 1.8.7：同步会话列表以来源记录为准（2026-11-04）
+
+- 发布：用户在看过本节未验证项后要求发布新版本（2026-11-04），版本号改为 1.8.7，发布说明见 [RELEASE-windows-1.8.7](RELEASE-windows-1.8.7.md)。发布结果见下一条记录。
 
 - 用户反馈：同步没有按项目分、归档的会话也同步了。原因：`SessionSync.List` 直接扫 `projects/<目录名>/*.jsonl`，不看官方记录。本机账号 01 核对：没有记录的 JSONL 都是同一会话改模型／回退前的旧段（出现在当前记录的 `priorCliSessionIds`），会被当成独立会话列出；`isArchived` 不检查；项目内 worktree 的会话目录名不同，完全漏掉。
 - 修复：新增 `SessionSync.ActiveSessions`，读来源账号各账号／组织目录下 `local_*.json` 的 `cliSessionId`、`cwd`、`isArchived`（其余不保存），只列未归档记录对应的 JSONL，按记录 `cwd` 归到清单里最深的项目。AGENTS.md 会话同步例外、SPEC 同步；macOS 未改，SPEC 标 [macOS 待同步]。
