@@ -9,7 +9,8 @@
 - `installer/ClaudeLauncher.iss`、`scripts/setup.ps1`：Inno Setup 安装包。
 - `scripts/publish-release.ps1`：两端一次发布（签名清单、上传自建服务与 GitHub Release、两来源复核）。
 - `src/Diagnostics.cs`：本地日志与账号进程退出观察。
-- `src/SessionSync.cs`：同步会话的列表、白名单清理、路径判断、版本白名单和不覆盖发布（SPEC 同步会话）。界面流程在 `LauncherUI.ShowSessionSync`。
+- `src/SessionSync.cs`：同步会话的列表、白名单清理、路径判断、版本白名单、关联合并、不覆盖发布、替换和多组织目录定位（SPEC 同步会话）。界面流程在 `LauncherUI.ShowSessionSync`，新账号提示在 `OfferInitialSyncIfReady`。
+- `src/Organization.cs`：只在同步定位时读取目标账号的 `lastActiveOrg`（AGENTS.md Windows 例外）：winsqlite3 只读、DPAPI 解 `Local State` 密钥、BCrypt AES-GCM 解这一行。不联网、不启动进程。
 - `src/Tutorial.cs`：教程气泡定位与文档渲染；步骤和遮罩在 `LauncherUI` 的 `Tutorial*` 方法。文档和配图在 `assets/tutorial/`，`build.ps1` 把目录下的文件逐个内嵌，`.csproj` 需同步列出。
 - `src/Updates.cs`：版本号、唯一更新来源（本项目 GitHub Releases）、集中 URL 白名单 `UrlAllowed`、开关未开启时的提前拒绝、清单验签、下载校验、Authenticode 签名者比对、运行 Setup；以及 1.2.0 兼容的 `--apply-update` 原地替换。新的联网入口必须经过 `UrlAllowed` 并在 `--self-test` 中加离线拒绝用例。
 - `src/Settings.cs`：启动器自己的设置 `%LOCALAPPDATA%\Claude-MultiLauncher\settings.json`（SPEC 系统设置 [Windows] 的 12 项，逐项白名单校验、异常回落默认、原子替换写入、导出 version 1），上次页面 `last-page`，以及 HKCU Run 开机启动项 `AutoStart`（只接受正式安装路径）、账号本地别名 `AccountNames`（`account-names.json`，损坏时停止写入）与账号搜索匹配、启动器日志文件 `LogStore`（`launcher-log.json`，与 macOS 同格式，坏记录丢弃）、本地 Claude Code 用户名 `CodeUserName`（只取 `oauthAccount.displayName`；界面测试通过 `LauncherUI.CodeNameFiles` 注入合成文件，默认构造的测试实例不读取真实文件）。

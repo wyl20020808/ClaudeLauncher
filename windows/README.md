@@ -1,10 +1,10 @@
-## Windows 1.8.5 开发版（2026-10-31，同步 macOS 1.7.19～1.7.20，未发布）
+## Windows 1.8.5 开发版（2026-11-04，同步 macOS 1.7.19～1.8.0，未发布）
 
-同步会话、新手教程和永久入口、账号表格去内部滚动、两个说明图标。同步会话没有在真实账号和 Claude 客户端上实测，只做了文件校对，详情和未验证项见 [STATUS](../docs/STATUS.md) 与 [发布说明](../docs/RELEASE-windows-1.8.5.md)。
+同步会话（含最新版本替换、新账号提示、多组织目录定位）、新手教程和永久入口、账号表格去内部滚动、两个说明图标、五小时 0% 估算。同步会话没有在真实账号和 Claude 客户端上实测，只做了文件校对和合成数据自检，详情和未验证项见 [STATUS](../docs/STATUS.md) 与 [发布说明](../docs/RELEASE-windows-1.8.5.md)。
 
-- 同步会话逻辑在 `src/SessionSync.cs`，自检在 `tests/SessionSyncTests.cs`；只放行商店版 Claude 4.4212.0.0。
+- 同步会话逻辑在 `src/SessionSync.cs`（列表、清理、关联、发布、替换、目录定位），组织读取在 `src/Organization.cs`（winsqlite3 只读、DPAPI、BCrypt AES-GCM），自检在 `tests/SessionSyncTests.cs`；只放行商店版 Claude 4.4212.0.0。`build.ps1` 会拒绝这两个源文件里出现联网或启动进程的 API。
+- 启动器自己的记录：`session-links.json`（同步关联）、`initial-sync.json`（待询问的新账号），都在 `%LOCALAPPDATA%\Claude-MultiLauncher`，恢复默认不清除。
 - 教程在 `src/Tutorial.cs` 和 `src/LauncherUI.cs`，文档和配图在 `assets/tutorial/`，构建时内嵌。重新生成配图：编译 `tests/UiPreview.cs` 后运行 `UiPreview.exe --guide assets/tutorial`，只用演示数据。
-
 ## Windows 1.8.4（2026-10-31，同步 macOS 1.7.18）
 
 隔离检查未通过改为警告，同步链接目标判定对齐 macOS，用量趋势移到账号页，项目页按 macOS 结构重做。验证结果与未验证项见 [STATUS](../docs/STATUS.md)。
