@@ -2,7 +2,10 @@
 
 ## Windows 1.8.8：问题诊断（2026-11-04）
 
-- 发布：用户看过本节未验证项后要求提交并发布 1.8.8（2026-11-04），发布说明见 [RELEASE-windows-1.8.8](RELEASE-windows-1.8.8.md)。发布结果见下一条记录。
+- 发布：用户看过本节未验证项后要求提交并发布 1.8.8（2026-11-04），发布说明见 [RELEASE-windows-1.8.8](RELEASE-windows-1.8.8.md)。已发布为 `windows-v1.8.8`（Latest），目标 `06f70e7`（dev 与 main 同一提交，快进推送）。先跑 `build.ps1`、`test-install.ps1`（3 个场景）、`publish-release.ps1 -DryRun`，都通过；正式发布退出 2（未回滚）：草稿附件经 API 逐字节核对通过；GitHub latest/download 的两份清单、Setup、DMG 复核均 OK。
+- 附件：`ClaudeLauncherSetup-1.8.8.exe` 3399961 字节，SHA-256 `649c3ec8e5e59b004b1f040b903caa4d44212fb0ca8d9083c4f02ad34b73d0b9`。原样带入 macOS 1.8.0：`ClaudeLauncher-1.8.0.dmg`（3939218 字节，SHA-256 `3a1700ab…ddac4`）和 `latest-macos.json`，未重签。
+- 退出 2 的原因与 1.8.4～1.8.7 相同：自建更新服务未运行，连不上；`updates/public` 已切换到 1.8.8，服务恢复后需复核。
+- 未验证：1.8.7 软件内更新到 1.8.8；GUI 里的诊断、复制、提交到 GitHub；客户机上的诊断结果。
 
 - 背景：客户机用 1.8.7 把 01 同步到 02（之前同步乱了，02 里全部归档后重来），同步窗口只显示部分项目，1.8.6 时都有。本机（01、02 两个账号）多次同步都正常，复现不了。用户要求：在软件里加诊断，针对已知问题，结果保存在本地，用户授权后提交到 GitHub，诊断随更新扩充（AGENTS.md「问题诊断例外」、SPEC「问题诊断」）。
 - 实现：新文件 `src/SupportReport.cs` 生成报告；`SessionSync.ListWith` 带 `SyncScan`，与同步窗口共用一段列表代码并记录跳过原因（`List` 保持原签名，旧的诊断脚本仍可反射调用）。入口在设置 → 关于、同步窗口左下角、“没有可同步的会话”提示。提交只打开浏览器的新建问题页（预填，超过 7500 字符只填结论并复制完整报告），启动器不联网、无令牌；`build.ps1` 的离线断言加上 `SupportReport.cs`。
