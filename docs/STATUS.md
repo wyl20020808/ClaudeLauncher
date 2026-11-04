@@ -4,7 +4,11 @@
 
 - 客户机（1.8.5）同步到 02 报“存储项不属于当前用户：…\Claude-Second\Network”。`dir /q` 显示 10-28 首次运行建的目录（Network、Local State、claude-code-sessions 等）归 `BUILTIN\Administrators`，10-30 以后的新文件归本人：当时提权／关闭 UAC，之后不再提权，令牌默认所有者变回本人，1.8.3 的规则不再认旧目录。`Storage.OwnedByMe` 增加本机 Administrators 组；SYSTEM、其他用户仍拒绝。启动存储检查、同步、配置同步、交接、设置读取共用这一判断。
 - 同一客户机随后报“只支持商店版 Claude 4.4212.0.0”。用户要求兼容即可、不写死版本：去掉版本白名单，`Publish`／`Replace` 在拿到目标记录目录后调用 `SessionSync.FormatKnown`（已有 `local_*.json` 时至少一条前四个键为已知顺序，否则拒绝；没有记录时按目录结构判断）。AGENTS.md、SPEC、Windows README／用户指南、英文词条同步。macOS 仍是 4.4212.0 白名单，未改。
-- 自检：新增 Administrators 所有者 1 项、格式兼容 3 项，删除版本白名单 3 项。本机为 Mac，**未构建、未运行**；客户机实际同步未验证。
+- 自检：新增 Administrators 所有者 1 项、格式兼容 3 项，删除版本白名单 3 项。Mac 上写的提交 `efd313e`。
+- Windows 构建与自检（2026-11-04，Windows 11，efd313e 原样、未改代码）：`build.ps1` 编译通过（只有原有的 CS0649／CS0219 警告）；LauncherTests 354、SyncTests 154、SessionSyncTests 282、TutorialTests 83、`--self-test` 248 全部通过。
+- 格式正则：用反射取程序里的 `KnownRecord`，只读本机账号 01 每条 `local_*.json` 的前 4 KB 匹配，33 条全部命中，未输出内容。启动器自己写的记录键顺序与之相同，重复同步（`Replace`）在 SessionSyncTests 里通过。
+- 所有者实测（本机只有账号 01，没有 02～10，所以**没有用真实账号目录、也没有经 GUI 测试，界面上的启动检查和同步会话仍未验证**）：在临时目录里建 4 份 `Roaming\Claude-Second` 结构（含 Network、Local State、ClaudeCodeConfig、claude-code-sessions 记录），用管理员 PowerShell 以 `icacls /setowner` 把所有者分别设为本人、Administrators、SYSTEM、本机 DefaultAccount，再以普通权限（未提权）通过反射调用程序里的 `Storage.Validate(2, …)`（递归与非递归，后者即 `SessionSyncGuard` 用的形式）和 `SessionSync.Publish`。结果：本人、Administrators 均通过且实际写入；SYSTEM、DefaultAccount 均报“存储项不属于当前用户，已停止”。测完用管理员把所有者改回本人并删除临时目录；未改 UAC 或其他系统设置，未碰账号 01。
+- 实测发现（未修，属原有行为，留待决定）：① `Publish`／`Replace` 本身不查目标目录所有者，只靠同步前的 `Storage.Validate(…, false)`；`claude-code-sessions` 不在 `Storage.Items` 里，所以它单独归 SYSTEM 或其他用户时不会被拒（ClaudeCodeConfig 在列表里，会被拒）。② `FormatKnown` 把打不开或不属于本人的记录当作“没有记录”跳过，全部打不开时按兼容放行。③ 内嵌教程 `windows/assets/tutorial/guide.*.md` 仍写“只支持商店版 Claude 4.4212.0.0”，与新规则不符，efd313e 没有改。
 
 ## Windows 1.8.5 已发布（2026-11-04，windows-v1.8.5）
 
