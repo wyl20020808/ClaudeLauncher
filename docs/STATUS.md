@@ -1,5 +1,12 @@
 # 项目状态
 
+## Windows 1.8.5 已发布（2026-11-04，windows-v1.8.5）
+
+- 发布：用户在看过未验证项（真实客户端显示、续聊、替换后显示、真实 `lastActiveOrg` 读取均未验证）后要求发布，视为确认 4.4212.0.0 只到文件层面验证。目标 `1ac28de`（dev 与 main 同一提交，均为快进推送；功能分支也已推送）。`publish-release.ps1 -KeyFile <secrets\signing-key.dpapi>` 先 `-DryRun` 通过，正式发布退出 2（未回滚）：草稿附件经 API 逐字节核对通过，已转正式并为 Latest；GitHub latest/download 的两份清单、Setup、DMG 复核均 OK。
+- 附件：`ClaudeLauncherSetup-1.8.5.exe` 3388257 字节，SHA-256 `78f819927ccc8358d42da32ce2fca146750f0e6f52b16775033a119947428142`。原样带入 macOS 1.8.0：`ClaudeLauncher-1.8.0.dmg` 3939218 字节，SHA-256 `3a1700ab81474906b03f01a3be25687c245e42b923e0ce71214e0a59414ddac4`，`latest-macos.json` 与 `macos-v1.8.0` 的附件逐字节相同，未重签。
+- 退出 2 的原因：自建更新服务未运行（连接被关闭，本轮未启动），`updates/public` 已切换到 1.8.5，服务恢复后需复核。与 1.8.4 相同。
+- 未验证：1.8.4 软件内更新到 1.8.5、真实安装后重开、首次打开教程；同步会话的全部真实客户端行为（见下节）。
+
 ## Windows 1.8.5：同步 macOS 1.7.21～1.8.0（2026-11-04，feature/windows-sync-macos-1.7.20，未发布）
 
 - 起点：本机有 10-31 的 3 个未推送提交（同步会话第一版、教程、表格滚动和说明图标，版本已是 1.8.5）。`git fetch` 后把 `origin/dev`（`289ec92`）合入，合并提交 `ecb360a`，`STATUS.md` 和 `english.strings` 冲突都是两边新增，全部保留。合并后 macOS 改了同步日志的共享词条，Windows 自检有 1 项英文检查失败，已在 `b074c4c` 修好。没有 rebase，没有推送。
