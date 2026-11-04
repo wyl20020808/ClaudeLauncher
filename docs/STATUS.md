@@ -2,7 +2,10 @@
 
 ## Windows 1.8.6：所有者接受 Administrators 组、同步会话改为格式兼容检查（2026-11-04）
 
-- 发布：用户在看过本节未验证项后要求发布新版本（2026-11-04），版本号改为 1.8.6，发布说明见 [RELEASE-windows-1.8.6](RELEASE-windows-1.8.6.md)。发布结果见下一条记录。
+- 发布：用户在看过本节未验证项后要求发布新版本（2026-11-04），版本号改为 1.8.6，发布说明见 [RELEASE-windows-1.8.6](RELEASE-windows-1.8.6.md)。已发布为 `windows-v1.8.6`（Latest），目标 `24ab85c`（dev 与 main 同一提交，快进推送）。先跑 `build.ps1`、`test-install.ps1`（3 个场景）、`publish-release.ps1 -DryRun`，都通过；正式发布退出 2（未回滚）：草稿附件经 API 逐字节核对通过；GitHub latest/download 的两份清单、Setup、DMG 复核均 OK。
+- 附件：`ClaudeLauncherSetup-1.8.6.exe` 3388420 字节，SHA-256 `4884ec6001ebde44a8ebd148fb9f6b332dbb0e2e6ce7b08bfa1f776964197dfe`。原样带入 macOS 1.8.0：`ClaudeLauncher-1.8.0.dmg`（SHA-256 `3a1700ab…ddac4`）和 `latest-macos.json`（SHA-256 `1f303a7e…7314`），与 `macos-v1.8.0` 的附件哈希相同，未重签。
+- 退出 2 的原因与 1.8.4、1.8.5 相同：自建更新服务未运行，连不上；`updates/public` 已切换到 1.8.6，服务恢复后需复核。
+- 未验证：1.8.5 软件内更新到 1.8.6；客户机上同步到 02 是否不再报所有者和版本错误；同步会话的全部真实客户端行为。
 
 - 客户机（1.8.5）同步到 02 报“存储项不属于当前用户：…\Claude-Second\Network”。`dir /q` 显示 10-28 首次运行建的目录（Network、Local State、claude-code-sessions 等）归 `BUILTIN\Administrators`，10-30 以后的新文件归本人：当时提权／关闭 UAC，之后不再提权，令牌默认所有者变回本人，1.8.3 的规则不再认旧目录。`Storage.OwnedByMe` 增加本机 Administrators 组；SYSTEM、其他用户仍拒绝。启动存储检查、同步、配置同步、交接、设置读取共用这一判断。
 - 同一客户机随后报“只支持商店版 Claude 4.4212.0.0”。用户要求兼容即可、不写死版本：去掉版本白名单，`Publish`／`Replace` 在拿到目标记录目录后调用 `SessionSync.FormatKnown`（已有 `local_*.json` 时至少一条前四个键为已知顺序，否则拒绝；没有记录时按目录结构判断）。AGENTS.md、SPEC、Windows README／用户指南、英文词条同步。macOS 仍是 4.4212.0 白名单，未改。
