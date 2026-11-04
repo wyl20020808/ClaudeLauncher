@@ -190,27 +190,34 @@ NSArray *PrepareProjectImport(ProjectStore *store, NSArray<NSString *> *paths, N
     return rows;
 }
 
-static NSArray<NSString *> *RegistrationChildren(int parent) {
+// why (optional, report text, Chinese only) says what made the whole level unsafe; UUID names are identifiers and never put in it.
+static NSArray<NSString *> *RegistrationChildrenWhy(int parent, NSString **why) {
     int copy = dup(parent); DIR *stream = copy < 0 ? NULL : fdopendir(copy);
-    if (!stream) { if (copy >= 0) close(copy); return nil; }
-    NSMutableArray *names = [NSMutableArray array]; BOOL failed = NO; NSUInteger entries = 0;
+    if (!stream) { if (copy >= 0) close(copy); if (why) *why = @"目录无法读取"; return nil; }
+    NSMutableArray *names = [NSMutableArray array]; NSString *failed = nil; NSUInteger entries = 0;
     struct dirent *entry;
+    rewinddir(stream); // The dup shares the offset with the caller's descriptor.
     while (YES) {
         errno = 0; entry = readdir(stream);
-        if (!entry) { if (errno) failed = YES; break; }
+        if (!entry) { if (errno) failed = @"目录读取出错"; break; }
         NSString *part = [NSString stringWithUTF8String:entry->d_name];
         if ([part isEqual:@"."] || [part isEqual:@".."]) continue;
         struct stat info;
-        if (!part || ++entries > 20000 || fstatat(parent,entry->d_name,&info,AT_SYMLINK_NOFOLLOW) != 0) { failed = YES; break; }
+        if (!part) { failed = @"有无法识别编码的条目"; break; }
+        if (++entries > 20000) { failed = @"条目超过 20000 个"; break; }
+        if (fstatat(parent,entry->d_name,&info,AT_SYMLINK_NOFOLLOW) != 0) { failed = @"有无法读取的条目"; break; }
         if (!UUIDString(part)) {
-            if (S_ISDIR(info.st_mode) || S_ISLNK(info.st_mode)) { failed = YES; break; }
+            if (S_ISDIR(info.st_mode) || S_ISLNK(info.st_mode)) { failed = [NSString stringWithFormat:S_ISLNK(info.st_mode) ? @"有链接「%@」" : @"有不认识的文件夹「%@」",part]; break; }
             continue;
         }
         [names addObject:part];
     }
+    rewinddir(stream);
     closedir(stream);
+    if (failed && why) *why = failed;
     return failed ? nil : names;
 }
+static NSArray<NSString *> *RegistrationChildren(int parent) { return RegistrationChildrenWhy(parent,NULL); }
 // The account level may hold several sign-ins; the same organization under two accounts is still ambiguous, so it is refused.
 static int OrganizationDirectory(int root, NSString *organization, NSUInteger *total) {
     NSArray *accounts = RegistrationChildren(root);
@@ -446,6 +453,81 @@ BOOL ResolveSyncTarget(NSString *profile, NSString *(^readOrganization)(NSString
     if (records < 0) { *failure = L(@"目标账号当前的组织还没有可用的本地记录目录。请先在该账号正常创建一次本地会话。"); return NO; }
     close(records); *organization = current;
     return YES;
+}
+NSInteger SyncTargetRecordFormat(NSString *profile) {
+    int records = RegistrationDirectory(profile,nil);
+    if (records < 0) return -1;
+    BOOL known = RecordFormatKnown(records); close(records);
+    return known ? 1 : 0;
+}
+// The sidebar ID of a published copy, read back from the target's record by cliSessionId: a replaced copy keeps the
+// official record, whose sessionId need not be local_<cliSessionId>. nil when not found.
+NSString *SyncedSidebarId(NSString *profile, NSString *organization, NSString *session) {
+    int records = RegistrationDirectory(profile,organization);
+    if (records < 0) return nil;
+    NSMutableDictionary *value = nil; BOOL unsafe = NO;
+    NSString *name = RecordForSession(records,session,&value,&unsafe); close(records);
+    id identifier = name ? value[@"sessionId"] : nil;
+    return [identifier isKindOfClass:NSString.class] ? identifier : nil;
+}
+// Only cliSessionId, cwd, isArchived and sessionId (the sidebar group key) leave this function; the rest of the record is dropped.
+static NSDictionary *RecordFields(int directory, const char *name, BOOL *unreadable) {
+    int file = openat(directory,name,O_RDONLY|O_NOFOLLOW|O_NONBLOCK|O_CLOEXEC); struct stat info;
+    if (file < 0 || fstat(file,&info) != 0 || !S_ISREG(info.st_mode) || info.st_uid != getuid() || info.st_nlink != 1 || (info.st_mode & 0022) || info.st_size > 8*1024*1024) {
+        if (file >= 0) close(file); *unreadable = YES; return nil;
+    }
+    NSMutableData *data = [NSMutableData dataWithLength:(NSUInteger)info.st_size]; NSUInteger count = 0;
+    while (count < data.length) {
+        ssize_t n = read(file,(char *)data.mutableBytes+count,data.length-count);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) break;
+        count += (NSUInteger)n;
+    }
+    close(file);
+    if (count != data.length) { *unreadable = YES; return nil; }
+    NSDictionary *row = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+    if (![row isKindOfClass:NSDictionary.class]) return nil;
+    NSString *cli = row[@"cliSessionId"], *cwd = row[@"cwd"], *local = row[@"sessionId"];
+    if (![cwd isKindOfClass:NSString.class] || !cwd.isAbsolutePath) return nil;
+    if (!cli || cli == (id)NSNull.null) return @{@"cwd":cwd}; // A session that never started has no transcript yet.
+    if (![cli isKindOfClass:NSString.class] || !UUIDString(cli)) return nil;
+    NSMutableDictionary *fields = [@{@"cli":cli.lowercaseString,@"cwd":cwd,@"archived":@(row[@"isArchived"] == (id)kCFBooleanTrue)} mutableCopy];
+    if ([local isKindOfClass:NSString.class]) fields[@"sessionId"] = local;
+    return fields;
+}
+void EnumerateSessionRecords(NSString *profile, void (^record)(NSDictionary *fields, NSString *scope, BOOL unreadable), void (^problem)(NSString *text)) {
+    int fd = ProfileDirectory(profile);
+    if (fd < 0) { if (errno != ENOENT) problem(@"账号目录无法安全访问，整个账号跳过"); return; }
+    int root = ChildDirectory(fd,@"claude-code-sessions"); int failure = errno; close(fd);
+    if (root < 0) { if (failure != ENOENT) problem(@"会话记录目录无法安全打开，整个账号跳过"); return; }
+    NSString *why = nil; NSArray *accounts = RegistrationChildrenWhy(root,&why); NSUInteger files = 0; BOOL limited = NO;
+    if (!accounts) problem([NSString stringWithFormat:@"会话记录目录的账号层被当作不安全，整层跳过：%@",why]);
+    for (NSString *account in accounts) {
+        int level = ChildDirectory(root,account);
+        NSArray *organizations = level >= 0 ? RegistrationChildrenWhy(level,&why) : nil;
+        if (level < 0) problem(@"一个账号记录目录无法安全打开，已跳过");
+        else if (!organizations) problem([NSString stringWithFormat:@"一个账号记录目录的组织层被当作不安全，整层跳过：%@",why]);
+        for (NSString *organization in organizations) {
+            int records = ChildDirectory(level,organization), copy = records >= 0 ? dup(records) : -1;
+            DIR *stream = copy >= 0 ? fdopendir(copy) : NULL;
+            if (!stream) { if (copy >= 0) close(copy); if (records >= 0) close(records); problem(@"一个组织记录目录无法安全打开，已跳过"); continue; }
+            NSString *scope = [NSString stringWithFormat:@"%@/%@",account,organization];
+            while (YES) {
+                errno = 0; struct dirent *entry = readdir(stream);
+                if (!entry) { if (errno) problem(@"读取一个组织记录目录时出错，只跳过它余下的记录"); break; }
+                NSString *name = [NSString stringWithUTF8String:entry->d_name];
+                if (![name hasPrefix:@"local_"] || ![name hasSuffix:@".json"]) continue;
+                if (++files > 20000) { limited = YES; break; }
+                BOOL unreadable = NO; NSDictionary *fields = RecordFields(records,entry->d_name,&unreadable);
+                record(fields,scope,unreadable);
+            }
+            closedir(stream); close(records);
+            if (limited) break;
+        }
+        if (level >= 0) close(level);
+        if (limited) { problem(@"会话记录超过 20000 条，后面的没有读取"); break; }
+    }
+    close(root);
 }
 
 void TestProjectImport(void) {

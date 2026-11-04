@@ -19,6 +19,7 @@
 #import "SessionSync.h"
 #import "ConfigSync.h"
 #import "UsageTrend.h"
+#import "SupportReport.h"
 #import "Localization.h"
 #import <ServiceManagement/ServiceManagement.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
@@ -96,6 +97,20 @@ static BOOL WriteLogFile(NSString *path, NSData *data) {
     if (ok) ok = LogTargetSafe(directory, name) && renameat(directory, temporary.fileSystemRepresentation, directory, name.fileSystemRepresentation) == 0;
     if (!ok) unlinkat(directory, temporary.fileSystemRepresentation, 0);
     close(directory); return ok;
+}
+// Diagnostics reports live in the launcher's own reports folder; only the newest 10 are kept (SPEC 问题诊断).
+static NSString *SaveSupportReportFile(NSString *folder, NSString *text, NSDate *now) {
+    int fd = OpenLogDirectory(folder, YES);
+    if (fd < 0) return nil;
+    NSDateFormatter *format = [NSDateFormatter new]; format.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"]; format.dateFormat = @"yyyyMMdd-HHmmss";
+    NSString *path = [folder stringByAppendingPathComponent:[NSString stringWithFormat:@"diagnose-%@.txt",[format stringFromDate:now]]];
+    if (!WriteLogFile(path, [text dataUsingEncoding:NSUTF8StringEncoding])) { close(fd); return nil; }
+    NSArray *names = [[[NSFileManager.defaultManager contentsOfDirectoryAtPath:folder error:nil] filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"SELF BEGINSWITH 'diagnose-' AND SELF ENDSWITH '.txt'"]] sortedArrayUsingSelector:@selector(compare:)];
+    for (NSUInteger i = 0; i + 10 < names.count; i++) {
+        struct stat info;
+        if (fstatat(fd, [names[i] fileSystemRepresentation], &info, AT_SYMLINK_NOFOLLOW) == 0 && SafeLogFile(info)) unlinkat(fd, [names[i] fileSystemRepresentation], 0);
+    }
+    close(fd); return path;
 }
 static NSString *ProfilePath(NSInteger n) {
     NSString *name = n == 1 ? @"Claude" : n == 2 ? @"Claude-Second" : [NSString stringWithFormat:@"Claude-Profile-%02ld", (long)n];
@@ -760,6 +775,11 @@ static const unsigned CardFill = 0xFFFCF7;
 @property NSMutableArray<NSTextField *> *details;
 @property Canvas *list;
 @property NSMutableArray<NSArray<NSNumber *> *> *groups;
+// Second level, under each project: the source sidebar's groups. sections[project] = [[group check or NSNull, indices], …];
+// subChecks/subGroups hold the group checkboxes and their rows. A project without groups has one section and no check.
+@property NSMutableArray<NSArray *> *sections;
+@property NSMutableArray<NSButton *> *subChecks;
+@property NSMutableArray<NSArray<NSNumber *> *> *subGroups;
 @property NSButton *all, *confirm;
 @property NSPopUpButton *target;
 @property NSTextField *countLabel;
@@ -768,6 +788,7 @@ static const unsigned CardFill = 0xFFFCF7;
 @implementation SessionSyncPicker
 - (NSView *)viewWithSessions:(NSArray<NSDictionary *> *)sessions target:(NSPopUpButton *)target {
     self.sessions = sessions; self.target = target; self.rows = [NSMutableArray array]; self.projectChecks = [NSMutableArray array]; self.groups = [NSMutableArray array]; self.disclosures = [NSMutableArray array]; self.details = [NSMutableArray array]; self.autoTicked = [NSMutableIndexSet indexSet];
+    self.sections = [NSMutableArray array]; self.subChecks = [NSMutableArray array]; self.subGroups = [NSMutableArray array];
     NSMutableArray *keys = [NSMutableArray array]; NSMutableDictionary *members = [NSMutableDictionary dictionary];
     for (NSUInteger i = 0; i < sessions.count; i++) {
         NSString *key = sessions[i][@"project"][@"path"];
@@ -790,6 +811,36 @@ static const unsigned CardFill = 0xFFFCF7;
         NSButton *project = [NSButton checkboxWithTitle:[NSString stringWithFormat:L(@"%@（%lu）"),name,(unsigned long)indices.count] target:self action:@selector(toggleProject:)];
         project.allowsMixedState = YES; project.font = [NSFont systemFontOfSize:13 weight:NSFontWeightSemibold]; project.tag = (NSInteger)self.groups.count; project.toolTip = key;
         [self.projectChecks addObject:project]; [self.groups addObject:indices]; [self.list addSubview:project];
+        // Source sidebar order, ungrouped last; no group level when nothing in the project is grouped.
+        NSMutableArray *names = [NSMutableArray array]; NSMutableDictionary *byName = [NSMutableDictionary dictionary];
+        for (NSNumber *index in indices) {
+            NSString *group = sessions[index.unsignedIntegerValue][@"group"] ?: @"";
+            if (!byName[group]) { byName[group] = [NSMutableArray array]; [names addObject:group]; }
+            [byName[group] addObject:index];
+        }
+        NSInteger (^rank)(NSString *) = ^NSInteger(NSString *name) {
+            NSInteger best = NSIntegerMax;
+            for (NSNumber *index in byName[name]) { NSNumber *value = sessions[index.unsignedIntegerValue][@"groupRank"]; if (value && value.integerValue < best) best = value.integerValue; }
+            return best;
+        };
+        [names sortUsingComparator:^NSComparisonResult(NSString *a, NSString *b) {
+            if (!a.length != !b.length) return a.length ? NSOrderedAscending : NSOrderedDescending;
+            NSInteger x = rank(a), y = rank(b);
+            return x != y ? (x < y ? NSOrderedAscending : NSOrderedDescending) : [a localizedStandardCompare:b];
+        }];
+        BOOL layered = names.count > 1 || [names.firstObject length];
+        NSMutableArray *projectSections = [NSMutableArray array];
+        for (NSString *group in names) {
+            id check = NSNull.null;
+            if (layered) {
+                NSButton *box = [NSButton checkboxWithTitle:[NSString stringWithFormat:L(@"%@（%lu）"),group.length ? group : L(@"未分组"),(unsigned long)[byName[group] count]] target:self action:@selector(toggleSubgroup:)];
+                box.allowsMixedState = YES; box.font = [NSFont systemFontOfSize:12 weight:NSFontWeightSemibold]; box.tag = (NSInteger)self.subChecks.count;
+                box.toolTip = group.length ? L(@"来源侧栏分组；同步后副本标题前会加上分组名") : L(@"来源侧栏里不在任何分组");
+                [self.subChecks addObject:box]; [self.subGroups addObject:byName[group]]; [self.list addSubview:box]; check = box;
+            }
+            [projectSections addObject:@[check,byName[group]]];
+        }
+        [self.sections addObject:projectSections];
         for (NSNumber *index in indices) {
             NSDictionary *session = sessions[index.unsignedIntegerValue];
             NSButton *row = [NSButton checkboxWithTitle:session[@"title"] target:self action:@selector(toggleRow:)];
@@ -806,10 +857,15 @@ static const unsigned CardFill = 0xFFFCF7;
     for (NSUInteger i = 0; i < self.groups.count; i++) {
         self.disclosures[i].frame = NSMakeRect(8,y+2,20,20); self.projectChecks[i].frame = NSMakeRect(30,y,570,24); y += 28;
         BOOL open = self.disclosures[i].state == NSControlStateValueOn;
-        for (NSNumber *index in self.groups[i]) {
-            NSButton *row = self.rows[index.unsignedIntegerValue]; NSTextField *detail = self.details[index.unsignedIntegerValue];
-            row.hidden = !open; detail.hidden = !open;
-            if (open) { row.frame = NSMakeRect(54,y,330,22); detail.frame = NSMakeRect(388,y+2,222,18); y += 26; }
+        for (NSArray *section in self.sections[i]) {
+            NSButton *check = section[0] == NSNull.null ? nil : section[0]; CGFloat indent = check ? 22 : 0;
+            check.hidden = !open;
+            if (check && open) { check.frame = NSMakeRect(54,y,546,22); y += 26; }
+            for (NSNumber *index in section[1]) {
+                NSButton *row = self.rows[index.unsignedIntegerValue]; NSTextField *detail = self.details[index.unsignedIntegerValue];
+                row.hidden = !open; detail.hidden = !open;
+                if (open) { row.frame = NSMakeRect(54+indent,y,330-indent,22); detail.frame = NSMakeRect(388,y+2,222,18); y += 26; }
+            }
         }
         y += 8;
     }
@@ -848,6 +904,11 @@ static const unsigned CardFill = 0xFFFCF7;
     [self setIndices:group on:[self stateOf:group] != NSControlStateValueOn];
     [self update];
 }
+- (void)toggleSubgroup:(NSButton *)sender {
+    NSArray *group = self.subGroups[sender.tag];
+    [self setIndices:group on:[self stateOf:group] != NSControlStateValueOn];
+    [self update];
+}
 - (void)toggleRow:(NSButton *)sender { [self update]; }
 // Unlinked copies stay unticked: their originals are selected too, and would otherwise arrive twice. A linked one stands for its whole group.
 - (void)selectOriginals {
@@ -865,6 +926,11 @@ static const unsigned CardFill = 0xFFFCF7;
         self.projectChecks[i].state = [self stateOf:self.groups[i]];
         BOOL any = NO; for (NSNumber *index in self.groups[i]) any |= self.rows[index.unsignedIntegerValue].enabled;
         self.projectChecks[i].enabled = any; [every addObjectsFromArray:self.groups[i]];
+    }
+    for (NSUInteger i = 0; i < self.subChecks.count; i++) {
+        self.subChecks[i].state = [self stateOf:self.subGroups[i]];
+        BOOL any = NO; for (NSNumber *index in self.subGroups[i]) any |= self.rows[index.unsignedIntegerValue].enabled;
+        self.subChecks[i].enabled = any;
     }
     self.all.state = [self stateOf:every];
     NSUInteger count = self.selected.count;
@@ -1102,6 +1168,8 @@ static NSAttributedString *TutorialDocumentText(NSString *markdown, CGFloat imag
 @property NSMutableDictionary *accountNames, *settingsDraft, *localNames;
 @property NSDictionary *settings;
 @property NSUserDefaults *preferences;
+@property NSString *launchLink, *launchPrompt; // Set by the open's prepare block and consumed at launch or activation (session sync groups).
+@property BOOL diagnosing;
 @property NSView *settingsContent, *mainCanvas;
 @property NSArray<NSButton *> *settingsTabs;
 @property NSMutableArray<AccountRow *> *rows;
@@ -1758,7 +1826,22 @@ static void TestInitialSync(void) {
     NSCAssert(picker.rows[0].state == NSControlStateValueOff && [picker.details[0].stringValue containsString:L(@"新增")] && picker.rows[1].state == NSControlStateValueOn && picker.rows[3].enabled,@"switching target takes back automatic ticks only");
     picker.rows[1].state = NSControlStateValueOff; [picker selectOriginals];
     NSCAssert(picker.rows[0].state == NSControlStateValueOn && picker.rows[1].state == NSControlStateValueOff && picker.rows[2].state == NSControlStateValueOn,@"unlinked copies stay unticked, a surviving linked copy is ticked");
-    puts("PASS: new account sync prompt waits until the account is quit and has its folder, drops deleted accounts; sync picker follows versions and target");
+    // Second level: source sidebar groups in sidebar order, ungrouped last, each tickable as a whole; none for a project without groups.
+    NSDictionary *other = @{@"path":@"/o",@"name":@"o"};
+    NSDictionary *(^grouped)(NSDictionary *,NSString *,NSInteger) = ^NSDictionary *(NSDictionary *in, NSString *group, NSInteger rank) {
+        NSMutableDictionary *row = [@{@"title":@"x",@"account":@1,@"modified":date,@"stamp":@200,@"project":in,@"versions":@{}} mutableCopy];
+        if (group) { row[@"group"] = group; row[@"groupRank"] = @(rank); }
+        return row;
+    };
+    SessionSyncPicker *layered = [SessionSyncPicker new];
+    [layered viewWithSessions:@[grouped(project,nil,0),grouped(project,@"乙",1),grouped(project,@"甲",0),grouped(project,@"乙",1),grouped(other,nil,0)] target:target];
+    [target selectItemWithTag:2]; [layered targetChanged:nil];
+    NSArray *sections = layered.sections[0];
+    NSCAssert(sections.count == 3 && [[sections[0][0] title] hasPrefix:@"甲"] && [[sections[1][0] title] hasPrefix:@"乙（2）"] && [[sections[2][0] title] hasPrefix:L(@"未分组")],@"groups in sidebar order, ungrouped last");
+    NSCAssert(layered.subChecks.count == 3 && [layered.sections[1] count] == 1 && layered.sections[1][0][0] == NSNull.null,@"no group level without groups");
+    [layered toggleSubgroup:sections[1][0]];
+    NSCAssert(layered.rows[1].state == NSControlStateValueOn && layered.rows[3].state == NSControlStateValueOn && layered.rows[0].state == NSControlStateValueOff && layered.rows[2].state == NSControlStateValueOff && layered.projectChecks[0].state == NSControlStateValueMixed,@"a group is ticked as a whole");
+    puts("PASS: new account sync prompt waits until the account is quit and has its folder, drops deleted accounts; sync picker follows versions and target, layers source sidebar groups");
 }
 - (void)setInitialSync:(NSInteger)account pending:(BOOL)pending {
     NSMutableArray *accounts = [[NSUserDefaults.standardUserDefaults arrayForKey:InitialSyncKey] ?: @[] mutableCopy];
@@ -1820,8 +1903,8 @@ static void TestInitialSync(void) {
                 if (![known containsObject:candidate[@"path"]]) [projects addObject:@{@"name":[candidate[@"path"] lastPathComponent],@"path":candidate[@"path"]}];
         }
         NSMutableArray *sessions = [NSMutableArray array];
-        for (NSNumber *account in accounts) for (NSDictionary *project in projects) for (NSDictionary *session in SessionSyncList(CodeConfigFolder(account.integerValue),project[@"path"])) {
-            NSMutableDictionary *row = session.mutableCopy; row[@"account"] = account; row[@"project"] = project; [sessions addObject:row];
+        for (NSNumber *account in accounts) for (NSDictionary *session in SessionSyncRows(CodeConfigFolder(account.integerValue),ProfilePath(account.integerValue),projects,nil)) {
+            NSMutableDictionary *row = session.mutableCopy; row[@"account"] = account; [sessions addObject:row];
         }
         [sessions sortUsingDescriptors:@[[NSSortDescriptor sortDescriptorWithKey:@"stamp" ascending:NO]]];
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -1846,10 +1929,16 @@ static void TestInitialSync(void) {
     self.syncProgressPanel = nil;
 }
 - (void)chooseSessionToSync:(NSArray *)sessions accounts:(NSArray<NSNumber *> *)accounts newAccount:(NSInteger)newAccount {
-    if (!sessions.count) { [self alert:L(@"没有可同步的会话") detail:L(@"公共清单里的项目在各账号下都没有本地会话。")] ; return; }
+    if (!sessions.count) {
+        NSAlert *none = [NSAlert new]; none.messageText = L(@"没有可同步的会话");
+        none.informativeText = L(@"公共清单里的项目在各账号下都没有可同步的本地会话（已归档的会话不列出）。\n\n如果你确定有，可以运行问题诊断查看原因。");
+        [none addButtonWithTitle:L(@"知道了")]; [none addButtonWithTitle:L(@"问题诊断…")];
+        if ([none runModal] == NSAlertSecondButtonReturn) [self runSupportDiagnosis:nil];
+        return;
+    }
     NSAlert *choice = [NSAlert new]; choice.messageText = L(@"同步会话到其他账号");
     choice.informativeText = L(@"为勾选的会话各生成一份清理副本放到目标账号：只保留对话文字和工具请求说明，不带账号信息、权限、工具结果和图片。同步过的会话按最新版本为准：有变动时直接替换目标里的旧版本（旧版本移到废纸篓），没变动的不可勾选。写入前可以预览。");
-    [choice addButtonWithTitle:L(@"生成预览")]; [choice addButtonWithTitle:L(@"取消")];
+    [choice addButtonWithTitle:L(@"生成预览")]; [choice addButtonWithTitle:L(@"取消")]; [choice addButtonWithTitle:L(@"列表不全？问题诊断…")];
     NSPopUpButton *target = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO]; target.autoenablesItems = NO; target.accessibilityLabel = L(@"目标账号");
     [self refresh];
     for (NSNumber *account in accounts) {
@@ -1862,7 +1951,9 @@ static void TestInitialSync(void) {
     SessionSyncPicker *picker = [SessionSyncPicker new];
     choice.accessoryView = [picker viewWithSessions:sessions target:target]; picker.confirm = choice.buttons.firstObject; [picker targetChanged:nil];
     if (newAccount) [picker selectOriginals];
-    if ([choice runModal] != NSAlertFirstButtonReturn) return;
+    NSModalResponse response = [choice runModal];
+    if (response == NSAlertThirdButtonReturn) { [self runSupportDiagnosis:nil]; return; }
+    if (response != NSAlertFirstButtonReturn) return;
     NSArray *selected = picker.selected; NSInteger to = target.selectedTag;
     if (!target.selectedItem.enabled) { [self alert:L(@"目标账号正在运行") detail:L(@"请先在该账号中正常退出，再同步。启动器不会替你退出。")] ; return; }
     self.syncingSessions = YES; [self refreshProjects:nil];
@@ -1882,11 +1973,14 @@ static void TestInitialSync(void) {
         NSUInteger done = 0;
         for (NSDictionary *session in selected) @autoreleasepool {
             NSString *existing = session[@"versions"][@(to).stringValue][@"id"];
-            NSDictionary *clean = CleanSession(session[@"path"],session[@"project"][@"path"],NSHomeDirectory(),existing);
+            NSDictionary *clean = CleanSession(session[@"path"],session[@"project"][@"path"],NSHomeDirectory(),existing,session[@"group"]);
             NSUInteger finished = ++done;
             dispatch_async(dispatch_get_main_queue(), ^{ [self updateSyncProgress:L(@"正在生成清理副本") done:finished]; });
             if (clean[@"error"]) [failures addObject:[NSString stringWithFormat:@"「%@」：%@",session[@"title"],clean[@"error"]]];
-            else { NSMutableDictionary *row = clean.mutableCopy; row[@"from"] = session[@"account"]; row[@"fromId"] = session[@"id"]; row[@"replaces"] = @(existing != nil); [cleans addObject:row]; }
+            else {
+                NSMutableDictionary *row = clean.mutableCopy; row[@"from"] = session[@"account"]; row[@"fromId"] = session[@"id"]; row[@"replaces"] = @(existing != nil);
+                row[@"group"] = session[@"group"]; row[@"project"] = session[@"project"][@"path"]; [cleans addObject:row];
+            }
         }
         dispatch_async(dispatch_get_main_queue(), ^{
             self.syncingSessions = NO; [self endSyncProgress]; [self refreshProjects:nil];
@@ -1905,6 +1999,10 @@ static void TestInitialSync(void) {
     NSString *detail = [NSString stringWithFormat:L(@"共 %lu KB。脱敏只认固定格式，其他私人信息请自己看一遍。"),(unsigned long)(bytes/1000)];
     if (replacing) detail = [detail stringByAppendingFormat:L(@"\n其中 %lu 条会替换账号 %02ld 里的旧版本，旧版本移到废纸篓。替换后那边也只剩清理内容，没有工具结果和图片。"),(unsigned long)replacing,(long)to];
     if (bytes > 100*1000) detail = [detail stringByAppendingString:L(@"\n历史较长的会话会占用目标账号较多额度；启动器不会自动截断。")];
+    NSMutableArray *groupNames = [NSMutableArray array]; NSUInteger groupedCount = 0;
+    for (NSDictionary *clean in cleans) if (clean[@"group"]) { groupedCount++; if (![groupNames containsObject:clean[@"group"]]) [groupNames addObject:clean[@"group"]]; }
+    if (groupedCount) detail = [detail stringByAppendingFormat:[@"\n" stringByAppendingString:L(@"%@ 条副本的标题前会加上来源侧栏的分组名：%@。同步完成后可以选“打开并建分组”，在账号 %@ 里建同名的原生分组（要你自己按发送）。")],
+        @(groupedCount).stringValue,[groupNames componentsJoinedByString:@"、"],[NSString stringWithFormat:@"%02ld",(long)to]];
     if (images) detail = [detail stringByAppendingString:L(@"\n部分会话含图片，同步后 AI 看不到它们。")];
     if (failures.count) detail = [detail stringByAppendingFormat:L(@"\n\n%lu 条无法处理，不会同步：\n%@"),(unsigned long)failures.count,[failures componentsJoinedByString:@"\n"]];
     confirm.informativeText = detail;
@@ -1919,6 +2017,7 @@ static void TestInitialSync(void) {
     [self beginSyncProgress:L(@"正在写入目标账号") total:cleans.count];
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0), ^{
         NSUInteger written = 0, replaced = 0; NSString *failure = nil;
+        NSMutableArray *grouped = [NSMutableArray array]; NSString *groupFolder = nil; // [group, target sidebar ID] for the grouping instruction
         NSString *(^guard)(void) = ^NSString *{ return SessionSyncGuard(to); };
         for (NSDictionary *clean in cleans) {
             failure = [clean[@"replaces"] boolValue] ? ReplaceSyncedSession(ProfilePath(to),organization,CodeConfigFolder(to),clean[@"slug"],clean[@"sessionId"],clean[@"jsonl"],clean[@"record"],[clean[@"stamp"] longLongValue],nil,guard)
@@ -1928,6 +2027,8 @@ static void TestInitialSync(void) {
             // Saved per session: quitting mid-batch must not leave published copies unlinked.
             [self.preferences setObject:LinkSessions([self.preferences arrayForKey:SessionLinksKey] ?: @[],[clean[@"from"] integerValue],clean[@"fromId"],to,clean[@"sessionId"]) forKey:SessionLinksKey];
             replaced += [clean[@"replaces"] boolValue];
+            NSString *sidebarId = clean[@"group"] ? SyncedSidebarId(ProfilePath(to),organization,clean[@"sessionId"]) : nil;
+            if (sidebarId) { [grouped addObject:@[clean[@"group"],sidebarId]]; if (!groupFolder) groupFolder = clean[@"project"]; }
             NSUInteger finished = ++written;
             dispatch_async(dispatch_get_main_queue(), ^{ [self updateSyncProgress:L(@"正在写入目标账号") done:finished]; });
         }
@@ -1940,11 +2041,43 @@ static void TestInitialSync(void) {
             if (failure) info = [info stringByAppendingFormat:@"\n\n%@",failure];
             if (failures.count) info = [info stringByAppendingFormat:L(@"\n\n%lu 条无法处理，没有同步。"),(unsigned long)failures.count];
             done.informativeText = info;
-            if (written) [done addButtonWithTitle:[NSString stringWithFormat:L(@"打开账号 %02ld"),(long)to]];
-            [done addButtonWithTitle:L(@"完成")];
-            if ([done runModal] == NSAlertFirstButtonReturn && written) [self selectAccount:self.buttons[to-1]];
+            if (written) [self finishSessionSync:done to:to grouped:grouped folder:groupFolder];
+            else { [done addButtonWithTitle:L(@"完成")]; [done runModal]; }
         });
     });
+}
+// With grouped copies, offers to open a new session in the target with a grouping instruction filled in; the user checks and
+// sends it there, and that Claude files the copies with its own sidebar tools (SPEC 同步会话 · 侧栏分组). Nothing is sent from here.
+- (void)finishSessionSync:(NSAlert *)done to:(NSInteger)to grouped:(NSArray<NSArray<NSString *> *> *)grouped folder:(NSString *)folder {
+    NSString *instruction = SidebarGroupInstruction(grouped), *open = [NSString stringWithFormat:L(@"打开账号 %02ld"),(long)to];
+    if (!instruction) {
+        [done addButtonWithTitle:open]; [done addButtonWithTitle:L(@"完成")];
+        if ([done runModal] == NSAlertFirstButtonReturn) [self selectAccount:self.buttons[to-1]];
+        return;
+    }
+    NSMutableArray *names = [NSMutableArray array], *ids = [NSMutableArray array];
+    for (NSArray *pair in grouped) {
+        NSString *name = [pair[0] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        if (![names containsObject:name]) [names addObject:name];
+        if (![ids containsObject:pair[1]]) [ids addObject:pair[1]];
+    }
+    done.informativeText = [done.informativeText stringByAppendingFormat:@"\n\n%@",[NSString stringWithFormat:L(@"其中 %@ 条在来源侧栏有分组（%@）。选“打开并建分组”，启动器会在账号 %@ 新建一个会话，输入框里填好整理分组的指令；你检查后按发送，由 Claude 用官方工具建分组，会用掉一条消息的额度。启动器不会替你发送。"),
+        @(ids.count).stringValue,[names componentsJoinedByString:@"、"],[NSString stringWithFormat:@"%02ld",(long)to]]];
+    [done addButtonWithTitle:L(@"打开并建分组")]; [done addButtonWithTitle:[NSString stringWithFormat:L(@"只打开账号 %@"),[NSString stringWithFormat:@"%02ld",(long)to]]]; [done addButtonWithTitle:L(@"完成")];
+    NSModalResponse choice = [done runModal];
+    if (choice == NSAlertSecondButtonReturn) { [self selectAccount:self.buttons[to-1]]; return; }
+    if (choice != NSAlertFirstButtonReturn) return;
+    NSString *link = SidebarNewSessionLink(instruction,folder);
+    [self addLog:[NSString stringWithFormat:L(@"会话同步：账号 %02ld 分组指令 %lu 组、%lu 条，%@"),(long)to,(unsigned long)names.count,(unsigned long)ids.count,link ? L(@"预填") : L(@"复制到剪贴板")]];
+    if (!link) {
+        [NSPasteboard.generalPasteboard clearContents];
+        BOOL copied = [NSPasteboard.generalPasteboard setString:instruction forType:NSPasteboardTypeString];
+        [self alert:L(@"指令太长，不能自动填入") detail:copied ? L(@"分组指令已复制到剪贴板。打开账号后，新建一个 Code 会话，粘贴、检查后自己发送。") : L(@"无法复制到剪贴板。请减少一次同步的会话数量后再试。")];
+        if (copied) [self selectAccount:self.buttons[to-1]];
+        return;
+    }
+    // Consumed right where the account is launched or activated, so a cancelled open never leaves it for a later click.
+    [self selectAccount:self.buttons[to-1] prepare:^BOOL{ self.launchLink = link; self.launchPrompt = instruction; return YES; }];
 }
 - (void)addProject:(id)sender {
     if (!self.projectStore.writable) return;
@@ -2367,9 +2500,10 @@ static void TestInitialSync(void) {
             [self settingToggle:@"allowUpdates" title:L(@"允许检查 GitHub 更新") detail:L(@"默认关闭。开启后每次打开启动器检查一次，也可手动检查；仅访问本项目 GitHub 下载地址。") icon:@"arrow.down.circle"];
             [self settingsAction:L(@"检查更新…") action:@selector(checkForUpdates:) title:L(@"检查启动器更新") detail:L(@"非官方本地工具，与 Anthropic 无关联；不向 Claude 或 Anthropic 发请求。") icon:@"arrow.triangle.2.circlepath"];
             [self settingsHeader:L(@"帮助与诊断")];
-            [self settingsAction:L(@"查看") action:@selector(localHelp:) title:L(@"本地使用帮助") detail:nil icon:@"questionmark.circle"];
+            // The page has no scrolling: the former closing note is this row's detail, leaving room for diagnostics.
+            [self settingsAction:L(@"查看") action:@selector(localHelp:) title:L(@"本地使用帮助") detail:L(@"不会自动联网检查。不读取凭据，不修改官方应用。") icon:@"questionmark.circle"];
             [self settingsAction:L(@"复制") action:@selector(copyDiagnostics:) title:L(@"基础诊断信息") detail:L(@"仅包含版本、系统版本和权限状态，不包含账号、路径、日志或凭据。") icon:@"stethoscope"];
-            [self settingsNote:L(@"不会自动联网检查。不读取凭据，不修改官方应用。")]; break;
+            [self settingsAction:L(@"开始诊断…") action:@selector(runSupportDiagnosis:) title:L(@"问题诊断") detail:L(@"只读检查同步会话、项目与账号目录；结果先给你看，提交由你决定。") icon:@"doc.text.magnifyingglass"]; break;
     }
 }
 // Each change is saved at once; a refused or failed save restores the controls to the saved values.
@@ -2502,6 +2636,67 @@ static void TestInitialSync(void) {
 }
 - (void)localHelp:(id)sender {
     [self alert:L(@"本地使用帮助") detail:L(@"实例管理：手动启动或打开指定账号；更多菜单可复制路径及管理登录保护。\n账号管理：搜索、筛选、设置本地别名，勾选后复制路径。\n项目管理：维护公共目录入口；所有写入均需明确操作。\n日志记录：筛选、搜索、翻页、导出当前结果；重启和更新后保留。\n系统设置：更改即时保存并生效，恢复默认不会处理账号数据。\n\n启动器不查询 Claude 服务、不读取凭据，不控制官方客户端自身正常联网。")];
+}
+static NSString *SupportSummary(NSDictionary *result) {
+    return [result[@"problems"] integerValue] + [result[@"notices"] integerValue] ? [NSString stringWithFormat:L(@"发现 %@ 个问题、%@ 个注意事项"),result[@"problems"],result[@"notices"]] : L(@"没有发现已知问题");
+}
+// ---- 问题诊断 (SPEC 问题诊断): read only; the user sees the report first and decides whether to copy or submit it ----
+- (void)runSupportDiagnosis:(id)sender {
+    if (self.snapshotMode || self.diagnosing || self.syncingSessions) return;
+    self.diagnosing = YES; self.message.stringValue = L(@"正在诊断…");
+    SupportInput *input = [SupportInput new];
+    input.version = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: L(@"开发版");
+    input.system = NSProcessInfo.processInfo.operatingSystemVersionString; input.updatesEnabled = [self.settings[@"allowUpdates"] boolValue];
+    input.projectsUnreadable = !self.projectStore.writable; input.projects = [self projectRecords];
+    NSMutableDictionary *statuses = [NSMutableDictionary dictionary];
+    for (NSDictionary *project in input.projects) if ([project[@"path"] isKindOfClass:NSString.class]) statuses[project[@"path"]] = [self.projectStore statusForPath:project[@"path"]] ?: @"";
+    input.projectProblem = ^NSString *(NSString *path) { NSString *status = statuses[path]; return [status isEqual:@"正常"] ? nil : status.length ? status : @"状态未知"; };
+    NSMutableArray *accounts = [NSMutableArray array];
+    for (NSInteger n = 1; n <= 10; n++) { BOOL directory = NO; if ([NSFileManager.defaultManager fileExistsAtPath:ProfilePath(n) isDirectory:&directory] && directory) [accounts addObject:@(n)]; }
+    input.accounts = accounts; input.config = ^NSString *(NSInteger n) { return CodeConfigFolder(n); }; input.profile = ^NSString *(NSInteger n) { return ProfilePath(n); };
+    input.targetGuard = ^NSString *(NSInteger n) { return SessionSyncGuard(n); };
+    input.links = [self.preferences arrayForKey:SessionLinksKey] ?: @[]; input.logs = self.logEntries.copy ?: @[]; input.home = NSHomeDirectory(); input.now = NSDate.date;
+    NSString *folder = [self.logPath.stringByDeletingLastPathComponent stringByAppendingPathComponent:@"reports"];
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0), ^{
+        NSDictionary *result = BuildSupportReport(input);
+        NSString *saved = self.logPath ? SaveSupportReportFile(folder,result[@"text"],input.now) : nil;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            self.diagnosing = NO;
+            self.message.stringValue = [NSString stringWithFormat:L(@"诊断完成：%@"),SupportSummary(result)];
+            [self addLog:[NSString stringWithFormat:L(@"问题诊断：%@ 个问题、%@ 个注意事项"),result[@"problems"],result[@"notices"]]];
+            [self showSupportReport:result saved:saved];
+        });
+    });
+}
+- (void)showSupportReport:(NSDictionary *)result saved:(NSString *)saved {
+    NSString *feedback = @"";
+    while (YES) {
+        NSAlert *alert = [NSAlert new]; alert.messageText = SupportSummary(result);
+        alert.informativeText = [(saved ? L(@"报告已保存在本机。只读检查，不含对话内容、会话标题和凭据，路径只保留最后一级目录名。提交到 GitHub 前请看一遍，提交后公开可见。")
+            : L(@"报告没能保存到本机，可以复制。只读检查，不含对话内容、会话标题和凭据，路径只保留最后一级目录名。提交到 GitHub 前请看一遍，提交后公开可见。")) stringByAppendingString:feedback.length ? [@"\n\n" stringByAppendingString:feedback] : @""];
+        NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:NSMakeRect(0,0,640,360)]; scroll.hasVerticalScroller = YES; scroll.borderType = NSBezelBorder;
+        NSTextView *text = [[NSTextView alloc] initWithFrame:scroll.bounds]; text.editable = NO; text.string = result[@"text"]; text.font = [NSFont systemFontOfSize:12];
+        text.autoresizingMask = NSViewWidthSizable; text.accessibilityLabel = L(@"诊断报告"); scroll.documentView = text; alert.accessoryView = scroll;
+        [alert addButtonWithTitle:L(@"关闭")]; [alert addButtonWithTitle:L(@"复制报告")]; [alert addButtonWithTitle:L(@"提交到 GitHub…")];
+        if (saved) [alert addButtonWithTitle:L(@"打开报告文件夹")];
+        NSModalResponse response = [alert runModal];
+        if (response == NSAlertSecondButtonReturn) {
+            [NSPasteboard.generalPasteboard clearContents];
+            feedback = [NSPasteboard.generalPasteboard setString:result[@"text"] forType:NSPasteboardTypeString] ? L(@"报告已复制，可以粘贴发给开发者。") : [NSString stringWithFormat:L(@"复制失败：%@"),L(@"剪贴板不可用")];
+        } else if (response == NSAlertThirdButtonReturn) {
+            NSAlert *confirm = [NSAlert new]; confirm.messageText = L(@"提交诊断到 GitHub？");
+            confirm.informativeText = L(@"会用浏览器打开本项目 GitHub 的“新建问题”页面，报告已经填好。需要登录你自己的 GitHub 账号，检查内容后点“Create”才会提交；提交后所有人都能看到。\n\n没有 GitHub 账号的话，可以点“复制报告”或“打开报告文件夹”，用其他方式发给开发者。");
+            [confirm addButtonWithTitle:L(@"取消")]; [confirm addButtonWithTitle:L(@"打开 GitHub")];
+            if ([confirm runModal] != NSAlertSecondButtonReturn) continue;
+            BOOL complete = NO; NSString *url = SupportIssueURL(result,&complete); BOOL copied = YES;
+            if (!complete) { [NSPasteboard.generalPasteboard clearContents]; copied = [NSPasteboard.generalPasteboard setString:result[@"text"] forType:NSPasteboardTypeString]; }
+            // The browser opens the page; the launcher itself sends nothing and holds no token.
+            if (![NSWorkspace.sharedWorkspace openURL:[NSURL URLWithString:url]]) feedback = [NSString stringWithFormat:L(@"无法打开浏览器：%@。可以复制报告用其他方式发送。"),L(@"系统没有打开链接")];
+            else feedback = complete ? L(@"已在浏览器打开，报告已填好。检查后点“Create”提交。") : copied ? L(@"报告较长：页面里只填了结论，完整报告已复制。请在页面里按 ⌘V 粘贴后再提交。")
+                : [NSString stringWithFormat:L(@"报告太长，页面里只填了结论，而且没能复制完整报告（%@）。请点“复制报告”后粘贴到页面里。"),L(@"剪贴板不可用")];
+        } else if (saved && response == NSAlertThirdButtonReturn+1) [NSWorkspace.sharedWorkspace activateFileViewerSelectingURLs:@[[NSURL fileURLWithPath:saved]]];
+        else return;
+    }
 }
 - (void)copyDiagnostics:(id)sender {
     NSString *text = [NSString stringWithFormat:@"Claude Launcher %@ (%@)\nmacOS %@\nAccessibility: %@\nNetwork: manual GitHub updates %@\nClaude/Anthropic requests: prohibited",[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"],[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleVersion"],NSProcessInfo.processInfo.operatingSystemVersionString,AXIsProcessTrusted() ? @"granted" : @"not granted",[self.settings[@"allowUpdates"] boolValue] ? @"enabled" : @"disabled"];
@@ -3834,11 +4029,15 @@ static OSStatus HotKeyHandler(EventHandlerCallRef next, EventRef event, void *co
         self.message.stringValue = L(@"进程或登录保护状态已变化，未启动新实例，请重试。"); return;
     }
     if (prepare && !prepare()) return;
+    // Claude handles a claude:// argument only at a cold start (4.16336), so this is the one way the link reaches just this account.
+    NSString *link = self.launchLink; self.launchLink = nil; self.launchPrompt = nil;
+    if (link && !SidebarLinkValid(link)) { [self alert:L(@"无法打开账号") detail:L(@"预填链接无效，未启动。")]; return; }
     self.starting[key] = [NSDate date]; [self refresh];
     self.message.stringValue = [NSString stringWithFormat:L(@"正在启动账号 %02ld…"),(long)account];
     NSWorkspaceOpenConfiguration *config = [NSWorkspaceOpenConfiguration configuration];
     config.createsNewApplicationInstance = YES; config.activates = YES;
     config.arguments = account == 1 ? @[] : @[[ @"--user-data-dir=" stringByAppendingString:ProfilePath(account)]];
+    if (link) config.arguments = [config.arguments arrayByAddingObject:link];
     if (codeConfig) config.environment = @{@"CLAUDE_CONFIG_DIR":codeConfig};
     NSDate *requested = [NSDate date];
     [self.pendingLaunches addObject:key];
@@ -3865,6 +4064,13 @@ static OSStatus HotKeyHandler(EventHandlerCallRef next, EventRef event, void *co
     NSRunningApplication *app = [NSRunningApplication runningApplicationWithProcessIdentifier:pid];
     if (!app || app.terminated) { [self alert:L(@"实例已退出") detail:L(@"请再次点击启动。")] ; return; }
     if (prepare && !prepare()) return;
+    // A running Claude ignores links in a second launch's arguments, and a system-opened link may reach another account.
+    NSString *prompt = self.launchPrompt; self.launchLink = nil; self.launchPrompt = nil;
+    if (prompt) {
+        [NSPasteboard.generalPasteboard clearContents];
+        BOOL copied = [NSPasteboard.generalPasteboard setString:prompt forType:NSPasteboardTypeString];
+        [self alert:L(@"账号已在运行，不能自动填入") detail:copied ? L(@"分组指令已复制到剪贴板。在这个账号里新建一个 Code 会话，粘贴、检查后自己发送。") : L(@"无法复制到剪贴板。请先正常退出这个账号，再回到同步完成提示重试。")];
+    }
     [app unhide]; [self markUsed:account];
     if (@available(macOS 14.0, *)) {
         [NSApp yieldActivationToApplication:app];
@@ -4024,6 +4230,16 @@ static int SelfTest(void) {
         TestProjects();
         TestProjectImport();
         TestSessionSync();
+        TestSupportReport();
+        {
+            NSString *reports = [NSFileManager.defaultManager.currentDirectoryPath stringByAppendingPathComponent:[@".claude-reports-tests-" stringByAppendingString:NSUUID.UUID.UUIDString]];
+            NSMutableArray *saved = [NSMutableArray array];
+            for (NSInteger i = 0; i < 12; i++) { NSString *path = SaveSupportReportFile(reports,@"report",[NSDate dateWithTimeIntervalSince1970:1800000000+i]); NSCAssert(path,@"report saved"); [saved addObject:path.lastPathComponent]; }
+            NSSet *kept = [NSSet setWithArray:[NSFileManager.defaultManager contentsOfDirectoryAtPath:reports error:nil]];
+            NSCAssert([kept isEqual:[NSSet setWithArray:[saved subarrayWithRange:NSMakeRange(2,10)]]],@"only the newest 10 reports are kept");
+            [NSFileManager.defaultManager removeItemAtPath:reports error:nil];
+            puts("PASS: diagnostics reports are saved in the launcher's own folder and only the newest 10 kept");
+        }
         TestUsageInterface();
         TestUsageHistory();
         TestProxyCheck();
@@ -4421,6 +4637,27 @@ static int UISettingsTest(NSString *output) {
         launcher.suggestButton.hidden = YES; launcher.message.stringValue = @"";
         TestUpdateGeneration(launcher, output);
         TestLogWriteFailures(output);
+        {   // Sync picker with source sidebar groups: synthetic rows only, rendered offscreen.
+            NSPopUpButton *target = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+            for (NSNumber *tag in @[@2]) { [target addItemWithTitle:@"账号 02"]; target.lastItem.tag = tag.integerValue; }
+            NSDictionary *a = @{@"path":@"/p/ClaudeLauncher",@"name":@"ClaudeLauncher"}, *b = @{@"path":@"/p/ai-media",@"name":@"ai-media"};
+            NSMutableArray *rows = [NSMutableArray array];
+            NSArray *spec = @[@[a,@"测试1",@0,@"整理同步窗口"],@[a,@"测试2",@1,@"诊断报告"],@[a,@"测试1",@0,@"侧栏分组"],@[a,[NSNull null],@0,@"没有分组的会话"],@[b,[NSNull null],@0,@"另一个项目"]];
+            for (NSArray *item in spec) {
+                NSMutableDictionary *row = [@{@"title":item[3],@"account":@1,@"modified":NSDate.date,@"stamp":@200,@"project":item[0],@"versions":@{}} mutableCopy];
+                if (item[1] != NSNull.null) { row[@"group"] = item[1]; row[@"groupRank"] = item[2]; }
+                [rows addObject:row];
+            }
+            SessionSyncPicker *picker = [SessionSyncPicker new]; NSView *view = [picker viewWithSessions:rows target:target];
+            for (NSButton *disclosure in picker.disclosures) disclosure.state = NSControlStateValueOn;
+            [picker targetChanged:nil]; [picker toggleSubgroup:picker.subChecks[0]]; [picker layoutList];
+            NSScrollView *scroll = view.subviews.lastObject; [scroll.contentView scrollToPoint:NSZeroPoint];
+            NSWindow *host = [[NSWindow alloc] initWithContentRect:NSMakeRect(0,0,640,430) styleMask:NSWindowStyleMaskBorderless backing:NSBackingStoreBuffered defer:NO];
+            host.contentView = view; [view layoutSubtreeIfNeeded];
+            NSBitmapImageRep *bitmap = [view bitmapImageRepForCachingDisplayInRect:view.bounds]; [view cacheDisplayInRect:view.bounds toBitmapImageRep:bitmap];
+            NSCAssert([[bitmap representationUsingType:NSBitmapImageFileTypePNG properties:@{}] writeToFile:[output stringByAppendingPathComponent:@"sync-picker-groups.png"] atomically:YES],@"picker snapshot saved");
+            NSCAssert([picker.countLabel.stringValue containsString:@"2"] && !picker.subChecks[0].hidden && picker.subChecks.count == 3,@"picker group layer laid out");
+        }
         NetworkEnabled = NO; __block BOOL refused = NO;
         Fetch([NSURL URLWithString:[GitHubDownloads stringByAppendingString:@"latest-macos.json"]],YES,100,1,nil,^(NSData *data,NSString *failure) { refused = !data && failure.length; });
         NSCAssert(refused,@"disabled network rejected before session creation");
@@ -4428,7 +4665,7 @@ static int UISettingsTest(NSString *output) {
         Fetch([NSURL URLWithString:@"https://api.anthropic.com/v1/messages"],YES,100,1,nil,^(NSData *data,NSString *failure) { refused = !data && failure.length; });
         NSCAssert(refused,@"Claude requests rejected even with update opt-in"); NetworkEnabled = NO;
         NSCAssert(!launcher.timer && !launcher.statusItem && !launcher.projectStore,@"UI checks do not start normal lifecycle or load projects");
-        puts("PASS: native settings controls, immediate save/reload, reset scope, artwork/interface-usage/notifications, log retention/persistence/filter/paging, account search/status/selection, network rejection before session creation; 13 offscreen renders (3 dark)");
+        puts("PASS: native settings controls, immediate save/reload, reset scope, artwork/interface-usage/notifications, log retention/persistence/filter/paging, account search/status/selection, network rejection before session creation; 14 offscreen renders (3 dark, one sync picker with groups)");
     } @finally {
         NetworkEnabled = NO; [preferences removePersistentDomainForName:suite]; [preferences synchronize];
     }

@@ -17,7 +17,7 @@ if [[ -z "$BUILD_SDK" ]]; then
         BUILD_SDK=$(xcrun --show-sdk-path)
     fi
 fi
-xcrun clang -isysroot "$BUILD_SDK" -arch arm64 -arch x86_64 -fobjc-arc -Wall -Wextra -Wno-unused-parameter -mmacosx-version-min=12.0 -framework Cocoa -framework ApplicationServices -framework Security -framework ServiceManagement -framework SystemConfiguration -framework UniformTypeIdentifiers -framework Carbon -lsqlite3 src/main.m src/Projects.m src/ProjectImport.m src/SessionSync.m src/UsageInterface.m src/UsageHistory.m src/Settings.m src/ProxyCheck.m src/Handoff.m src/Localization.m src/ConfigSync.m src/UsageTrend.m -o "$APP/Contents/MacOS/ClaudeLauncher"
+xcrun clang -isysroot "$BUILD_SDK" -arch arm64 -arch x86_64 -fobjc-arc -Wall -Wextra -Wno-unused-parameter -mmacosx-version-min=12.0 -framework Cocoa -framework ApplicationServices -framework Security -framework ServiceManagement -framework SystemConfiguration -framework UniformTypeIdentifiers -framework Carbon -lsqlite3 src/main.m src/Projects.m src/ProjectImport.m src/SessionSync.m src/UsageInterface.m src/UsageHistory.m src/Settings.m src/ProxyCheck.m src/Handoff.m src/Localization.m src/ConfigSync.m src/UsageTrend.m src/SupportReport.m -o "$APP/Contents/MacOS/ClaudeLauncher"
 cp resources/icon/AppIcon.icns resources/icon/menubar.png resources/i18n/english.strings "$APP/Contents/Resources/"
 cp resources/tutorial/* resources/ui/*.webp resources/update-helper.sh windows/assets/update-public-key.xml "$APP/Contents/Resources/"
 # Mac 发布公钥在包内改名：NSBundle 会把以 -macos 结尾的文件当作平台变体，顶替同名的共用公钥。
@@ -31,8 +31,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 <key>CFBundleName</key><string>Claude 启动器</string>
 <key>CFBundleDisplayName</key><string>Claude 启动器</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleVersion</key><string>31</string>
-<key>CFBundleShortVersionString</key><string>1.8.0</string>
+<key>CFBundleVersion</key><string>32</string>
+<key>CFBundleShortVersionString</key><string>1.8.1</string>
 <key>CFBundleIconFile</key><string>AppIcon.icns</string>
 <key>LSMinimumSystemVersion</key><string>12.0</string>
 <key>NSHighResolutionCapable</key><true/>

@@ -949,3 +949,18 @@
 "重新播放引导，或查看文档教程。" = "Replay the tour or read the guide.";
 "查看教程" = "Tutorial";
 "已请求关闭窗口；若 Claude 保留在托盘，请从托盘退出。" = "Window close requested. If Claude stays in the tray, quit from its tray menu.";
+/* macOS 同步会话：列表以记录为准、问题诊断、侧栏分组（2026-11-04） */
+"会话同步：账号 %02ld 分组指令 %lu 组、%lu 条，%@" = "Session sync: grouping instruction for account %02ld, %lu groups, %lu sessions, %@";
+"预填" = "filled in";
+"复制到剪贴板" = "copied to the clipboard";
+"预填链接无效，未启动。" = "The prefill link is invalid; nothing was started.";
+"无法打开账号" = "Cannot Open the Account";
+"账号已在运行，不能自动填入" = "Account Is Running; Cannot Fill In";
+"分组指令已复制到剪贴板。在这个账号里新建一个 Code 会话，粘贴、检查后自己发送。" = "The grouping instruction is copied to the clipboard. Start a new Code session in this account, paste it, check it and send it yourself.";
+"无法复制到剪贴板。请先正常退出这个账号，再回到同步完成提示重试。" = "Could not copy to the clipboard. Quit this account normally first, then try again from the sync result.";
+"问题诊断：%@ 个问题、%@ 个注意事项" = "Diagnostics: %@ problems, %@ notices";
+"剪贴板不可用" = "the clipboard is unavailable";
+"系统没有打开链接" = "the system did not open the link";
+"报告已保存在本机。只读检查，不含对话内容、会话标题和凭据，路径只保留最后一级目录名。提交到 GitHub 前请看一遍，提交后公开可见。" = "The report is saved on this Mac. It is a read-only check without conversation text, session titles or credentials; paths keep only the last folder name. Read it before submitting to GitHub: submitted reports are public.";
+"报告没能保存到本机，可以复制。只读检查，不含对话内容、会话标题和凭据，路径只保留最后一级目录名。提交到 GitHub 前请看一遍，提交后公开可见。" = "The report could not be saved on this Mac, but you can copy it. It is a read-only check without conversation text, session titles or credentials; paths keep only the last folder name. Read it before submitting to GitHub: submitted reports are public.";
+"报告较长：页面里只填了结论，完整报告已复制。请在页面里按 ⌘V 粘贴后再提交。" = "The report is long: the page only has the conclusions and the full report is copied. Press ⌘V in the page to paste it before submitting.";

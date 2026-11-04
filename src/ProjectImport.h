@@ -24,3 +24,11 @@ BOOL SyncTargetReady(NSString *profile);
 // Decides where a sync may write. With one folder, organization stays nil and readOrganization is not called (it may touch the
 // keychain). With several, the folder must match the target's current organization. Returns NO with failure when none qualifies.
 BOOL ResolveSyncTarget(NSString *profile, NSString *(^readOrganization)(NSString **failure), NSString **organization, NSString **failure);
+// 1 known, 0 unknown record format, -1 no single account/organization folder yet.
+NSInteger SyncTargetRecordFormat(NSString *profile);
+// A published copy's sidebar ID (its record's sessionId), looked up by cliSessionId; nil when not found.
+NSString *SyncedSidebarId(NSString *profile, NSString *organization, NSString *session);
+// Every local_*.json under the profile's account/organization folders. fields is nil when the record cannot be read (unreadable)
+// or is malformed; {cwd} alone for a session that never started; otherwise {cli, cwd, archived, sessionId?}. scope is "<account folder>/<organization folder>". An unsafe level
+// or a folder that fails is skipped alone and reported through problem.
+void EnumerateSessionRecords(NSString *profile, void (^record)(NSDictionary *fields, NSString *scope, BOOL unreadable), void (^problem)(NSString *text));
