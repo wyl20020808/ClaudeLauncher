@@ -16,6 +16,17 @@ namespace ClaudeLauncher {
     // Stamp：最后写入时间的 Ticks（100 ns，NTFS 的最小单位）。Versions：关联组里各账号的版本。
     internal sealed class SyncSessionRow { public string Path, Id, Title, ProjectPath, ProjectName; public DateTime Modified; public long Stamp; public int Account; public bool Linked; public Dictionary<int, SyncVersion> Versions = new Dictionary<int, SyncVersion>(); }
     internal sealed class CleanedSession { public string Error, SessionId, Slug, Title, Preview, Report, FromId; public byte[] Jsonl, Record; public int Messages, Images, From; public long Stamp; public bool Replaces; }
+    // 问题诊断用：列表时顺带记下每一步跳过了什么、为什么。只记 ID、cwd 和原因，不记标题和正文。
+    internal sealed class SyncScan {
+        public readonly List<string> Problems = new List<string>();
+        public int Records, Unreadable, Invalid;
+        public readonly List<KeyValuePair<string, string>> Archived = new List<KeyValuePair<string, string>>();
+        public readonly Dictionary<string, string> Active = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        public readonly List<SyncSkip> Skipped = new List<SyncSkip>();
+        public bool NoProjectsFolder;
+    }
+    // Reason：outside 不在清单项目里；slug 路径太长；missing 没有正文；empty 正文为空；link 正文或目录是链接。
+    internal sealed class SyncSkip { public string Id, Cwd, Reason, ProjectPath; }
     // 同步会话（SPEC 项目清单 / 同步会话）：只读来源，从白名单重新生成清理副本，只新增不覆盖。不启动 CLI、不发请求。
     internal static class SessionSync {
         const long MaxSourceBytes = 512L * 1024 * 1024;
@@ -87,49 +98,80 @@ namespace ClaudeLauncher {
         // ---- 列表 ----
         // 侧栏以官方记录为准：只列未归档记录指向的正文，按记录的 cwd 归到最深的清单项目（项目内的 worktree 也算）。
         // 没有记录的 JSONL 是已删除的会话，或改模型／回退前留下的旧段（记录的 priorCliSessionIds），不列。
-        internal static List<SyncSessionRow> List(string config, IEnumerable<string> profiles, IList<string> projects) {
+        internal static List<SyncSessionRow> List(string config, IEnumerable<string> profiles, IList<string> projects) { return ListWith(config, profiles, projects, null); }
+        internal sealed class ProjectRoot { public string Path, Real; }
+        internal static List<ProjectRoot> Roots(IEnumerable<string> projects) { return projects.Select(p => new ProjectRoot { Path = p, Real = Real(p) }).Where(p => p.Real != null).OrderByDescending(p => p.Real.Length).ToList(); }
+        // 最深的清单项目；不在任何项目里返回 null。
+        internal static string ProjectOf(string cwd, IList<ProjectRoot> roots) {
+            string real = Real(cwd); if (real == null) return null;
+            var project = roots.FirstOrDefault(p => Within(real, p.Real) != null);
+            return project == null ? null : project.Path;
+        }
+        // scan 不为 null 时记下跳过原因（问题诊断）；列出的结果与不传时相同。
+        internal static List<SyncSessionRow> ListWith(string config, IEnumerable<string> profiles, IList<string> projects, SyncScan scan) {
             var rows = new List<SyncSessionRow>();
-            var roots = projects.Select(p => new { Path = p, Real = Real(p) }).Where(p => p.Real != null).OrderByDescending(p => p.Real.Length).ToList();
+            var roots = Roots(projects);
+            Action<string, string, string, string> skip = (id, cwd, reason, project) => { if (scan != null) scan.Skipped.Add(new SyncSkip { Id = id, Cwd = cwd, Reason = reason, ProjectPath = project }); };
             try {
                 var folder = new DirectoryInfo(Path.Combine(config, "projects"));
-                if (!folder.Exists || (folder.Attributes & FileAttributes.ReparsePoint) != 0) return rows;
-                foreach (var session in ActiveSessions(profiles)) {
-                    if (rows.Count >= MaxSessions) break;
-                    string real = Real(session.Value), slug = Slug(session.Value);
-                    var project = real == null ? null : roots.FirstOrDefault(p => Within(real, p.Real) != null);
-                    if (project == null || slug == null) continue;
+                if (!folder.Exists || (folder.Attributes & FileAttributes.ReparsePoint) != 0) { if (scan != null) { scan.NoProjectsFolder = true; ActiveSessions(profiles, scan); } return rows; }
+                foreach (var session in ActiveSessions(profiles, scan)) {
+                    if (rows.Count >= MaxSessions) { if (scan != null) scan.Problems.Add("超过 " + MaxSessions + " 条，后面的没有列出"); break; }
+                    string slug = Slug(session.Value), project = ProjectOf(session.Value, roots);
+                    if (project == null) { skip(session.Key, session.Value, "outside", null); continue; }
+                    if (slug == null) { skip(session.Key, session.Value, "slug", project); continue; }
                     var parent = new DirectoryInfo(Path.Combine(folder.FullName, slug)); var file = new FileInfo(Path.Combine(parent.FullName, session.Key + ".jsonl"));
-                    if (!parent.Exists || !file.Exists || ((parent.Attributes | file.Attributes) & FileAttributes.ReparsePoint) != 0 || file.Length == 0) continue;
-                    rows.Add(new SyncSessionRow { Path = file.FullName, Id = session.Key, Title = TailTitle(file.FullName) ?? "未命名会话", Modified = file.LastWriteTime, Stamp = file.LastWriteTimeUtc.Ticks, ProjectPath = project.Path });
+                    if (!parent.Exists || !file.Exists) { skip(session.Key, session.Value, "missing", project); continue; }
+                    if (((parent.Attributes | file.Attributes) & FileAttributes.ReparsePoint) != 0) { skip(session.Key, session.Value, "link", project); continue; }
+                    if (file.Length == 0) { skip(session.Key, session.Value, "empty", project); continue; }
+                    rows.Add(new SyncSessionRow { Path = file.FullName, Id = session.Key, Title = TailTitle(file.FullName) ?? "未命名会话", Modified = file.LastWriteTime, Stamp = file.LastWriteTimeUtc.Ticks, ProjectPath = project });
                 }
-            } catch (IOException) { } catch (UnauthorizedAccessException) { }
+            } catch (IOException error) { if (scan != null) scan.Problems.Add("列出正文时出错：" + error.GetType().Name + " " + error.Message); }
+            catch (UnauthorizedAccessException error) { if (scan != null) scan.Problems.Add("列出正文时没有权限：" + error.Message); }
             return rows.OrderByDescending(r => r.Stamp).ToList();
         }
         // 来源账号全部账号／组织目录下的记录：cliSessionId → cwd，跳过 isArchived 为 true 的。只留这三个字段，其余内容不保存。
-        // 目录不安全或记录打不开、解析不了时跳过，宁可少列。
-        static Dictionary<string, string> ActiveSessions(IEnumerable<string> profiles) {
-            var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        // 目录不安全或记录打不开、解析不了时跳过，宁可少列；一个组织目录读不了只跳过它，不影响其他目录。
+        static Dictionary<string, string> ActiveSessions(IEnumerable<string> profiles, SyncScan scan = null) {
+            var result = scan != null ? scan.Active : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            Action<string> problem = text => { if (scan != null) scan.Problems.Add(text); };
             foreach (string root in SessionRoots(profiles)) {
-                var accounts = Children(root); if (accounts == null) continue;
+                var accounts = ChildrenSafe(root, problem); if (accounts == null) continue;
                 foreach (string account in accounts) {
-                    var organizations = Children(Path.Combine(root, account)); if (organizations == null) continue;
-                    foreach (string organization in organizations)
-                        foreach (string path in Directory.EnumerateFiles(Path.Combine(root, account, organization), "local_*.json")) {
-                            Dictionary<string, object> record = null;
-                            try {
-                                using (var stream = LocalFiles.OpenRead(path, 8 * 1024 * 1024, 7)) {
-                                    var data = new byte[stream.Length]; int count = 0, n;
-                                    while (count < data.Length && (n = stream.Read(data, count, data.Length - count)) > 0) count += n;
-                                    record = Json().DeserializeObject(new UTF8Encoding(false, true).GetString(data, 0, count)) as Dictionary<string, object>;
-                                }
-                            } catch (IOException) { } catch (UnauthorizedAccessException) { } catch (ArgumentException) { } catch (InvalidOperationException) { }
-                            string id = Str(record, "cliSessionId"), cwd = Str(record, "cwd"); Guid guid;
-                            if (id == null || cwd == null || id.Length != 36 || !Guid.TryParse(id, out guid) || True(record, "isArchived")) continue;
-                            result[id.ToLowerInvariant()] = cwd;
-                        }
+                    var organizations = ChildrenSafe(Path.Combine(root, account), problem); if (organizations == null) continue;
+                    foreach (string organization in organizations) {
+                        string directory = Path.Combine(root, account, organization);
+                        try {
+                            foreach (string path in Directory.EnumerateFiles(directory, "local_*.json")) {
+                                if (scan != null) scan.Records++;
+                                Dictionary<string, object> record = null; bool unreadable = false;
+                                try {
+                                    using (var stream = LocalFiles.OpenRead(path, 8 * 1024 * 1024, 7)) {
+                                        var data = new byte[stream.Length]; int count = 0, n;
+                                        while (count < data.Length && (n = stream.Read(data, count, data.Length - count)) > 0) count += n;
+                                        record = Json().DeserializeObject(new UTF8Encoding(false, true).GetString(data, 0, count)) as Dictionary<string, object>;
+                                    }
+                                } catch (IOException) { unreadable = true; } catch (UnauthorizedAccessException) { unreadable = true; } catch (ArgumentException) { } catch (InvalidOperationException) { }
+                                string id = Str(record, "cliSessionId"), cwd = Str(record, "cwd"); Guid guid;
+                                if (id == null || cwd == null || id.Length != 36 || !Guid.TryParse(id, out guid)) { if (scan != null) { if (unreadable) scan.Unreadable++; else scan.Invalid++; } continue; }
+                                if (True(record, "isArchived")) { if (scan != null) scan.Archived.Add(new KeyValuePair<string, string>(id.ToLowerInvariant(), cwd)); continue; }
+                                result[id.ToLowerInvariant()] = cwd;
+                            }
+                        } catch (IOException error) { problem("读取记录目录 " + Tail(directory) + " 出错：" + error.Message); }
+                        catch (UnauthorizedAccessException error) { problem("读取记录目录 " + Tail(directory) + " 没有权限：" + error.Message); }
+                    }
                 }
             }
             return result;
+        }
+        static string Tail(string directory) { var parts = directory.TrimEnd('\\').Split('\\'); return String.Join("\\", parts.Skip(Math.Max(0, parts.Length - 3))); }
+        static List<string> ChildrenSafe(string parent, Action<string> problem) {
+            try {
+                var reasons = new List<string>(); var names = Children(parent, reasons);
+                if (names == null) problem("记录目录 " + Tail(parent) + " 被当作不安全，整层跳过：" + String.Join("；", reasons));
+                return names;
+            } catch (IOException error) { problem("读取记录目录 " + Tail(parent) + " 出错：" + error.Message); return null; }
+            catch (UnauthorizedAccessException error) { problem("读取记录目录 " + Tail(parent) + " 没有权限：" + error.Message); return null; }
         }
         internal static bool IsSyncCopy(string title) { return title != null && OldSuffix.IsMatch(title); }
 
@@ -426,14 +468,16 @@ namespace ClaudeLauncher {
             return found.Length == 1 ? found[0] : null;
         }
         // 一层账号或组织目录：只认 GUID 名的子目录；链接、GUID 名的文件或其他名字的目录都算不安全，返回 null。
-        static List<string> Children(string parent) {
+        // reasons 不为 null 时记下判为不安全的条目（只记名字，最多 40 个字符）。
+        static List<string> Children(string parent, List<string> reasons = null) {
             var names = new List<string>(); int entries = 0; Guid id;
+            Func<string, string, List<string>> reject = (entry, why) => { if (reasons != null) { string name = Path.GetFileName(entry); reasons.Add(why + "「" + (name.Length > 40 ? name.Substring(0, 40) + "…" : name) + "」"); } return null; };
             foreach (string entry in Directory.EnumerateFileSystemEntries(parent)) {
-                if (++entries > 20000) return null;
+                if (++entries > 20000) return reject(parent, "条目超过 20000 个");
                 var attributes = File.GetAttributes(entry); bool directory = (attributes & FileAttributes.Directory) != 0;
-                if ((attributes & FileAttributes.ReparsePoint) != 0) return null;
-                if (!Guid.TryParse(Path.GetFileName(entry), out id)) { if (directory) return null; continue; }
-                if (!directory) return null;
+                if ((attributes & FileAttributes.ReparsePoint) != 0) return reject(entry, "链接");
+                if (!Guid.TryParse(Path.GetFileName(entry), out id)) { if (directory) return reject(entry, "名字不是 GUID 的文件夹"); continue; }
+                if (!directory) return reject(entry, "GUID 名的文件");
                 names.Add(Path.GetFileName(entry));
             }
             return names;

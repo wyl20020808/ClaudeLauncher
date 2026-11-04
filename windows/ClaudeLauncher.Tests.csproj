@@ -50,6 +50,7 @@
     <Compile Include="src\Handoff.cs" />
     <Compile Include="src\ProxyCheck.cs" />
     <Compile Include="src\SessionSync.cs" />
+    <Compile Include="src\SupportReport.cs" />
     <Compile Include="src\Organization.cs" />
     <Compile Include="src\Tutorial.cs" />
     <Compile Include="src\Storage.cs" />

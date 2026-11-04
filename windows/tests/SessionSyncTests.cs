@@ -21,11 +21,88 @@ internal static class SessionSyncTests {
     static Dictionary<string, object> Block(params object[] pairs) { var map = new Dictionary<string, object>(); for (int i = 0; i < pairs.Length; i += 2) map[(string)pairs[i]] = pairs[i + 1]; return map; }
     internal static void Run(LauncherUI ui) {
         string root = Path.Combine(Path.GetTempPath(), "css-" + Guid.NewGuid().ToString("N").Substring(0, 8)); // 短名：夹具路径要留在 MAX_PATH 内。
-        try { Fixture(root, ui); Console.WriteLine("SESSION SYNC PASS: " + checks + " checks (temporary fixtures only)"); }
+        try { Fixture(root, ui); Diagnosis(Path.Combine(root, "dg")); Console.WriteLine("SESSION SYNC PASS: " + checks + " checks (temporary fixtures only)"); }
         finally {
             foreach (string link in new[] { "same-as-profile" }) try { Directory.Delete(Path.Combine(root, link)); } catch (IOException) { } catch (UnauthorizedAccessException) { }
             try { Directory.Delete(root, true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
         }
+    }
+    // 问题诊断：合成一个“同步窗口只显示部分项目”的账号，逐条核对报告给出的原因。
+    static void Diagnosis(string root) {
+        string parent = Path.Combine(root, "PrivateParent");
+        Func<string, string> dir = name => { string path = Path.Combine(parent, name); Directory.CreateDirectory(path); return SessionSync.Real(path); };
+        string a = dir("Alpha"), b = dir("Beta"), c = dir("Gamma"), d = dir("Delta"), moved = dir(@"new\Moved"), old = dir(@"old\Moved");
+        string gone = Path.Combine(parent, "Gone");
+        string profile = Path.Combine(root, "P"), config = Path.Combine(profile, "ClaudeCodeConfig"), sessions = Path.Combine(profile, "claude-code-sessions");
+        string good = Path.Combine(sessions, Guid.NewGuid().ToString(), Guid.NewGuid().ToString()), badAccount = Path.Combine(sessions, Guid.NewGuid().ToString());
+        Directory.CreateDirectory(good); Directory.CreateDirectory(Path.Combine(badAccount, "backup")); string badOrg = Path.Combine(badAccount, Guid.NewGuid().ToString()); Directory.CreateDirectory(badOrg);
+        Func<string, string, bool, string, string> add = (records, cwd, archived, bodySlug) => {
+            string id = Guid.NewGuid().ToString(), folder = Path.Combine(config, "projects", bodySlug ?? SessionSync.Slug(cwd)); Directory.CreateDirectory(folder);
+            File.WriteAllText(Path.Combine(folder, id + ".jsonl"), Quote(Block("type", "custom-title", "customTitle", "机密标题", "sessionId", id)) + "\n");
+            File.WriteAllText(Path.Combine(records, "local_" + Guid.NewGuid() + ".json"), Quote(Block("sessionId", "local_" + id, "cliSessionId", id, "cwd", cwd, "originCwd", cwd, "isArchived", archived)));
+            return id;
+        };
+        add(good, a, false, null); add(good, b, true, null); add(good, b, true, null);
+        add(good, c, false, "D--somewhere-else");
+        add(good, old, false, null);
+        add(badOrg, d, false, null);
+        File.WriteAllText(Path.Combine(good, "local_broken.json"), "{not json");
+        var projects = new[] { a, b, c, d, moved, gone }.Select(p => new LauncherUI.LocalProject { Path = p, Name = Path.GetFileName(p) }).ToList();
+        projects.Add(new LauncherUI.LocalProject { Path = a.ToUpperInvariant(), Name = "Alpha again" });
+
+        var scan = new SyncScan();
+        var rows = SessionSync.ListWith(config, new[] { profile }, new[] { a, b, c, d, moved }, scan);
+        Check(rows.Count == 1 && rows[0].ProjectPath == a, "diagnosis: listing with a scan lists the same rows");
+        Check(SessionSync.List(config, new[] { profile }, new[] { a, b, c, d, moved }).Select(r => r.Id).SequenceEqual(rows.Select(r => r.Id)), "diagnosis: scan does not change the list");
+        Check(scan.Archived.Count == 2 && scan.Invalid == 1 && scan.Records == 6, "diagnosis: counts archived and malformed records");
+        Check(scan.Problems.Count == 1 && scan.Problems[0].Contains("名字不是 GUID 的文件夹「backup」"), "diagnosis: names the entry that made a level unsafe");
+        Check(scan.Skipped.Any(s => s.Reason == "missing" && s.ProjectPath == c) && scan.Skipped.Any(s => s.Reason == "outside" && s.Cwd == old), "diagnosis: records why sessions were skipped");
+
+        string logs = Path.Combine(root, "logs"); Directory.CreateDirectory(logs);
+        string user = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        File.WriteAllLines(Path.Combine(logs, "launcher-1.jsonl"), new[] {
+            new JavaScriptSerializer().Serialize(new { utc = "2026-11-01T01:02:03.0000000Z", action = "heartbeat", detail = "accounts=1" }),
+            new JavaScriptSerializer().Serialize(new { utc = "2026-11-01T01:02:04.0000000Z", action = "session_links_write", detail = "x" }),
+            new JavaScriptSerializer().Serialize(new { utc = "2026-11-01T01:02:05.0000000Z", action = "session_sync_recycle_error", detail = "IOException at " + user + "\\x\nstack" }),
+            new JavaScriptSerializer().Serialize(new { utc = "2026-11-01T01:03:05.0000000Z", action = "session_sync_recycle_error", detail = "IOException at " + user + "\\x\nother stack" }),
+            "not json" });
+        var errors = SupportReport.RecentErrors(logs);
+        Check(errors.Count == 1 && errors[0].Contains("session_sync_recycle_error") && errors[0].Contains("连续 2 次") && !errors[0].Contains(user) && !errors[0].Contains("stack"), "diagnosis: recent errors keep one redacted line, repeats merged");
+
+        var input = new SupportInput { Version = "9.9.9", Windows = "10.0", Projects = projects, Accounts = new[] { 1 }, Config = n => config, Profiles = n => new[] { profile },
+            ProjectProblem = p => Directory.Exists(p) ? null : "目录不存在", TargetGuard = n => "测试中", LogDirectory = logs, LinksPath = Path.Combine(root, "no-links.json") };
+        var result = SupportReport.Build(input); string text = result.Text;
+        Check(text.Contains("P1「Alpha」（1）") && text.Contains("会显示的项目"), "diagnosis: says which projects the window shows");
+        Check(text.Contains("[注意] P2「Beta」 在同步窗口里不显示：2 条会话在来源账号里是“已归档”"), "diagnosis: explains archived-only projects");
+        Check(text.Contains("[问题] P3「Gamma」") && text.Contains("正文不在记录指向的位置"), "diagnosis: flags bodies stored elsewhere as a problem");
+        Check(text.Contains("[问题] 账号 01：记录目录") && text.Contains("「backup」"), "diagnosis: unsafe level becomes a problem");
+        Check(text.Contains("同名但路径不同"), "diagnosis: hints at a moved project");
+        Check(text.Contains("[问题] P6「Gone」 在同步窗口里不会出现：目录不存在"), "diagnosis: unusable project");
+        Check(text.Contains("P7「Alpha again」 和前面的项目是同一个目录"), "diagnosis: duplicate project");
+        Check(text.Contains("格式不对") && text.Contains("不能作为同步目标：测试中") && text.Contains("session_sync_recycle_error"), "diagnosis: malformed records, target guard and log errors");
+        Check(!text.Contains("PrivateParent") && !text.Contains("机密标题") && !text.Contains(user), "diagnosis: no titles, middle folders or user profile");
+        Check(result.Problems >= 3 && result.Summary.StartsWith("发现 "), "diagnosis: summary counts");
+        Check(SupportReport.Mask(@"D:\a\b\proj") == @"D:\…\proj" && SupportReport.Mask(@"D:\") == @"D:\" && SupportReport.Mask(user) == "%USERPROFILE%", "diagnosis: mask keeps drive and last folder");
+
+        bool complete; string url = SupportReport.IssueUrl(new SupportResult { Text = "== 结论 ==\n  没有\n\n== 项目 ==\n x", Summary = "没有发现已知问题" }, out complete);
+        Check(complete && url.StartsWith(SupportReport.IssuesNew + "?labels=bug&title=") && url.Contains(Uri.EscapeDataString("没有发现已知问题")), "diagnosis: short report fits the issue link");
+        url = SupportReport.IssueUrl(new SupportResult { Text = "头\n== 结论 ==\n  [问题] 甲\n\n== 账号 01 ==\n" + new string('长', 9000), Summary = "s" }, out complete);
+        Check(!complete && url.Length <= SupportReport.MaxUrl && url.Contains(Uri.EscapeDataString("[问题] 甲")) && !url.Contains(Uri.EscapeDataString("长长长")), "diagnosis: long report keeps the conclusion only");
+
+        int language = Appearance.Language; Appearance.Language = 1;
+        try {
+            foreach (string chinese in new[] { "问题诊断", "只读检查同步会话、项目与账号目录；结果先给你看，提交由你决定。", "开始诊断…", "列表不全？问题诊断…", "问题诊断…", "正在诊断…", "诊断完成：%@", "发现 2 个问题、1 个注意事项", "没有发现已知问题",
+                LauncherUI.SupportSavedNote, LauncherUI.SupportUnsavedNote, LauncherUI.SupportSubmitNote, LauncherUI.NoSessionsDetail, "诊断报告", "打开报告文件夹", "复制报告", "提交到 GitHub…", "报告已复制，可以粘贴发给开发者。", "复制失败：x", "提交诊断到 GitHub？", "打开 GitHub",
+                "报告太长，页面里只填了结论，而且没能复制完整报告（x）。请点“复制报告”后粘贴到页面里。", "已在浏览器打开，报告已填好。检查后点“Create”提交。", "报告较长：页面里只填了结论，完整报告已复制。请在页面里按 Ctrl+V 粘贴后再提交。", "无法打开浏览器：x。可以复制报告用其他方式发送。", "诊断没有完成" }) {
+                string english = Appearance.Text(chinese);
+                Check(!System.Text.RegularExpressions.Regex.IsMatch(english, @"[一-鿿]"), "diagnosis: English text for " + chinese + " => " + english);
+            }
+        } finally { Appearance.Language = language; }
+
+        string reports = Path.Combine(root, "saved");
+        for (int i = 0; i < 12; i++) SupportReport.Save(reports, "r" + i, new DateTime(2026, 11, 1, 0, 0, i));
+        var kept = Directory.GetFiles(Path.Combine(reports, "reports"), "diagnose-*.txt");
+        Check(kept.Length == 10 && File.ReadAllText(kept.OrderBy(f => f).Last()) == "r11", "diagnosis: keeps the newest ten reports");
     }
     static void Fixture(string root, LauncherUI ui) {
         // 目录名规则：与本机真实目录名核对过的样例。

@@ -9,6 +9,7 @@
 - `installer/ClaudeLauncher.iss`、`scripts/setup.ps1`：Inno Setup 安装包。
 - `scripts/publish-release.ps1`：两端一次发布（签名清单、上传自建服务与 GitHub Release、两来源复核）。
 - `src/Diagnostics.cs`：本地日志与账号进程退出观察。
+- `src/SupportReport.cs`：问题诊断报告（只读检查已知问题、打码、保存、GitHub 新建问题链接）。新增诊断项加在 `Build` 里，并在 `tests/SessionSyncTests.cs` 的 `Diagnosis` 合成对应场景。
 - `src/SessionSync.cs`：同步会话的列表、白名单清理、路径判断、版本白名单、关联合并、不覆盖发布、替换和多组织目录定位（SPEC 同步会话）。界面流程在 `LauncherUI.ShowSessionSync`，新账号提示在 `OfferInitialSyncIfReady`。
 - `src/Organization.cs`：只在同步定位时读取目标账号的 `lastActiveOrg`（AGENTS.md Windows 例外）：winsqlite3 只读、DPAPI 解 `Local State` 密钥、BCrypt AES-GCM 解这一行。不联网、不启动进程。
 - `src/Tutorial.cs`：教程气泡定位与文档渲染；步骤和遮罩在 `LauncherUI` 的 `Tutorial*` 方法。文档和配图在 `assets/tutorial/`，`build.ps1` 把目录下的文件逐个内嵌，`.csproj` 需同步列出。

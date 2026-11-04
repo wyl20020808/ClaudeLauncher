@@ -37,13 +37,13 @@ foreach ($name in $widths.Keys) {
     $arguments += '/resource:' + $target + ',ClaudeLauncher.UI.' + $name
 }
 foreach ($file in Get-ChildItem -LiteralPath (Join-Path $projectRoot 'assets/tutorial')) { $arguments += '/resource:' + $file.FullName + ',ClaudeLauncher.Tutorial.' + $file.Name }
-# 离线断言（AGENTS.md）：同步会话与组织读取不得联网、不得启动进程（CLI、浏览器）。
-foreach ($name in @('src/SessionSync.cs', 'src/Organization.cs')) {
+# 离线断言（AGENTS.md）：同步会话、组织读取与问题诊断不得联网、不得启动进程（CLI、浏览器）。
+foreach ($name in @('src/SessionSync.cs', 'src/Organization.cs', 'src/SupportReport.cs')) {
     $hit = Select-String -LiteralPath (Join-Path $projectRoot $name) -Pattern 'System\.Net|WebRequest|HttpClient|WebClient|Socket|Process\.Start|ProcessStartInfo' | Select-Object -First 1
     if ($hit) { throw ('Network or process API in ' + $name + ':' + $hit.LineNumber) }
 }
 $output = Join-Path $bin 'ClaudeLauncher.exe'
-$sources = @((Join-Path $projectRoot 'src/ClaudeLauncher.cs'), (Join-Path $projectRoot 'src/ProfileDeletion.cs'), (Join-Path $projectRoot 'src/Diagnostics.cs'), (Join-Path $projectRoot 'src/Updates.cs'), (Join-Path $projectRoot 'src/Usage.cs'), (Join-Path $projectRoot 'src/Settings.cs'), (Join-Path $projectRoot 'src/LocalFiles.cs'), (Join-Path $projectRoot 'src/UsageTrend.cs'), (Join-Path $projectRoot 'src/ConfigSync.cs'), (Join-Path $projectRoot 'src/Projects.cs'), (Join-Path $projectRoot 'src/Appearance.cs'), (Join-Path $projectRoot 'src/DisplayNameReader.cs'), (Join-Path $projectRoot 'src/Handoff.cs'), (Join-Path $projectRoot 'src/ProxyCheck.cs'), (Join-Path $projectRoot 'src/SessionSync.cs'), (Join-Path $projectRoot 'src/Organization.cs'), (Join-Path $projectRoot 'src/Tutorial.cs'), (Join-Path $projectRoot 'src/Storage.cs'), (Join-Path $projectRoot 'src/LauncherUI.cs'))
+$sources = @((Join-Path $projectRoot 'src/ClaudeLauncher.cs'), (Join-Path $projectRoot 'src/ProfileDeletion.cs'), (Join-Path $projectRoot 'src/Diagnostics.cs'), (Join-Path $projectRoot 'src/Updates.cs'), (Join-Path $projectRoot 'src/Usage.cs'), (Join-Path $projectRoot 'src/Settings.cs'), (Join-Path $projectRoot 'src/LocalFiles.cs'), (Join-Path $projectRoot 'src/UsageTrend.cs'), (Join-Path $projectRoot 'src/ConfigSync.cs'), (Join-Path $projectRoot 'src/Projects.cs'), (Join-Path $projectRoot 'src/Appearance.cs'), (Join-Path $projectRoot 'src/DisplayNameReader.cs'), (Join-Path $projectRoot 'src/Handoff.cs'), (Join-Path $projectRoot 'src/ProxyCheck.cs'), (Join-Path $projectRoot 'src/SessionSync.cs'), (Join-Path $projectRoot 'src/Organization.cs'), (Join-Path $projectRoot 'src/SupportReport.cs'), (Join-Path $projectRoot 'src/Tutorial.cs'), (Join-Path $projectRoot 'src/Storage.cs'), (Join-Path $projectRoot 'src/LauncherUI.cs'))
 & $compiler @arguments /target:winexe ('/win32icon:' + $icon) ('/win32manifest:' + (Join-Path $projectRoot 'src/app.manifest')) ('/out:' + $output) @sources
 if ($LASTEXITCODE -ne 0) { throw 'GUI build failed.' }
 $test = Join-Path $bin 'LauncherTests.exe'

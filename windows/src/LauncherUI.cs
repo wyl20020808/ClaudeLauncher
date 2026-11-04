@@ -766,7 +766,7 @@ namespace ClaudeLauncher {
         string LinksPath { get { return IOPath.Combine(IOPath.GetDirectoryName(settingsPath), "session-links.json"); } }
         string InitialSyncPath { get { return IOPath.Combine(IOPath.GetDirectoryName(settingsPath), "initial-sync.json"); } }
         internal sealed class SessionPicker {
-            public Window Dialog; public ComboBox Target; public CheckBox All; public TextBlock Count; public Button Confirm;
+            public Window Dialog; public ComboBox Target; public CheckBox All; public TextBlock Count; public Button Confirm, Diagnose; public bool WantsDiagnosis;
             public List<SyncSessionRow> Sessions = new List<SyncSessionRow>(); public List<CheckBox> Rows = new List<CheckBox>(), Groups = new List<CheckBox>(); public List<List<int>> Members = new List<List<int>>(); public List<Expander> Expanders = new List<Expander>();
             public List<TextBlock> Details = new List<TextBlock>(); public HashSet<int> AutoTicked = new HashSet<int>();
             public List<SyncSessionRow> Selected() { return Rows.Select((r, i) => new { r, i }).Where(x => x.r.IsEnabled && x.r.IsChecked == true).Select(x => Sessions[x.i]).ToList(); }
@@ -818,7 +818,10 @@ namespace ClaudeLauncher {
             var selectLine = new DockPanel { Margin = new Thickness(0, 0, 0, 6) }; DockPanel.SetDock(selectLine, Dock.Top); head.Children.Add(selectLine);
             picker.Count = new TextBlock { Foreground = B(Muted), FontSize = 12, VerticalAlignment = VerticalAlignment.Center }; DockPanel.SetDock(picker.Count, Dock.Right); selectLine.Children.Add(picker.Count);
             picker.All = new CheckBox { Content = "全选", Foreground = B(Ink) }; selectLine.Children.Add(picker.All);
-            var actions = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 14, 0, 0) }; DockPanel.SetDock(actions, Dock.Bottom); root.Children.Add(actions);
+            var bottom = new DockPanel { Margin = new Thickness(0, 14, 0, 0), LastChildFill = false }; DockPanel.SetDock(bottom, Dock.Bottom); root.Children.Add(bottom);
+            picker.Diagnose = Action("列表不全？问题诊断…", "Btn", null, 13); picker.Diagnose.Padding = new Thickness(12, 7, 12, 7); DockPanel.SetDock(picker.Diagnose, Dock.Left); bottom.Children.Add(picker.Diagnose);
+            picker.Diagnose.Click += delegate { picker.WantsDiagnosis = true; picker.Dialog.DialogResult = false; };
+            var actions = new StackPanel { Orientation = Orientation.Horizontal }; DockPanel.SetDock(actions, Dock.Right); bottom.Children.Add(actions);
             var cancel = Action("取消", "Btn", null, 14); cancel.IsCancel = true; cancel.Margin = new Thickness(0, 0, 10, 0); cancel.Padding = new Thickness(16, 7, 16, 7); actions.Children.Add(cancel);
             picker.Confirm = Action("生成预览", "Primary", null, 14); picker.Confirm.Padding = new Thickness(16, 7, 16, 7); picker.Confirm.Click += delegate { picker.Dialog.DialogResult = true; }; actions.Children.Add(picker.Confirm);
             var list = new StackPanel { Margin = new Thickness(4) };
@@ -964,14 +967,14 @@ namespace ClaudeLauncher {
                     }
                     return rows.OrderByDescending(r => r.Stamp).ToList();
                 });
-                if (sessions.Count == 0) { Alert("没有可同步的会话", "公共清单里的项目在各账号下都没有本地会话。"); return; }
+                if (sessions.Count == 0) { if (Ask("没有可同步的会话", NoSessionsDetail, new[] { "知道了", "问题诊断…" }, 0, 0) == 1) diagnoseAfterSync = true; return; }
                 bool linksWritable; var links = LoadSessionLinks(out linksWritable);
                 sessions = SessionSync.Merge(sessions, links);
                 if (!await ScanNow()) { if (!closed) Alert("实例或保护状态已变化", scanError); return; }
                 var picker = BuildSessionPicker(sessions, accounts, new HashSet<int>(instances.Select(x => x.Number)), newAccount);
                 if (newAccount != 0) picker.SelectOriginals();
                 if (window.IsVisible) picker.Dialog.Owner = window;
-                if (picker.Dialog.ShowDialog() != true) return;
+                if (picker.Dialog.ShowDialog() != true) { diagnoseAfterSync = picker.WantsDiagnosis; return; }
                 int to = picker.TargetNumber; var selected = picker.Selected();
                 if (to == 0) { Alert("目标账号正在运行", "请先在该账号中正常退出，再同步。启动器不会替你退出。"); return; }
                 // 预览前确定写入位置：多套目录时只在这里读一次当前组织；之后预览期间切换组织不会被发现，和 macOS 相同。
@@ -1028,6 +1031,72 @@ namespace ClaudeLauncher {
                 else Alert(title, info);
             } catch (Exception error) { Alert("无法同步所选会话", error.Message); }
             finally { syncingSessions = false; syncSessionsButton.IsEnabled = !projectsUnreadable; }
+            if (diagnoseAfterSync) { diagnoseAfterSync = false; await RunSupportDiagnosis(); }
+        }
+        bool diagnoseAfterSync, diagnosing;
+        // ---- 问题诊断（SPEC 问题诊断）：只读，结果先给用户看；保存在本机，复制或提交到 GitHub 由用户自己操作 ----
+        internal SupportInput SupportInputNow() {
+            return new SupportInput {
+                Version = Updates.DisplayVersion, Windows = Environment.OSVersion.Version.ToString(), UpdatesEnabled = settings.AllowUpdates, ProjectsUnreadable = projectsUnreadable,
+                Projects = projects.Where(p => p != null).ToList(),
+                ProjectProblem = path => {
+                    if (!LocalProjectPath(path)) return "不是本机磁盘上的目录（网络盘或路径不完整）";
+                    try { Projects.ValidatePath(path); return null; } catch (IOException error) { return error.Message; } catch (UnauthorizedAccessException error) { return error.Message; }
+                },
+                Accounts = Enumerable.Range(1, 10).Where(HasData).ToArray(), Config = CodeConfigFolder, Profiles = SyncProfiles, TargetGuard = SessionSyncGuard,
+                LinksPath = LinksPath, LogDirectory = Diagnostics.DirectoryPath, Now = DateTime.Now
+            };
+        }
+        async Task RunSupportDiagnosis() {
+            if (diagnosing || snapshotMode) return;
+            diagnosing = true;
+            try {
+                Message("正在诊断…", false);
+                var input = SupportInputNow();
+                var result = await Task.Run(() => SupportReport.Build(input));
+                string saved = null;
+                try { saved = SupportReport.Save(Diagnostics.DirectoryPath, result.Text, input.Now); } catch (Exception error) { Diagnostics.Error("support_report_save_error", error); }
+                Diagnostics.Write("support_report", "problems=" + result.Problems + "; notices=" + result.Notices);
+                Message(Appearance.Text("诊断完成：%@").Replace("%@", Appearance.Text(result.Summary)), false);
+                var dialog = BuildSupportDialog(result, saved);
+                if (window.IsVisible) dialog.Owner = window;
+                dialog.ShowDialog();
+            } catch (Exception error) { Diagnostics.Error("support_report_error", error); Alert("诊断没有完成", error.Message); }
+            finally { diagnosing = false; }
+        }
+        internal const string SupportSubmitNote = "会用浏览器打开本项目 GitHub 的“新建问题”页面，报告已经填好。需要登录你自己的 GitHub 账号，检查内容后点“Create”才会提交；提交后所有人都能看到。\n\n没有 GitHub 账号的话，可以点“复制报告”或“打开报告文件夹”，用其他方式发给开发者。";
+        internal const string SupportSavedNote = "报告已保存在本机。只读检查，不含对话内容、会话标题和凭据，路径只保留盘符和最后一级目录名。提交到 GitHub 前请看一遍，提交后公开可见。";
+        internal const string SupportUnsavedNote = "报告没能保存到本机，可以复制。只读检查，不含对话内容、会话标题和凭据，路径只保留盘符和最后一级目录名。提交到 GitHub 前请看一遍，提交后公开可见。";
+        internal const string NoSessionsDetail = "公共清单里的项目在各账号下都没有可同步的本地会话（已归档的会话不列出）。\n\n如果你确定有，可以运行问题诊断查看原因。";
+        internal Window BuildSupportDialog(SupportResult result, string saved) {
+            var dialog = Dialog("问题诊断"); dialog.Width = 720;
+            var panel = (StackPanel)((ScrollViewer)dialog.Content).Content;
+            panel.Children.Add(new TextBlock { Text = result.Summary, FontSize = 18, FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap });
+            panel.Children.Add(new TextBlock { Text = saved != null ? SupportSavedNote : SupportUnsavedNote, TextWrapping = TextWrapping.Wrap, Foreground = B(Muted), FontSize = 13, Margin = new Thickness(0, 8, 0, 0) });
+            var report = new TextBox { Text = result.Text, IsReadOnly = true, TextWrapping = TextWrapping.Wrap, Height = 380, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Margin = new Thickness(0, 12, 0, 8), FontSize = 12, Background = B("#FFFDFA"), Foreground = B(Ink), BorderBrush = B("#EDE4D8") };
+            AutomationProperties.SetName(report, Appearance.Text("诊断报告")); panel.Children.Add(report);
+            var feedback = new TextBlock { Foreground = B(Muted), FontSize = 12, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 10) }; panel.Children.Add(feedback);
+            var actions = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right }; panel.Children.Add(actions);
+            Func<string, string, Button> add = (text, style) => { var b = Action(text, style, null, 14); b.Padding = new Thickness(16, 7, 16, 7); b.Margin = new Thickness(10, 0, 0, 0); actions.Children.Add(b); return b; };
+            if (saved != null) add("打开报告文件夹", "Btn").Click += delegate { OpenFolder(IOPath.GetDirectoryName(saved)); };
+            add("复制报告", "Btn").Click += delegate {
+                try { Clipboard.SetText(result.Text); feedback.Text = Appearance.Text("报告已复制，可以粘贴发给开发者。"); } catch (Exception error) { feedback.Text = Appearance.Text("复制失败：" + error.Message); }
+            };
+            var submit = add("提交到 GitHub…", "Primary");
+            submit.Click += delegate {
+                if (Ask("提交诊断到 GitHub？", SupportSubmitNote, new[] { "取消", "打开 GitHub" }, 0, 1) != 1) return;
+                bool complete; string url = SupportReport.IssueUrl(result, out complete);
+                if (!complete) try { Clipboard.SetText(result.Text); } catch (Exception error) { feedback.Text = Appearance.Text("报告太长，页面里只填了结论，而且没能复制完整报告（" + error.Message + "）。请点“复制报告”后粘贴到页面里。"); }
+                try {
+                    Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+                    Diagnostics.Write("support_report_submit_opened", "complete=" + complete);
+                    if (complete) feedback.Text = Appearance.Text("已在浏览器打开，报告已填好。检查后点“Create”提交。");
+                    else if (String.IsNullOrEmpty(feedback.Text)) feedback.Text = Appearance.Text("报告较长：页面里只填了结论，完整报告已复制。请在页面里按 Ctrl+V 粘贴后再提交。");
+                } catch (Exception error) { feedback.Text = Appearance.Text("无法打开浏览器：" + error.Message + "。可以复制报告用其他方式发送。"); }
+            };
+            var close = add("关闭", "Btn"); close.IsCancel = true; close.Click += delegate { dialog.DialogResult = false; };
+            dialog.Loaded += delegate { close.Focus(); };
+            return dialog;
         }
         // ---- 新手教程（SPEC 新手教程）：遮罩接管全部点击和按键，不启动账号、不写账号数据、不联网 ----
         sealed class TutorialStep { public string Title, Body; public int Page; public FrameworkElement[] Targets; public bool Trend; }
@@ -1370,6 +1439,7 @@ namespace ClaudeLauncher {
             update = ButtonRow("", "检查启动器更新", "非官方本地工具，与 Anthropic 无关联；不向 Claude 或 Anthropic 发请求。", "检查更新…", async () => await CheckUpdate(true), out unused);
             SettingsHeader("帮助与诊断");
             ButtonRow("", "本地使用帮助", null, "查看", ShowHelp, out unused);
+            ButtonRow("", "问题诊断", "只读检查同步会话、项目与账号目录；结果先给你看，提交由你决定。", "开始诊断…", async () => await RunSupportDiagnosis(), out unused);
             ButtonRow("", "基础诊断信息", "仅包含版本、Windows 版本和联网开关，不包含账号、路径、日志或凭据。", "复制", CopyDiagnostics, out unused);
             SettingsNote("不会自动联网检查。不读取凭据，不修改官方应用。");
             SettingsSection(-1);
