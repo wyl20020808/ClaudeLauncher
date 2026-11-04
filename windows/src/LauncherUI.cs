@@ -957,7 +957,10 @@ namespace ClaudeLauncher {
                     foreach (int n in accounts) {
                         string config; try { config = CodeConfigFolder(n); } catch (IOException) { continue; }
                         if (config == null) continue;
-                        foreach (var project in valid) foreach (var row in SessionSync.List(config, project.Path)) { row.Account = n; row.ProjectName = String.IsNullOrEmpty(project.Name) ? IOPath.GetFileName(project.Path) : project.Name; rows.Add(row); }
+                        foreach (var row in SessionSync.List(config, SyncProfiles(n), valid.Select(p => p.Path).ToList())) {
+                            var project = valid.First(p => p.Path == row.ProjectPath);
+                            row.Account = n; row.ProjectName = String.IsNullOrEmpty(project.Name) ? IOPath.GetFileName(project.Path) : project.Name; rows.Add(row);
+                        }
                     }
                     return rows.OrderByDescending(r => r.Stamp).ToList();
                 });

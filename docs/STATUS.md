@@ -1,5 +1,12 @@
 # 项目状态
 
+## Windows：同步会话列表以来源记录为准（2026-11-04，未发布、未提交）
+
+- 用户反馈：同步没有按项目分、归档的会话也同步了。原因：`SessionSync.List` 直接扫 `projects/<目录名>/*.jsonl`，不看官方记录。本机账号 01 核对：没有记录的 JSONL 都是同一会话改模型／回退前的旧段（出现在当前记录的 `priorCliSessionIds`），会被当成独立会话列出；`isArchived` 不检查；项目内 worktree 的会话目录名不同，完全漏掉。
+- 修复：新增 `SessionSync.ActiveSessions`，读来源账号各账号／组织目录下 `local_*.json` 的 `cliSessionId`、`cwd`、`isArchived`（其余不保存），只列未归档记录对应的 JSONL，按记录 `cwd` 归到清单里最深的项目。AGENTS.md 会话同步例外、SPEC 同步；macOS 未改，SPEC 标 [macOS 待同步]。
+- 自检：`build.ps1` 通过；SessionSyncTests 288（新增归档不列、无记录不列、worktree 归项目、嵌套项目归最深一层、其他项目为空），LauncherTests 354、SyncTests 154、TutorialTests 83、`--self-test` 248 全部通过。
+- 本机只读实测（反射调用 `List`，账号 01，只输出数量和 ID 前缀）：ai-media 5 → 3（含 worktree 会话，去掉 3 条旧段），ConjoinedTwins 10 → 9，其余不变。本机没有 `isArchived=true` 的记录，归档排除只在合成数据上验证；GUI 和同步写入未测。
+
 ## macOS：同步会话改为格式兼容检查（2026-11-04，dev，未发布）
 
 - 与 Windows 同一规则：去掉 `SessionSyncGuard` 里的 4.4212.0 版本检查；`PublishSyncedSession`／`ReplaceSyncedSession` 拿到目标记录目录后调用 `RecordFormatKnown`（已有 `local_*.json` 时至少一条前四个键依次为 `sessionId`、`cliSessionId`、`cwd`、`originCwd`；没有记录时按目录结构判断）。只看本人所有、单链接的普通文件，读前缀不超过 32 KB；打不开的记录（不属于本人、链接、硬链接）算未知格式，与 Windows 1.8.6 相同。

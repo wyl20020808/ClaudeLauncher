@@ -90,10 +90,27 @@ internal static class SessionSyncTests {
         string source = Path.Combine(folder, Guid.NewGuid() + ".jsonl");
         File.WriteAllText(source, String.Join("\n", lines) + "\n{\"type\":\"user\",\"uuid\":\"partial", new UTF8Encoding(false));
         byte[] original = File.ReadAllBytes(source); DateTime originalStamp = File.GetLastWriteTimeUtc(source);
-        var listed = SessionSync.List(config, project);
-        Check(listed.Count == 1 && listed[0].Title == "原标题" && listed[0].Path == source, "lists session with tail title");
-        Check(SessionSync.List(config, project.ToUpperInvariant()).Count == 1, "listing ignores path case");
-        File.WriteAllText(Path.Combine(folder, "not-a-session.jsonl"), "x"); Check(SessionSync.List(config, project).Count == 1, "other files are not listed");
+        // 列表以来源记录为准；另用一个来源账号的记录目录，不影响后面的写入检查。
+        string listProfile = Path.Combine(root, "ListProfile"), listRecords = Path.Combine(listProfile, "claude-code-sessions", Guid.NewGuid().ToString(), Guid.NewGuid().ToString());
+        string[] listProfiles = { listProfile }; Directory.CreateDirectory(listRecords);
+        Func<string, string, bool, string> addRecord = (cwd, id, archived) => {
+            string directory = Path.Combine(config, "projects", SessionSync.Slug(cwd)); Directory.CreateDirectory(directory);
+            if (id == null) { id = Guid.NewGuid().ToString(); File.WriteAllText(Path.Combine(directory, id + ".jsonl"), "{}\n"); }
+            File.WriteAllText(Path.Combine(listRecords, "local_" + Guid.NewGuid() + ".json"), Quote(Block("sessionId", "local_x", "cliSessionId", id, "cwd", cwd, "originCwd", cwd, "model", "SOURCEMODEL", "isArchived", archived)));
+            return id;
+        };
+        string sourceId = addRecord(project, Path.GetFileNameWithoutExtension(source), false), archivedId = addRecord(project, null, true);
+        string worktreeId = addRecord(project + @"\.claude\worktrees\w1", null, false), subId = addRecord(sub, null, false);
+        File.WriteAllText(Path.Combine(folder, Guid.NewGuid() + ".jsonl"), "{}\n"); // 没有记录：旧段或已删除
+        File.WriteAllText(Path.Combine(folder, "not-a-session.jsonl"), "x");
+        var listed = SessionSync.List(config, listProfiles, new[] { project });
+        Check(listed.Count == 3 && listed.Any(r => r.Id == sourceId && r.Title == "原标题" && r.Path == source) && listed.All(r => r.ProjectPath == project), "lists recorded sessions of the project with tail title");
+        Check(!listed.Any(r => r.Id == archivedId), "archived sessions are not listed");
+        Check(listed.Any(r => r.Id == worktreeId), "a worktree inside the project belongs to it");
+        var nested = SessionSync.List(config, listProfiles, new[] { project, sub });
+        Check(nested.Count == 3 && nested.Single(r => r.Id == subId).ProjectPath == sub && nested.Count(r => r.ProjectPath == project) == 2, "a session goes to the deepest project only");
+        Check(SessionSync.List(config, listProfiles, new[] { project.ToUpperInvariant() }).Count == 3, "listing ignores path case");
+        Check(SessionSync.List(config, listProfiles, new[] { home + @"\Private" }).Count == 0, "other projects get none");
 
         var clean = SessionSync.Clean(source, project, home);
         Check(clean.Error == null, "clean succeeds: " + clean.Error);
@@ -308,7 +325,7 @@ internal static class SessionSyncTests {
         // 写入后目标时间等于来源，两边读作同一版本；来回同步不叠加说明。
         long stamp = new DateTime(2026, 11, 1, 8, 0, 0, DateTimeKind.Utc).Ticks + 1234567;
         SessionSync.SetDate(config, slug, keep, stamp);
-        Check(SessionSync.List(config, project).Any(r => r.Id == keep && r.Stamp == stamp), "copy takes the source's date to the tick");
+        Check(File.GetLastWriteTimeUtc(keepFile).Ticks == stamp, "copy takes the source's date to the tick");
         var again = SessionSync.Clean(keepFile, project, home);
         Check(again.Error == null && again.Preview.Split(new[] { "[这是从其他账号同步的清理副本" }, StringSplitOptions.None).Length == 2, "note does not stack");
         File.Delete(keepFile);

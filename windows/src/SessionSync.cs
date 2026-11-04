@@ -85,20 +85,51 @@ namespace ClaudeLauncher {
         static string InProject(string path, string root) { string real = Real(path); return real == null ? null : Within(real, root); }
 
         // ---- 列表 ----
-        static bool SessionFileName(string name) { Guid id; return name.EndsWith(".jsonl", StringComparison.Ordinal) && name.Length == 42 && Guid.TryParse(name.Substring(0, 36), out id); }
-        internal static List<SyncSessionRow> List(string config, string project) {
+        // 侧栏以官方记录为准：只列未归档记录指向的正文，按记录的 cwd 归到最深的清单项目（项目内的 worktree 也算）。
+        // 没有记录的 JSONL 是已删除的会话，或改模型／回退前留下的旧段（记录的 priorCliSessionIds），不列。
+        internal static List<SyncSessionRow> List(string config, IEnumerable<string> profiles, IList<string> projects) {
             var rows = new List<SyncSessionRow>();
-            string slug = Slug(project); if (slug == null) return rows;
+            var roots = projects.Select(p => new { Path = p, Real = Real(p) }).Where(p => p.Real != null).OrderByDescending(p => p.Real.Length).ToList();
             try {
-                var projects = new DirectoryInfo(Path.Combine(config, "projects")); var folder = new DirectoryInfo(Path.Combine(projects.FullName, slug));
-                if (!projects.Exists || !folder.Exists || ((projects.Attributes | folder.Attributes) & FileAttributes.ReparsePoint) != 0) return rows;
-                foreach (var file in folder.EnumerateFiles("*.jsonl")) {
+                var folder = new DirectoryInfo(Path.Combine(config, "projects"));
+                if (!folder.Exists || (folder.Attributes & FileAttributes.ReparsePoint) != 0) return rows;
+                foreach (var session in ActiveSessions(profiles)) {
                     if (rows.Count >= MaxSessions) break;
-                    if (!SessionFileName(file.Name) || (file.Attributes & FileAttributes.ReparsePoint) != 0 || file.Length == 0) continue;
-                    rows.Add(new SyncSessionRow { Path = file.FullName, Id = file.Name.Substring(0, 36), Title = TailTitle(file.FullName) ?? "未命名会话", Modified = file.LastWriteTime, Stamp = file.LastWriteTimeUtc.Ticks, ProjectPath = project });
+                    string real = Real(session.Value), slug = Slug(session.Value);
+                    var project = real == null ? null : roots.FirstOrDefault(p => Within(real, p.Real) != null);
+                    if (project == null || slug == null) continue;
+                    var parent = new DirectoryInfo(Path.Combine(folder.FullName, slug)); var file = new FileInfo(Path.Combine(parent.FullName, session.Key + ".jsonl"));
+                    if (!parent.Exists || !file.Exists || ((parent.Attributes | file.Attributes) & FileAttributes.ReparsePoint) != 0 || file.Length == 0) continue;
+                    rows.Add(new SyncSessionRow { Path = file.FullName, Id = session.Key, Title = TailTitle(file.FullName) ?? "未命名会话", Modified = file.LastWriteTime, Stamp = file.LastWriteTimeUtc.Ticks, ProjectPath = project.Path });
                 }
             } catch (IOException) { } catch (UnauthorizedAccessException) { }
             return rows.OrderByDescending(r => r.Stamp).ToList();
+        }
+        // 来源账号全部账号／组织目录下的记录：cliSessionId → cwd，跳过 isArchived 为 true 的。只留这三个字段，其余内容不保存。
+        // 目录不安全或记录打不开、解析不了时跳过，宁可少列。
+        static Dictionary<string, string> ActiveSessions(IEnumerable<string> profiles) {
+            var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (string root in SessionRoots(profiles)) {
+                var accounts = Children(root); if (accounts == null) continue;
+                foreach (string account in accounts) {
+                    var organizations = Children(Path.Combine(root, account)); if (organizations == null) continue;
+                    foreach (string organization in organizations)
+                        foreach (string path in Directory.EnumerateFiles(Path.Combine(root, account, organization), "local_*.json")) {
+                            Dictionary<string, object> record = null;
+                            try {
+                                using (var stream = LocalFiles.OpenRead(path, 8 * 1024 * 1024, 7)) {
+                                    var data = new byte[stream.Length]; int count = 0, n;
+                                    while (count < data.Length && (n = stream.Read(data, count, data.Length - count)) > 0) count += n;
+                                    record = Json().DeserializeObject(new UTF8Encoding(false, true).GetString(data, 0, count)) as Dictionary<string, object>;
+                                }
+                            } catch (IOException) { } catch (UnauthorizedAccessException) { } catch (ArgumentException) { } catch (InvalidOperationException) { }
+                            string id = Str(record, "cliSessionId"), cwd = Str(record, "cwd"); Guid guid;
+                            if (id == null || cwd == null || id.Length != 36 || !Guid.TryParse(id, out guid) || True(record, "isArchived")) continue;
+                            result[id.ToLowerInvariant()] = cwd;
+                        }
+                }
+            }
+            return result;
         }
         internal static bool IsSyncCopy(string title) { return title != null && OldSuffix.IsMatch(title); }
 
