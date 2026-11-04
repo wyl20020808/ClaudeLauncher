@@ -173,11 +173,13 @@ namespace ClaudeLauncher {
             return ProfileDeletion.Candidates(number, Root, ProfileDeletion.Local).Any(Directory.Exists);
         }
         // 递归存储检查已在后台完成；这里只复查目录链与顶层存储项（含新建的 ClaudeCodeConfig），返回启动的 PID。
-        public static int Launch(int number, string executable, bool riskAccepted) {
-            Diagnostics.Write("account_launch", "slot=" + number + "; claude=" + executable);
+        public static int Launch(int number, string executable, bool riskAccepted) { return Launch(number, executable, riskAccepted, null); }
+        // link：官方 claude://code/new 预填链接（SPEC 同步会话 · 侧栏分组），作为参数交给该账号；账号已运行时由 Claude 单实例锁转交给它。只预填，不发送。
+        public static int Launch(int number, string executable, bool riskAccepted, string link) {
+            Diagnostics.Write("account_launch", "slot=" + number + "; claude=" + executable + (link == null ? "" : "; link=code/new"));
             if (DeletionJournal.IsPending(number, ProfileDeletion.Local)) throw new IOException("该账号删除未完成，请先重试删除。");
             Recheck(number, Root, ProfileDeletion.Local, riskAccepted);
-            var info = PrepareLaunch(number, executable, Root);
+            var info = PrepareLaunch(number, executable, Root, link);
             Recheck(number, Root, ProfileDeletion.Local, riskAccepted);
             using (var process = Process.Start(info)) return process.Id;
         }
@@ -193,9 +195,12 @@ namespace ClaudeLauncher {
             string existing = candidates.FirstOrDefault(Directory.Exists);
             return existing ?? (number == 1 ? candidates.Last() : Folder(number, Root));
         }
-        public static ProcessStartInfo PrepareLaunch(int number, string executable, string root) {
+        public static ProcessStartInfo PrepareLaunch(int number, string executable, string root, string link = null) {
+            if (link != null && !SidebarGroups.ValidLink(link)) throw new ArgumentException("预填链接无效，未启动。");
             string folder = Folder(number, root);
-            var info = new ProcessStartInfo(executable, folder == null ? "" : "--user-data-dir=\"" + folder + "\"");
+            string arguments = folder == null ? "" : "--user-data-dir=\"" + folder + "\"";
+            if (link != null) arguments = (arguments + " \"" + link + "\"").TrimStart();
+            var info = new ProcessStartInfo(executable, arguments);
             // 设置子进程环境变量需要 UseShellExecute=false。
             info.UseShellExecute = false;
             if (folder != null) {

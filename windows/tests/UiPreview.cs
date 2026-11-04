@@ -94,8 +94,8 @@ public static class UiPreview {
         // 同步会话：选择窗与预览。
         Func<int, long, SyncVersion> version = (n, stamp) => new SyncVersion { Id = "00000000-0000-4000-8000-00000000000" + n, Stamp = stamp };
         var demo = new List<SyncSessionRow> {
-            new SyncSessionRow { Path = "a", Title = "修复登录页样式", Account = 1, ProjectPath = @"D:\Projects\demo-app", ProjectName = "demo-app", Modified = DateTime.Now, Stamp = 300, Linked = true, Versions = new Dictionary<int, SyncVersion> { { 1, version(1, 300) }, { 2, version(2, 200) } } },
-            new SyncSessionRow { Path = "b", Title = "整理发布说明", Account = 1, ProjectPath = @"D:\Projects\demo-app", ProjectName = "demo-app", Modified = DateTime.Now.AddHours(-3), Stamp = 250, Versions = new Dictionary<int, SyncVersion> { { 1, version(3, 250) } } },
+            new SyncSessionRow { Path = "a", Title = "修复登录页样式", Group = "前端", GroupRank = 0, Account = 1, ProjectPath = @"D:\Projects\demo-app", ProjectName = "demo-app", Modified = DateTime.Now, Stamp = 300, Linked = true, Versions = new Dictionary<int, SyncVersion> { { 1, version(1, 300) }, { 2, version(2, 200) } } },
+            new SyncSessionRow { Path = "b", Title = "整理发布说明", Group = "发布", GroupRank = 1, Account = 1, ProjectPath = @"D:\Projects\demo-app", ProjectName = "demo-app", Modified = DateTime.Now.AddHours(-3), Stamp = 250, Versions = new Dictionary<int, SyncVersion> { { 1, version(3, 250) } } },
             new SyncSessionRow { Path = "c", Title = "写入门文档", Account = 1, ProjectPath = @"D:\Projects\demo-app", ProjectName = "demo-app", Modified = DateTime.Now.AddDays(-1), Stamp = 100, Linked = true, Versions = new Dictionary<int, SyncVersion> { { 1, version(4, 100) }, { 2, version(5, 100) } } },
             new SyncSessionRow { Path = "d", Title = "接口草稿", Account = 3, ProjectPath = @"D:\Projects\demo-site", ProjectName = "demo-site", Modified = DateTime.Now.AddDays(-2), Stamp = 90, Versions = new Dictionary<int, SyncVersion> { { 3, version(6, 90) } } } };
         var picker = ui.BuildSessionPicker(demo, new[] { 1, 2, 3 }, new[] { 1 }); picker.Expanders[0].IsExpanded = true;

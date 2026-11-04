@@ -102,6 +102,7 @@ namespace ClaudeLauncher {
         internal Func<int,bool> HasData;
         internal Func<int,Task> ValidateStorage = number => Task.Run(() => Storage.Validate(number,Core.Root,ProfileDeletion.Local));
         internal Func<int,string,bool,int> LaunchProvider = Core.Launch;
+        internal Func<int,string,bool,string,int> LinkLaunchProvider = Core.Launch;
         internal Func<int,string,UsageRecord> UsageReader = UsageInterface.ReadProcess;
         bool popupPanelRead;
         // 仅供测试：替代模态对话框，返回按钮序号。
@@ -830,10 +831,24 @@ namespace ClaudeLauncher {
                 var members = group.Select(x => x.i).ToList(); int groupIndex = picker.Groups.Count; string name = group.First().s.ProjectName;
                 var check = new CheckBox { Content = name + "（" + members.Count + "）", Foreground = B(Ink), ToolTip = group.Key, FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center };
                 check.Click += delegate { picker.Toggle(picker.Members[groupIndex]); };
-                var rows = new StackPanel { Margin = new Thickness(24, 2, 0, 6) };
-                var expander = new Expander { Header = check, Content = rows, IsExpanded = false, Foreground = B(Ink), Margin = new Thickness(4, 3, 4, 3) };
+                var projectRows = new StackPanel { Margin = new Thickness(24, 2, 0, 6) };
+                var expander = new Expander { Header = check, Content = projectRows, IsExpanded = false, Foreground = B(Ink), Margin = new Thickness(4, 3, 4, 3) };
                 AutomationProperties.SetName(expander, Appearance.Text("展开或折叠：" + name));
-                foreach (int index in members) {
+                picker.Members.Add(members); picker.Groups.Add(check); picker.Expanders.Add(expander); list.Children.Add(expander);
+                // 第二层：来源侧栏的分组（按来源侧栏顺序，未分组放最后）；项目里没有分组时不显示这一层。
+                bool grouped = members.Any(i => sessions[i].Group != null);
+                var sidebarGroups = members.GroupBy(i => sessions[i].Group ?? "", StringComparer.Ordinal).OrderBy(g => g.Key == "" ? 1 : 0).ThenBy(g => g.Min(i => sessions[i].GroupRank)).ThenBy(g => g.Key, StringComparer.CurrentCulture).ToList();
+                foreach (var sidebarGroup in sidebarGroups) {
+                var rows = projectRows;
+                if (grouped) {
+                    var subMembers = sidebarGroup.ToList(); int subIndex = picker.Groups.Count;
+                    string groupLabel = sidebarGroup.Key == "" ? Appearance.Text("未分组") : sidebarGroup.Key;
+                    var sub = new CheckBox { Content = groupLabel + "（" + subMembers.Count + "）", Foreground = B(Muted), FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 4, 0, 2), ToolTip = sidebarGroup.Key == "" ? Appearance.Text("来源侧栏里不在任何分组") : Appearance.Text("来源侧栏分组；同步后副本标题前会加上分组名") };
+                    sub.Click += delegate { picker.Toggle(picker.Members[subIndex]); };
+                    picker.Members.Add(subMembers); picker.Groups.Add(sub); projectRows.Children.Add(sub);
+                    rows = new StackPanel { Margin = new Thickness(22, 0, 0, 2) }; projectRows.Children.Add(rows);
+                }
+                foreach (int index in sidebarGroup) {
                     var session = sessions[index]; var content = new DockPanel { LastChildFill = true };
                     var detail = new TextBlock { FontSize = 11, Foreground = B(Muted), Margin = new Thickness(10, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center, Width = 210, TextTrimming = TextTrimming.CharacterEllipsis }; DockPanel.SetDock(detail, Dock.Right); content.Children.Add(detail);
                     content.Children.Add(new TextBlock { Text = session.Title, Foreground = B(Ink), TextTrimming = TextTrimming.CharacterEllipsis, FontSize = 13, Width = 330 });
@@ -843,7 +858,7 @@ namespace ClaudeLauncher {
                     while (picker.Rows.Count <= index) { picker.Rows.Add(null); picker.Details.Add(null); }
                     picker.Rows[index] = row; picker.Details[index] = detail; rows.Children.Add(row);
                 }
-                picker.Members.Add(members); picker.Groups.Add(check); picker.Expanders.Add(expander); list.Children.Add(expander);
+                }
             }
             picker.All.Click += delegate { picker.Toggle(Enumerable.Range(0, picker.Rows.Count)); };
             var items = picker.Target.Items.Cast<ComboBoxItem>().ToList();
@@ -860,6 +875,8 @@ namespace ClaudeLauncher {
             panel.Children.Add(new TextBlock { Text = "共 " + bytes / 1000 + " KB。脱敏只认固定格式，其他私人信息请自己看一遍。", Foreground = B(Ink), TextWrapping = TextWrapping.Wrap });
             if (replacing > 0) panel.Children.Add(new TextBlock { Text = "其中 " + replacing + " 条会替换账号 " + Two(to) + " 里的旧版本，旧版本移到回收站。替换后那边也只剩清理内容，没有工具结果和图片。", TextWrapping = TextWrapping.Wrap, Foreground = B("#B46A45"), Margin = new Thickness(0, 4, 0, 0) });
             if (bytes > 100 * 1000) panel.Children.Add(new TextBlock { Text = "历史较长的会话会占用目标账号较多额度；启动器不会自动截断。", TextWrapping = TextWrapping.Wrap, Foreground = B(Muted), Margin = new Thickness(0, 4, 0, 0) });
+            var groupNames = cleans.Where(c => c.Group != null).Select(c => c.Group).Distinct(StringComparer.Ordinal).ToList();
+            if (groupNames.Count > 0) panel.Children.Add(new TextBlock { Text = Appearance.Text(cleans.Count(c => c.Group != null) + " 条副本的标题前会加上来源侧栏的分组名：" + String.Join("、", groupNames) + "。同步完成后可以选“打开并建分组”，在账号 " + Two(to) + " 里建同名的原生分组（要你自己按发送）。"), TextWrapping = TextWrapping.Wrap, Foreground = B(Muted), Margin = new Thickness(0, 4, 0, 0) });
             if (cleans.Any(c => c.Images > 0)) panel.Children.Add(new TextBlock { Text = "部分会话含图片，同步后 AI 看不到它们。", TextWrapping = TextWrapping.Wrap, Foreground = B(Muted), Margin = new Thickness(0, 4, 0, 0) });
             if (failures.Count > 0) {
                 panel.Children.Add(new TextBlock { Text = failures.Count + " 条无法处理，不会同步：", TextWrapping = TextWrapping.Wrap, Foreground = B("#B46A45"), Margin = new Thickness(0, 8, 0, 0) });
@@ -987,10 +1004,10 @@ namespace ClaudeLauncher {
                     foreach (var session in selected) {
                         SyncVersion existing; session.Versions.TryGetValue(to, out existing);
                         CleanedSession clean;
-                        try { clean = SessionSync.Clean(session.Path, session.ProjectPath, home, existing == null ? null : existing.Id); } catch (Exception error) { clean = new CleanedSession { Error = error.Message }; }
+                        try { clean = SessionSync.Clean(session.Path, session.ProjectPath, home, existing == null ? null : existing.Id, session.Group); } catch (Exception error) { clean = new CleanedSession { Error = error.Message }; }
                         report(++done);
                         if (clean.Error != null) failures.Add("「" + session.Title + "」：" + Appearance.Text(clean.Error));
-                        else { clean.From = session.Account; clean.FromId = session.Id; result.Add(clean); }
+                        else { clean.From = session.Account; clean.FromId = session.Id; clean.Group = session.Group; clean.Project = session.ProjectPath; result.Add(clean); }
                     }
                     return result;
                 });
@@ -1002,6 +1019,7 @@ namespace ClaudeLauncher {
                 if (loginAccount != 0 || deleting || updating || IsBusy(to)) { Alert("账号正在处理中", "请先结束登录保护或等待检查／启动完成。"); return; }
                 checking.Add(to); Render();
                 int written = 0, replaced = 0; string failure = null;
+                var grouped = new List<KeyValuePair<string, string>>(); string groupFolder = null; // 分组指令：(分组名, 目标侧栏 ID)
                 try {
                     try { await ValidateStorage(to); } catch (Exception error) { failure = error.Message; }
                     if (failure == null) failure = await WithSyncProgress("正在写入目标账号", cleans.Count, report => {
@@ -1016,6 +1034,10 @@ namespace ClaudeLauncher {
                             links = SessionSync.Link(links, clean.From, clean.FromId, to, clean.SessionId);
                             if (linksWritable) try { SessionSync.SaveLinks(LinksPath, links); } catch (Exception error) { linksWritable = false; Diagnostics.Error("session_links_write", error); }
                             if (clean.Replaces) replaced++;
+                            if (clean.Group != null) {
+                                string sidebarId = SessionSync.SidebarId(profiles, organization, clean.SessionId);
+                                if (sidebarId != null) { grouped.Add(new KeyValuePair<string, string>(clean.Group, sidebarId)); if (groupFolder == null) groupFolder = clean.Project; }
+                            }
                             report(++written);
                         }
                         return null;
@@ -1027,11 +1049,35 @@ namespace ClaudeLauncher {
                 if (failure != null) info += "\n\n" + Appearance.Text(failure);
                 if (failures.Count > 0) info += "\n\n" + Appearance.Text(failures.Count + " 条无法处理，没有同步。");
                 string title = written == cleans.Count ? "会话已同步" : written > 0 ? "同步未全部完成" : "没有写入会话";
-                if (written > 0) { if (Ask(title, info, new[] { "打开账号 " + Two(to), "完成" }, 1, 0) == 0) await Select(to); }
+                if (written > 0) await FinishSessionSync(to, title, info, grouped, groupFolder);
                 else Alert(title, info);
             } catch (Exception error) { Alert("无法同步所选会话", error.Message); }
             finally { syncingSessions = false; syncSessionsButton.IsEnabled = !projectsUnreadable; }
             if (diagnoseAfterSync) { diagnoseAfterSync = false; await RunSupportDiagnosis(); }
+        }
+        // 有分组时多一个选项：打开目标账号的新会话并预填分组指令，由用户检查后自己发送（SPEC 同步会话 · 侧栏分组）。
+        internal const string GroupOfferText = "其中 %@ 条在来源侧栏有分组（%@）。选“打开并建分组”，启动器会在账号 %@ 新建一个会话，输入框里填好整理分组的指令；你检查后按发送，由 Claude 用官方工具建分组，会用掉一条消息的额度。启动器不会替你发送。";
+        internal static string GroupOffer(int count, IEnumerable<string> names, int to) {
+            string[] parts = Appearance.Text(GroupOfferText).Split(new[] { "%@" }, StringSplitOptions.None), values = { count.ToString(), String.Join("、", names), Two(to) };
+            var text = new StringBuilder(parts[0]);
+            for (int i = 1; i < parts.Length; i++) text.Append(i <= values.Length ? values[i - 1] : "").Append(parts[i]);
+            return text.ToString();
+        }        async Task FinishSessionSync(int to, string title, string info, List<KeyValuePair<string, string>> grouped, string folder) {
+            string instruction = SidebarGroups.Instruction(grouped);
+            if (instruction == null) { if (Ask(title, info, new[] { "打开账号 " + Two(to), "完成" }, 1, 0) == 0) await Select(to); return; }
+            var names = grouped.Select(p => p.Key.Trim()).Distinct(StringComparer.Ordinal).ToList();
+            int choice = Ask(title, info + "\n\n" + GroupOffer(grouped.Select(p => p.Value).Distinct().Count(), names, to), new[] { "打开并建分组", "只打开账号 " + Two(to), "完成" }, 2, 0);
+            if (choice == 1) { await Select(to); return; }
+            if (choice != 0) return;
+            string link = SidebarGroups.NewSessionLink(instruction, folder);
+            Diagnostics.Write("session_sync_group_prompt", "groups=" + names.Count + "; sessions=" + grouped.Count + "; prefill=" + (link != null));
+            if (link == null) {
+                bool copied = false; try { Clipboard.SetText(instruction); copied = true; } catch (Exception error) { Diagnostics.Error("session_sync_group_clipboard", error); }
+                Alert("指令太长，不能自动填入", copied ? "分组指令已复制到剪贴板。打开账号后，新建一个 Code 会话，粘贴、检查后自己发送。" : "无法复制到剪贴板。请减少一次同步的会话数量后再试。");
+                if (copied) await Select(to);
+                return;
+            }
+            await Select(to, link);
         }
         bool diagnoseAfterSync, diagnosing;
         // ---- 问题诊断（SPEC 问题诊断）：只读，结果先给用户看；保存在本机，复制或提交到 GitHub 由用户自己操作 ----
@@ -2349,7 +2395,8 @@ namespace ClaudeLauncher {
             if (number == 0) { Alert("10 个账号空间都已创建", "请直接在列表中启动或打开对应账号。"); return; }
             await Select(number);
         }
-        async Task Select(int number) {
+        // link：官方新建会话的预填链接（同步会话 · 侧栏分组），随这次打开交给该账号；为空时与平常相同。
+        async Task Select(int number, string link = null) {
             if (tutorialOverlay != null) return; // 托盘菜单和全局快捷键也不能在引导期间启动账号。
             if (IsBusy(number) || deleting || updating || incompleteDeletes.Contains(number)) return;
             Diagnostics.Write("account_click", "slot=" + number);
@@ -2370,10 +2417,10 @@ namespace ClaudeLauncher {
                 if (failure != null || Core.Running(number, instances)) { Alert("状态已变化，未创建", failure ?? "该账号已在运行，请重新点击。"); return; }
             }
             Instance current = instances.FirstOrDefault(x => x.Number == number);
-            await CheckAndOpen(number, current == null ? 0 : current.ProcessId, create);
+            await CheckAndOpen(number, current == null ? 0 : current.ProcessId, create, link);
         }
         // 递归存储检查在后台进行；完成后重新扫描，核对 PID 与登录保护状态再操作。
-        async Task CheckAndOpen(int number, int expectedPid, bool create) {
+        async Task CheckAndOpen(int number, int expectedPid, bool create, string link = null) {
             if (IsBusy(number)) return;
             checking.Add(number); errors.Remove(number); Render();
             try {
@@ -2399,7 +2446,7 @@ namespace ClaudeLauncher {
             failure = Core.OpeningBlocker(number, expectedPid, instances, loginAccount, Busy().Where(n => n != number));
             if (failure != null) { Message("账号 " + Two(number) + "：" + failure, true); Alert("实例或保护状态已变化", failure); return; }
             Instance running = instances.FirstOrDefault(x => x.Number == number);
-            if (running != null) { await Activate(number, running, riskAccepted); return; }
+            if (running != null) { await Activate(number, running, riskAccepted, link); return; }
             if (!create && loginAccount == 0 && !HasData(number)) { Message("账号目录已变化，未创建新目录。请重新点击。", true); return; }
             checking.Add(number); Render();
             Message("正在检测电脑网络环境…", false);
@@ -2419,17 +2466,17 @@ namespace ClaudeLauncher {
             failure = Core.OpeningBlocker(number, expectedPid, instances, loginAccount, Busy().Where(n => n != number));
             if (failure != null || Core.Running(number, instances) || deleting || updating) { Alert("状态已变化，未启动", failure ?? "请重新点击账号。"); return; }
             if (!create && loginAccount == 0 && !HasData(number)) { Alert("目录已变化", "请重新点击账号。"); return; }
-            await Launch(number, riskAccepted);
+            await Launch(number, riskAccepted, link);
             } finally { checking.Remove(number); if (!closed) Render(); }
         }
-        async Task Launch(int number, bool riskAccepted) {
+        async Task Launch(int number, bool riskAccepted, string link = null) {
             if (number != 1 && !HasData(number)) SetInitialSync(number, true); // 新账号：就绪后询问一次同步（SPEC 新账号提示）
             pending[number] = DateTime.UtcNow; Render();
             Message("正在启动账号 " + Two(number) + "…", false);
             try {
                 string path = executable;
                 var requested = DateTime.UtcNow;
-                int pid = await Task.Run(() => LaunchProvider(number, path, riskAccepted));
+                int pid = await Task.Run(() => link == null ? LaunchProvider(number, path, riskAccepted) : LinkLaunchProvider(number, path, riskAccepted, link));
                 RecordUse(number);
                 if (number != 1) launched[number] = new LaunchRecord { ProcessId = pid, Requested = requested };
             } catch (Exception error) {
@@ -2439,9 +2486,9 @@ namespace ClaudeLauncher {
             }
             if (!closed) Render();
         }
-        async Task Activate(int number, Instance running, bool riskAccepted) {
+        async Task Activate(int number, Instance running, bool riskAccepted, string link = null) {
             IntPtr handle = Native.WindowFor(running.ProcessId);
-            if (handle != IntPtr.Zero) {
+            if (handle != IntPtr.Zero && link == null) {
                 // SPEC 启动行为：关闭“点击账号时恢复最小化窗口”时，不还原、不切换已最小化的窗口。
                 if (!settings.RestoreMinimized && Native.IsMinimized(handle)) {
                     Message("账号 " + Two(number) + " 的窗口已最小化；按设置未自动恢复，请从任务栏打开。", false);
@@ -2457,7 +2504,7 @@ namespace ClaudeLauncher {
             pending[number] = DateTime.UtcNow; Render();
             try {
                 Diagnostics.Write("account_tray_relaunch", "slot=" + number + "; pid=" + running.ProcessId + "; claude=" + running.Executable);
-                await Task.Run(() => LaunchProvider(number, running.Executable, riskAccepted));
+                await Task.Run(() => link == null ? LaunchProvider(number, running.Executable, riskAccepted) : LinkLaunchProvider(number, running.Executable, riskAccepted, link));
                 // shortcut: 固定等 5 秒让转交进程退出后复查一次；若出现慢退出的误报，再改为多次复查。
                 await Task.Delay(TimeSpan.FromSeconds(5));
                 var after = await Task.Run(() => Core.Scan());

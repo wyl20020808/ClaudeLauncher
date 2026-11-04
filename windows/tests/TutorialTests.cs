@@ -74,7 +74,7 @@ internal static class TutorialTests {
 
         // 引导期间托盘菜单或全局快捷键也不能启动账号。
         ui.StartTutorial();
-        var select = (Task)typeof(LauncherUI).GetMethod("Select", Flags).Invoke(ui, new object[] { 1 });
+        var select = (Task)typeof(LauncherUI).GetMethod("Select", Flags).Invoke(ui, new object[] { 1, null });
         Check(select.IsCompleted && launches == 0 && asks == 0 && Field<HashSet<int>>(ui, "checking").Count == 0, "account selection is ignored during the tour");
         // 永久入口：选择窗默认没有步骤，Esc 关闭。
         ui.CloseTutorial(); ui.ShowTutorialPicker();

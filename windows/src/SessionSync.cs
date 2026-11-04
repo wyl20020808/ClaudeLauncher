@@ -14,8 +14,11 @@ using Microsoft.Win32.SafeHandles;
 namespace ClaudeLauncher {
     internal sealed class SyncVersion { public string Id; public long Stamp; }
     // Stamp：最后写入时间的 Ticks（100 ns，NTFS 的最小单位）。Versions：关联组里各账号的版本。
-    internal sealed class SyncSessionRow { public string Path, Id, Title, ProjectPath, ProjectName; public DateTime Modified; public long Stamp; public int Account; public bool Linked; public Dictionary<int, SyncVersion> Versions = new Dictionary<int, SyncVersion>(); }
-    internal sealed class CleanedSession { public string Error, SessionId, Slug, Title, Preview, Report, FromId; public byte[] Jsonl, Record; public int Messages, Images, From; public long Stamp; public bool Replaces; }
+    // Group：来源账号侧栏里的分组名（没有为 null），GroupRank：它在来源侧栏的位置。
+    internal sealed class SyncSessionRow { public string Path, Id, Title, ProjectPath, ProjectName, Group; public int GroupRank = Int32.MaxValue; public DateTime Modified; public long Stamp; public int Account; public bool Linked; public Dictionary<int, SyncVersion> Versions = new Dictionary<int, SyncVersion>(); }
+    internal sealed class CleanedSession { public string Error, SessionId, Slug, Title, Preview, Report, FromId, Group, Project; public byte[] Jsonl, Record; public int Messages, Images, From; public long Stamp; public bool Replaces; }
+    // 记录在哪个账号目录、哪个分区，以及它的 sessionId（侧栏分组按 "code:" + sessionId 归属）。
+    internal sealed class RecordRef { public string Profile, Scope, LocalId; }
     // 问题诊断用：列表时顺带记下每一步跳过了什么、为什么。只记 ID、cwd 和原因，不记标题和正文。
     internal sealed class SyncScan {
         public readonly List<string> Problems = new List<string>();
@@ -115,7 +118,9 @@ namespace ClaudeLauncher {
             try {
                 var folder = new DirectoryInfo(Path.Combine(config, "projects"));
                 if (!folder.Exists || (folder.Attributes & FileAttributes.ReparsePoint) != 0) { if (scan != null) { scan.NoProjectsFolder = true; ActiveSessions(profiles, scan); } return rows; }
-                foreach (var session in ActiveSessions(profiles, scan)) {
+                var refs = new Dictionary<string, RecordRef>(StringComparer.OrdinalIgnoreCase);
+                var groups = new Dictionary<string, SourceGroups>(StringComparer.OrdinalIgnoreCase);
+                foreach (var session in ActiveSessions(profiles, scan, refs)) {
                     if (rows.Count >= MaxSessions) { if (scan != null) scan.Problems.Add("超过 " + MaxSessions + " 条，后面的没有列出"); break; }
                     string slug = Slug(session.Value), project = ProjectOf(session.Value, roots);
                     if (project == null) { skip(session.Key, session.Value, "outside", null); continue; }
@@ -124,7 +129,15 @@ namespace ClaudeLauncher {
                     if (!parent.Exists || !file.Exists) { skip(session.Key, session.Value, "missing", project); continue; }
                     if (((parent.Attributes | file.Attributes) & FileAttributes.ReparsePoint) != 0) { skip(session.Key, session.Value, "link", project); continue; }
                     if (file.Length == 0) { skip(session.Key, session.Value, "empty", project); continue; }
-                    rows.Add(new SyncSessionRow { Path = file.FullName, Id = session.Key, Title = TailTitle(file.FullName) ?? "未命名会话", Modified = file.LastWriteTime, Stamp = file.LastWriteTimeUtc.Ticks, ProjectPath = project });
+                    var row = new SyncSessionRow { Path = file.FullName, Id = session.Key, Title = TailTitle(file.FullName) ?? "未命名会话", Modified = file.LastWriteTime, Stamp = file.LastWriteTimeUtc.Ticks, ProjectPath = project };
+                    RecordRef where;
+                    if (refs.TryGetValue(session.Key, out where) && where.LocalId != null) {
+                        SourceGroups area; string key = where.Profile + "|" + where.Scope;
+                        if (!groups.TryGetValue(key, out area)) groups[key] = area = SidebarGroups.Read(where.Profile, where.Scope);
+                        string name;
+                        if (area.ByKey.TryGetValue("code:" + where.LocalId, out name)) { row.Group = name; row.GroupRank = area.Order.IndexOf(name); }
+                    }
+                    rows.Add(row);
                 }
             } catch (IOException error) { if (scan != null) scan.Problems.Add("列出正文时出错：" + error.GetType().Name + " " + error.Message); }
             catch (UnauthorizedAccessException error) { if (scan != null) scan.Problems.Add("列出正文时没有权限：" + error.Message); }
@@ -132,7 +145,7 @@ namespace ClaudeLauncher {
         }
         // 来源账号全部账号／组织目录下的记录：cliSessionId → cwd，跳过 isArchived 为 true 的。只留这三个字段，其余内容不保存。
         // 目录不安全或记录打不开、解析不了时跳过，宁可少列；一个组织目录读不了只跳过它，不影响其他目录。
-        static Dictionary<string, string> ActiveSessions(IEnumerable<string> profiles, SyncScan scan = null) {
+        static Dictionary<string, string> ActiveSessions(IEnumerable<string> profiles, SyncScan scan = null, Dictionary<string, RecordRef> refs = null) {
             var result = scan != null ? scan.Active : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             Action<string> problem = text => { if (scan != null) scan.Problems.Add(text); };
             foreach (string root in SessionRoots(profiles)) {
@@ -156,6 +169,7 @@ namespace ClaudeLauncher {
                                 if (id == null || cwd == null || id.Length != 36 || !Guid.TryParse(id, out guid)) { if (scan != null) { if (unreadable) scan.Unreadable++; else scan.Invalid++; } continue; }
                                 if (True(record, "isArchived")) { if (scan != null) scan.Archived.Add(new KeyValuePair<string, string>(id.ToLowerInvariant(), cwd)); continue; }
                                 result[id.ToLowerInvariant()] = cwd;
+                                if (refs != null) refs[id.ToLowerInvariant()] = new RecordRef { Profile = Path.GetDirectoryName(root), Scope = account + "/" + organization, LocalId = Str(record, "sessionId") };
                             }
                         } catch (IOException error) { problem("读取记录目录 " + Tail(directory) + " 出错：" + error.Message); }
                         catch (UnauthorizedAccessException error) { problem("读取记录目录 " + Tail(directory) + " 没有权限：" + error.Message); }
@@ -340,6 +354,12 @@ namespace ClaudeLauncher {
                 return relative == null ? "[历史工具请求：" + name + "，项目外路径已省略]" : "[历史工具请求：" + name + "，" + (relative.Length > 0 ? relative : ".") + "]";
             }
         }
+        // 来源在侧栏分组里时，副本标题前加「【分组名】」，已经带同一前缀的不重复加。只改启动器写的副本标题，不碰官方分组数据。
+        internal static string GroupTitle(string title, string group) {
+            if (String.IsNullOrWhiteSpace(group)) return title;
+            string prefix = "【" + group.Trim() + "】";
+            return title.StartsWith(prefix, StringComparison.Ordinal) ? title : prefix + title;
+        }
         internal static string CopyTitle(string title, DateTime date) {
             string text = OldSuffix.Replace(title, ""), time = date.ToString("MM/dd HH:mm", System.Globalization.CultureInfo.InvariantCulture);
             return Appearance.Language == 1 ? text + " (Synced " + time + ")" : text + "（同步 " + time + "）";
@@ -351,7 +371,7 @@ namespace ClaudeLauncher {
         sealed class Turn { public string Role, Text, Stamp; }
         const string CopyNote = "[这是从其他账号同步的清理副本：只保留对话文字和工具请求说明，工具结果、思考内容和图片都已移除。历史中说已完成的改动，请以磁盘上的文件和 git 状态为准。]\n\n";
         // targetId：替换已关联的副本时沿用目标的会话 ID，否则新建。
-        internal static CleanedSession Clean(string source, string project, string home, string targetId = null) {
+        internal static CleanedSession Clean(string source, string project, string home, string targetId = null, string group = null) {
             var rows = new List<Row>(); string title = null; int sidechain = 0; long version = 0;
             string failure = ReadRows(source, rows, ref title, ref sidechain, ref version);
             if (failure != null) return new CleanedSession { Error = failure };
@@ -406,7 +426,7 @@ namespace ClaudeLauncher {
             if (turns[turns.Count - 1].Role != "assistant") add("assistant", "（同步的历史到此结束，上一条请求没有留下回复。）", turns[turns.Count - 1].Stamp);
 
             string session = targetId ?? Guid.NewGuid().ToString(), parentId = null;
-            string clean = CopyTitle(cleaner.Text(String.IsNullOrEmpty(title) ? "未命名会话" : title), DateTime.Now);
+            string clean = CopyTitle(GroupTitle(cleaner.Text(String.IsNullOrEmpty(title) ? "未命名会话" : title), group == null ? null : cleaner.Text(group)), DateTime.Now);
             var jsonl = new StringBuilder(); var body = new StringBuilder();
             foreach (var turn in turns) {
                 string id = Guid.NewGuid().ToString();
@@ -616,6 +636,15 @@ namespace ClaudeLauncher {
                 }
             }
             return null;
+        }
+        // 分组指令用：写入后按 cliSessionId 查目标记录里的侧栏 ID（替换时沿用的官方记录可能不是 local_<ID>）。查不到返回 null。
+        internal static string SidebarId(IEnumerable<string> profiles, string organization, string session) {
+            try {
+                string records = Records(profiles, organization); if (records == null) return null;
+                Dictionary<string, object> value; bool unsafeFile; object id;
+                if (RecordFor(records, session, out value, out unsafeFile) == null || value == null) return null;
+                return value.TryGetValue("sessionId", out id) ? id as string : null;
+            } catch (IOException) { return null; } catch (UnauthorizedAccessException) { return null; }
         }
         // 识别导入只读固定前缀，所以已知字段排在前面，其余按名字排序。
         static byte[] RecordData(Dictionary<string, object> record) {

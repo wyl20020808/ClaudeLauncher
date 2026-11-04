@@ -1,5 +1,18 @@
 # 项目状态
 
+## Windows：按侧栏分组同步（2026-11-04，dev，未提交、未发布）
+
+- 背景：客户的诊断显示账号 01 只有两个项目有未归档会话，客户侧栏里“很多项目”其实是很多自建分组。用户要求同步按“项目 + 分组”进行。
+- 调查：用户同意后，在账号 02 用侧栏工具建临时分组并放入本会话，确认分组存在账号目录的 `claude_desktop_config.json`（`preferences.epitaxyPrefs` 的 `dframe-group-scopes`、`dframe-code-sections`，按“账号目录名/组织目录名”分区）；查完已删除该分组，会话回到未分组，两处都恢复为空。账号 01 里用户建的「测试1／2／3」结构相同。
+- 第一版只写 `claude_desktop_config.json`：用户实测（开发版，17:01:27 写入成功、留了备份）后打开账号 02，17:01:38 Claude 用自己的本地存储把文件覆盖回空分组，侧栏不显示。查明真正的来源是 Claude 界面的 localStorage（`Local Storage\leveldb`，键 `LSS-persisted.dframe-group-scopes`／`…dframe-code-sections`），配置文件只是副本。用户选择改写本地存储，要求纯本地、最小修改、官方优先、尽量隔离（2026-11-04）。第一版在账号 02 留下的 `claude_desktop_config.json.launcher-backup` 与当前配置相同，已删除。
+- 第二版改写本地存储：新增 LevelDB 读写模块，只追加这两个键。用户实测：17:22:35 写入成功（序号 565／566，读回正确）；账号 02 于 17:20:39 已退出，17:30:02 全新启动，17:30:05 官方一次写入 14 个键，把分组和区块写回空，17:30:52 配置文件也写回空。两次结果相同，说明官方启动时不从本机这两处读分组，而以自己的来源为准（很可能随账号同步；官方日志无记录，未证实）。本地写入无效，按“只做本地、官方优先”原则放弃写入，用户同意（2026-11-04）。我们追加的记录已被官方新值覆盖，会在官方整理数据库时清掉，不留其他痕迹。
+- 最终实现（只读）：`src/SidebarGroups.cs` 只从来源账号的 `claude_desktop_config.json` 读分组（官方同步出的副本，与界面本地存储一致）；删除 `LocalStorageDb.cs` 和全部写入代码。`SessionSync` 列表行带 `Group`／`GroupRank`；同步窗口项目下按分组分层并可整组勾选；`SessionSync.GroupTitle` 给副本标题加「【分组名】」前缀（不重复加），预览说明前缀并提示分组需用户在目标账号自己建立。AGENTS.md「侧栏分组例外」改为只读，SPEC、用户指南同步；`build.ps1` 离线断言加上 `SidebarGroups.cs`。调查用的查记录位置脚本已删除。
+- 自检：`build.ps1 -Preview` 通过；SessionSyncTests 334 → 348（读分组与顺序、跳过非 code 分组、其他分区和无文件为空、列表带分组、窗口分层与整组勾选、无分组时不分层、预览文字、标题前缀不重复、副本标题和记录带一次前缀、无分组不加；英文词条），LauncherTests 354、SyncTests 154、TutorialTests 83、`--self-test` 248。离屏预览同步窗口分层显示正常。
+- 本机只读实测：读账号 01 的配置副本，「测试1／2／3」三条会话带上分组，顺序与侧栏一致；读两个账号界面本地存储（调查时用独立探测程序）与配置副本一致。
+- 讨论与验证（2026-11-04）：用户觉得标题前缀不是最终效果，要原生分组。另一 AI 的审查指出 localStorage 里还有 `dframe-store`（账号 01 有，含按分区的分组和侧栏区块；账号 02 没有），上次只写两个 `LSS-persisted.*` 键，不能完全排除本地来源；但同类工具记录外部加的分组会在官方协调同步时消失，补写成功可能性低，未再试。改走官方工具：用户同意后在账号 02 用官方侧栏工具建「测试2」「测试1」并各移入一条同步副本，官方当即写入配置；用户完全退出重启后分组仍在。只读查商店版 4.16336 程序包：官方支持 `claude://code/new?q=…&folder=…`（q 截断到 14336 字，不能以 `/` 开头），把链接作为参数随 `--user-data-dir` 交给账号 02，用户确认只在新会话输入框预填、没有发送，也没有新建会话。
+- 第三版（预填，不代发）：用户要求“帮用户填好，弹出输入框，让他自己确认发送”。`SidebarGroups.Instruction`／`NewSessionLink`／`ValidLink` 生成指令和链接；`SessionSync.SidebarId` 写入后读回侧栏 ID；`Core.Launch`／`PrepareLaunch` 加可选链接参数（只放行启动器生成的格式）；`LauncherUI.FinishSessionSync`：完成窗口有分组时多“打开并建分组”，链接经 `Select → CheckAndOpen → Launch／Activate` 交给目标账号（运行中也转交，不只是切窗口）；太长时复制到剪贴板。标题前缀保留作为退路，预览文字改为提示可一键建分组。AGENTS.md 加「分组预填例外」，SPEC、用户指南同步。
+- 自检（第三版）：`build.ps1` 通过；SessionSyncTests 348 → 369（指令顺序、去重、丢弃无效 ID、分组名 JSON 转义、链接往返、超长／斜杠／空文字不给链接、无项目时省略 folder、只放行启动器链接、链接作为一个带引号参数交给目标账号、01 只带链接、无效链接拒绝启动、完成提示文字、侧栏 ID 读回含官方异名记录、完成窗口按钮有／无分组；英文词条），SyncTests 154、TutorialTests 83（反射调用补上新参数）、LauncherTests 354、`--self-test` 248。
+- 未验证：完整 GUI 流程（同步完成 → 打开并建分组 → 冷启动目标账号时的预填 → 用户发送后 Claude 实际建组）；冷启动预填只从代码看到支持，实测的是运行中转交。指令执行的稳定性和额度只在本会话里手动验证过同类工具调用。客户机未验证。macOS 未实现。
 ## Windows 1.8.8：问题诊断（2026-11-04）
 
 - 发布：用户看过本节未验证项后要求提交并发布 1.8.8（2026-11-04），发布说明见 [RELEASE-windows-1.8.8](RELEASE-windows-1.8.8.md)。已发布为 `windows-v1.8.8`（Latest），目标 `06f70e7`（dev 与 main 同一提交，快进推送）。先跑 `build.ps1`、`test-install.ps1`（3 个场景）、`publish-release.ps1 -DryRun`，都通过；正式发布退出 2（未回滚）：草稿附件经 API 逐字节核对通过；GitHub latest/download 的两份清单、Setup、DMG 复核均 OK。

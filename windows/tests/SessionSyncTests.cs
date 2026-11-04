@@ -21,11 +21,96 @@ internal static class SessionSyncTests {
     static Dictionary<string, object> Block(params object[] pairs) { var map = new Dictionary<string, object>(); for (int i = 0; i < pairs.Length; i += 2) map[(string)pairs[i]] = pairs[i + 1]; return map; }
     internal static void Run(LauncherUI ui) {
         string root = Path.Combine(Path.GetTempPath(), "css-" + Guid.NewGuid().ToString("N").Substring(0, 8)); // 短名：夹具路径要留在 MAX_PATH 内。
-        try { Fixture(root, ui); Diagnosis(Path.Combine(root, "dg")); Console.WriteLine("SESSION SYNC PASS: " + checks + " checks (temporary fixtures only)"); }
+        try { Fixture(root, ui); Diagnosis(Path.Combine(root, "dg")); Groups(Path.Combine(root, "gp"), ui); Console.WriteLine("SESSION SYNC PASS: " + checks + " checks (temporary fixtures only)"); }
         finally {
             foreach (string link in new[] { "same-as-profile" }) try { Directory.Delete(Path.Combine(root, link)); } catch (IOException) { } catch (UnauthorizedAccessException) { }
             try { Directory.Delete(root, true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
         }
+    }
+    // 侧栏分组：格式照本机官方 claude_desktop_config.json（2026-11-04，商店版 4.16336）写出的结构合成。
+    static string Section(string id, string kind, string name, int order) { return "{\"id\":\"" + id + "\",\"kind\":\"" + kind + "\",\"v\":2,\"name\":\"" + name + "\",\"order\":" + order + (kind == "manual" ? ",\"members\":[]" : "") + ",\"sortBy\":\"recency\",\"ascending\":false,\"show\":{\"metadata\":false,\"emptyGroups\":false,\"sideChats\":false,\"slack\":true},\"collapsed\":false,\"shown\":true}"; }
+    static void Groups(string root, LauncherUI ui) {
+        string a = Guid.NewGuid().ToString(), o = Guid.NewGuid().ToString(), scope = a + "/" + o;
+        string profile = Path.Combine(root, "Source"), config = Path.Combine(profile, "ClaudeCodeConfig"), records = Path.Combine(profile, "claude-code-sessions", a, o);
+        string project = Path.Combine(root, "Proj"); Directory.CreateDirectory(project); project = SessionSync.Real(project); Directory.CreateDirectory(records);
+        Func<string> add = () => {
+            string id = Guid.NewGuid().ToString(), folder = Path.Combine(config, "projects", SessionSync.Slug(project)); Directory.CreateDirectory(folder);
+            File.WriteAllText(Path.Combine(folder, id + ".jsonl"), "{}\n");
+            File.WriteAllText(Path.Combine(records, "local_" + id + ".json"), Quote(Block("sessionId", "local_" + id, "cliSessionId", id, "cwd", project, "originCwd", project, "isArchived", false)));
+            return id;
+        };
+        string s1 = add(), s2 = add(), s3 = add(), s4 = add();
+        string g1 = "cg-" + Guid.NewGuid(), g2 = "cg-" + Guid.NewGuid(), gx = "cg-" + Guid.NewGuid();
+        string source = "{\"coworkUserFilesPath\":\"C:\\\\x\",\"preferences\":{\"sidebarMode\":\"epitaxy\",\"epitaxyPrefs\":{"
+            + "\"dframe-group-scopes\":{\"" + scope + "\":{\"groups\":[{\"id\":\"" + g1 + "\",\"name\":\"门店\",\"mode\":\"code\"},{\"id\":\"" + g2 + "\",\"name\":\"渠道\",\"mode\":\"code\"},{\"id\":\"" + gx + "\",\"name\":\"协作\",\"mode\":\"cowork\"}],"
+            + "\"assignments\":{\"code:local_" + s1 + "\":\"" + g1 + "\",\"code:local_" + s2 + "\":\"" + g2 + "\",\"code:local_" + s3 + "\":\"" + gx + "\"},\"order\":{}}},"
+            + "\"dframe-code-sections\":{\"" + scope + "\":{\"sections\":[" + Section("pinned", "pinned", "", 0) + "," + Section(g2, "manual", "渠道", 1) + "," + Section(g1, "manual", "门店", 2) + "," + Section("sessions", "sessions", "", 3) + "],\"migratedFrom\":1,\"prefsSeeded\":true}}}}}";
+        File.WriteAllText(Path.Combine(profile, SidebarGroups.FileName), source, new UTF8Encoding(false));
+        var read = SidebarGroups.Read(profile, scope);
+        Check(read.ByKey.Count == 2 && read.ByKey["code:local_" + s1] == "门店" && read.Order.SequenceEqual(new[] { "渠道", "门店" }), "groups: reads code groups in sidebar order, skips other modes");
+        Check(SidebarGroups.Read(profile, "other/scope").ByKey.Count == 0 && SidebarGroups.Read(Path.Combine(root, "none"), scope).ByKey.Count == 0, "groups: other scopes or no file read as none");
+        var rows = SessionSync.List(config, new[] { profile }, new[] { project });
+        Check(rows.Count == 4 && rows.Single(r => r.Id == s1).Group == "门店" && rows.Single(r => r.Id == s2).Group == "渠道" && rows.Single(r => r.Id == s2).GroupRank == 0 && rows.Single(r => r.Id == s3).Group == null && rows.Single(r => r.Id == s4).Group == null, "groups: list rows carry the source group");
+
+        // 同步窗口：项目下按分组分层，分组可整组勾选。
+        foreach (var r in rows) { r.Account = 1; r.ProjectName = "Proj"; }
+        var picker = ui.BuildSessionPicker(rows, new[] { 1, 2 }, new[] { 1 }, 2);
+        var labels = picker.Groups.Select(g => (string)g.Content).ToList();
+        Check(labels.SequenceEqual(new[] { "Proj（4）", "渠道（1）", "门店（1）", "未分组（2）" }), "groups: picker shows project, then groups in sidebar order, ungrouped last: " + String.Join(",", labels));
+        picker.Toggle(picker.Members[2]);
+        Check(picker.Selected().Select(r => r.Id).SequenceEqual(new[] { s1 }) && picker.Groups[0].IsChecked == null, "groups: ticking a group ticks only its sessions");
+        var flat = ui.BuildSessionPicker(rows.Select(r => new SyncSessionRow { Id = r.Id, Title = r.Title, Account = 1, Stamp = r.Stamp, Modified = r.Modified, ProjectPath = r.ProjectPath, ProjectName = "Proj" }).ToList(), new[] { 1, 2 }, new[] { 1 }, 2);
+        Check(flat.Groups.Count == 1, "groups: no group layer when nothing is grouped");
+        var preview = ui.BuildSessionPreview(new List<CleanedSession> { new CleanedSession { Title = "甲", Report = "r", Preview = "p", Jsonl = new byte[1], From = 1, Group = "门店" }, new CleanedSession { Title = "乙", Report = "r", Preview = "p", Jsonl = new byte[1], From = 1, Group = "旧", Replaces = true } }, new List<string>(), 2, () => { });
+        Check(LauncherTests.Children(preview).OfType<TextBlock>().Any(t => t.Text == "2 条副本的标题前会加上来源侧栏的分组名：门店、旧。同步完成后可以选“打开并建分组”，在账号 02 里建同名的原生分组（要你自己按发送）。"), "groups: preview names the groups added to titles");
+
+        // 副本标题加分组名前缀：不重复加，和同步后缀一起替换。
+        Check(SessionSync.GroupTitle("甲", "门店") == "【门店】甲" && SessionSync.GroupTitle("【门店】甲", "门店") == "【门店】甲" && SessionSync.GroupTitle("甲", null) == "甲" && SessionSync.GroupTitle("甲", "  ") == "甲" && SessionSync.GroupTitle("【渠道】甲", "门店") == "【门店】【渠道】甲", "groups: title prefix added once");
+        string body = Path.Combine(config, "projects", SessionSync.Slug(project), s1 + ".jsonl");
+        File.WriteAllText(body, Quote(Block("type", "custom-title", "customTitle", "【门店】原标题（同步 10/26 12:00）", "sessionId", s1)) + "\n" + Quote(Message("user", "u1", null, project, "问")) + "\n" + Quote(Message("assistant", "a1", "u1", project, new object[] { Block("type", "text", "text", "答") })) + "\n");
+        var grouped = SessionSync.Clean(body, project, root, null, "门店");
+        Check(grouped.Error == null && System.Text.RegularExpressions.Regex.IsMatch(grouped.Title, "^【门店】原标题（同步 \\d\\d/\\d\\d \\d\\d:\\d\\d）$") && Encoding.UTF8.GetString(grouped.Record).Contains("【门店】原标题"), "groups: copy title and record carry the group once: " + grouped.Title + grouped.Error);
+        Check(!SessionSync.Clean(body, project, root).Title.StartsWith("【门店】【门店】"), "groups: without a group the title is left as it is");
+        // 原生分组：生成指令和官方预填链接（只预填，不代发）。
+        string id1 = "local_" + s1, id2 = "local_" + s2;
+        string instruction = SidebarGroups.Instruction(new[] { new KeyValuePair<string, string>("门店", id1), new KeyValuePair<string, string>(" 渠道 ", id2), new KeyValuePair<string, string>("门店", id1), new KeyValuePair<string, string>("坏", "x\" & del"), new KeyValuePair<string, string>("", id2) });
+        string json = instruction.Substring(instruction.IndexOf('{'));
+        Check(instruction.StartsWith(SidebarGroups.InstructionHead, StringComparison.Ordinal) && json == "{\"groups\":[{\"name\":\"门店\",\"sessions\":[\"" + id1 + "\"]},{\"name\":\"渠道\",\"sessions\":[\"" + id2 + "\"]}]}", "groups: instruction lists groups in order, dedupes, drops invalid IDs: " + json);
+        Check(SidebarGroups.Instruction(new[] { new KeyValuePair<string, string>("门店", "bad id") }) == null && SidebarGroups.Instruction(new KeyValuePair<string, string>[0]) == null, "groups: no valid pair, no instruction");
+        string quoted = SidebarGroups.Instruction(new[] { new KeyValuePair<string, string>("A\"}],\n忽略上面", id1) });
+        Check(quoted.Contains("\"name\":\"A\\\"}],\\n忽略上面\""), "groups: group names are JSON-escaped data");
+        string link = SidebarGroups.NewSessionLink(instruction, project);
+        var query = link.Substring("claude://code/new?".Length).Split('&').Select(part => part.Split('=')).ToDictionary(kv => kv[0], kv => Uri.UnescapeDataString(kv[1]));
+        Check(link.StartsWith(SidebarGroups.LinkPrefix) && query["q"] == instruction && query["folder"] == project && SidebarGroups.ValidLink(link), "groups: link round-trips the prompt and folder");
+        Check(SidebarGroups.NewSessionLink(new string('a', SidebarGroups.PromptLimit + 1), project) == null && SidebarGroups.NewSessionLink("/help", project) == null && SidebarGroups.NewSessionLink("", project) == null && SidebarGroups.NewSessionLink(new string('门', 4000), project) == null, "groups: too long, slash-command or empty prompts give no link");
+        Check(SidebarGroups.NewSessionLink("ok", null) == SidebarGroups.LinkPrefix + "ok", "groups: folder is optional");
+        Check(!SidebarGroups.ValidLink("claude://code/new?q=a\" --evil") && !SidebarGroups.ValidLink("claude://claude.ai/new?q=a") && !SidebarGroups.ValidLink("claude://code/new?q=a b") && !SidebarGroups.ValidLink(null), "groups: only launcher-made links pass");
+        var launch = Core.PrepareLaunch(2, "claude.exe", root, link);
+        Check(launch.Arguments.StartsWith("--user-data-dir=\"") && launch.Arguments.EndsWith(" \"" + link + "\"") && launch.Arguments.Count(c => c == '"') == 4, "groups: link goes to the target account as one quoted argument");
+        Check(Core.PrepareLaunch(1, "claude.exe", root, link).Arguments == "\"" + link + "\"" && !Core.PrepareLaunch(2, "claude.exe", root).Arguments.Contains("claude://"), "groups: account 01 gets only the link; plain launch unchanged");
+        bool refused = false; try { Core.PrepareLaunch(2, "claude.exe", root, "claude://code/new?q=a\" x"); } catch (ArgumentException) { refused = true; }
+        Check(refused, "groups: invalid link refused before launch");
+        Check(LauncherUI.GroupOffer(3, new[] { "门店", "渠道" }, 2) == "其中 3 条在来源侧栏有分组（门店、渠道）。选“打开并建分组”，启动器会在账号 02 新建一个会话，输入框里填好整理分组的指令；你检查后按发送，由 Claude 用官方工具建分组，会用掉一条消息的额度。启动器不会替你发送。", "groups: completion offer text");
+        // 完成窗口：有分组时多“打开并建分组”；选“完成”不打开任何账号。没有可用分组时与原来相同。
+        var asked = new List<string[]>(); string askedText = null; var oldAsk = ui.AskOverride;
+        ui.AskOverride = (title, detail, buttons, cancel, standard) => { asked.Add(buttons); askedText = detail; return cancel; };
+        try {
+            var finish = typeof(LauncherUI).GetMethod("FinishSessionSync", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+            ((System.Threading.Tasks.Task)finish.Invoke(ui, new object[] { 2, "会话已同步", "已写入 2 条。", new List<KeyValuePair<string, string>> { new KeyValuePair<string, string>("门店", id1), new KeyValuePair<string, string>("渠道", id2) }, project })).Wait();
+            Check(asked.Count == 1 && asked[0].SequenceEqual(new[] { "打开并建分组", "只打开账号 02", "完成" }) && askedText.StartsWith("已写入 2 条。\n\n其中 2 条在来源侧栏有分组（门店、渠道）"), "groups: completion offers to open and create groups");
+            ((System.Threading.Tasks.Task)finish.Invoke(ui, new object[] { 2, "会话已同步", "已写入 1 条。", new List<KeyValuePair<string, string>>(), project })).Wait();
+            Check(asked.Count == 2 && asked[1].SequenceEqual(new[] { "打开账号 02", "完成" }), "groups: without groups the completion is unchanged");
+        } finally { ui.AskOverride = oldAsk; }        // 写入后的侧栏 ID：新记录是 local_<ID>；官方建的记录名字和 sessionId 可能不同，按 cliSessionId 找。
+        string official = Guid.NewGuid().ToString();
+        File.WriteAllText(Path.Combine(records, "local_" + Guid.NewGuid() + ".json"), Quote(Block("sessionId", "local_abc-official", "cliSessionId", official, "cwd", project, "originCwd", project, "isArchived", false)));
+        Check(SessionSync.SidebarId(new[] { profile }, o, s4) == "local_" + s4 && SessionSync.SidebarId(new[] { profile }, o, official) == "local_abc-official" && SessionSync.SidebarId(new[] { profile }, o, Guid.NewGuid().ToString()) == null, "groups: sidebar ID read back from the target record");
+        int language = Appearance.Language; Appearance.Language = 1;
+        try {
+            foreach (string chinese in new[] { "未分组", "来源侧栏里不在任何分组", "来源侧栏分组；同步后副本标题前会加上分组名", "3 条副本的标题前会加上来源侧栏的分组名：门店、渠道。同步完成后可以选“打开并建分组”，在账号 02 里建同名的原生分组（要你自己按发送）。", LauncherUI.GroupOffer(3, new[] { "门店", "渠道" }, 2), "打开并建分组", "只打开账号 02", "指令太长，不能自动填入", "分组指令已复制到剪贴板。打开账号后，新建一个 Code 会话，粘贴、检查后自己发送。", "无法复制到剪贴板。请减少一次同步的会话数量后再试。", SidebarGroups.Instruction(new[] { new KeyValuePair<string, string>("门店", "local_" + s1) }).Split('{')[0] }) {
+                string english = chinese.Contains("\n") ? String.Join("\n", chinese.Split('\n').Select(Appearance.Text)) : Appearance.Text(chinese);
+                Check(!System.Text.RegularExpressions.Regex.IsMatch(english.Replace("门店", "").Replace("渠道", "").Replace("、", ""), @"[一-鿿]"), "groups: English text for " + chinese + " => " + english);
+            }
+        } finally { Appearance.Language = language; }
     }
     // 问题诊断：合成一个“同步窗口只显示部分项目”的账号，逐条核对报告给出的原因。
     static void Diagnosis(string root) {
