@@ -2,7 +2,7 @@
 
 ## Windows 1.8.9：按侧栏分组同步（2026-11-04）
 
-- 发布：用户在两个真实账号上实测完整流程（同步 → 打开并建分组 → 预填 → 发送后建组）后回复“可以了没毛病”，要求发布新版本（2026-11-04），发布说明见 [RELEASE-windows-1.8.9](RELEASE-windows-1.8.9.md)。发布结果见下一条记录。
+- 发布：用户在两个真实账号上实测完整流程（同步 → 打开并建分组 → 预填 → 发送后建组）后回复“可以了没毛病”，要求发布新版本（2026-11-04），发布说明见 [RELEASE-windows-1.8.9](RELEASE-windows-1.8.9.md)。已发布为 `windows-v1.8.9`（Latest），目标 `4c49116`（dev 与 main 同一提交，快进推送）。先跑 `build.ps1`、`test-install.ps1`（3 个场景）、`publish-release.ps1 -DryRun`，都通过；正式发布退出 2（未回滚，自建更新服务连不上，与前几版相同）：草稿附件经 API 逐字节核对通过；GitHub latest/download 的两份清单、Setup、DMG 复核均 OK。附件 `ClaudeLauncherSetup-1.8.9.exe` 3405019 字节，SHA-256 `f3da422066038cbff21974ce03ca22b71b71e16b30ab980e688862819a232898`；原样带入 macOS 1.8.0（`ClaudeLauncher-1.8.0.dmg` 3939218 字节，SHA-256 `3a1700ab…ddac4`）和 `latest-macos.json`，未重签。
 
 - 背景：客户的诊断显示账号 01 只有两个项目有未归档会话，客户侧栏里“很多项目”其实是很多自建分组。用户要求同步按“项目 + 分组”进行。
 - 调查：用户同意后，在账号 02 用侧栏工具建临时分组并放入本会话，确认分组存在账号目录的 `claude_desktop_config.json`（`preferences.epitaxyPrefs` 的 `dframe-group-scopes`、`dframe-code-sections`，按“账号目录名/组织目录名”分区）；查完已删除该分组，会话回到未分组，两处都恢复为空。账号 01 里用户建的「测试1／2／3」结构相同。
