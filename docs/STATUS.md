@@ -1,6 +1,8 @@
 # 项目状态
 
-## Windows：所有者接受 Administrators 组、同步会话改为格式兼容检查（2026-11-04，dev，未发布）
+## Windows 1.8.6：所有者接受 Administrators 组、同步会话改为格式兼容检查（2026-11-04）
+
+- 发布：用户在看过本节未验证项后要求发布新版本（2026-11-04），版本号改为 1.8.6，发布说明见 [RELEASE-windows-1.8.6](RELEASE-windows-1.8.6.md)。发布结果见下一条记录。
 
 - 客户机（1.8.5）同步到 02 报“存储项不属于当前用户：…\Claude-Second\Network”。`dir /q` 显示 10-28 首次运行建的目录（Network、Local State、claude-code-sessions 等）归 `BUILTIN\Administrators`，10-30 以后的新文件归本人：当时提权／关闭 UAC，之后不再提权，令牌默认所有者变回本人，1.8.3 的规则不再认旧目录。`Storage.OwnedByMe` 增加本机 Administrators 组；SYSTEM、其他用户仍拒绝。启动存储检查、同步、配置同步、交接、设置读取共用这一判断。
 - 同一客户机随后报“只支持商店版 Claude 4.4212.0.0”。用户要求兼容即可、不写死版本：去掉版本白名单，`Publish`／`Replace` 在拿到目标记录目录后调用 `SessionSync.FormatKnown`（已有 `local_*.json` 时至少一条前四个键为已知顺序，否则拒绝；没有记录时按目录结构判断）。AGENTS.md、SPEC、Windows README／用户指南、英文词条同步。macOS 仍是 4.4212.0 白名单，未改。
