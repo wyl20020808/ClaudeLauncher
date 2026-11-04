@@ -6,7 +6,7 @@
 - 两端行为以 docs/SPEC.md 为准；修改行为时同步规格。
 - 日常开发在 dev 分支，验证后合并到 main。
 - 不修改、复制或重签官方 Claude.app。应用图标使用 resources/icon/ 中的自有图标，不再复制官方图标。
-- 固定账号目录不可迁移或覆盖，删除仅按下方删除规则。不得读取、复制、打印登录凭据，登录由用户自行完成。用量匹配的明确授权例外：仅可在本机访问 Claude Safe Storage / Claude Key，解密 lastActiveOrg 组织标识；不得用于解密登录信息，不输出或持久化密钥，不发送 Claude 请求。会话同步定位例外（2026-11-02 用户要求）：同步目标有多套账号／组织目录时，仅在用户点击同步后、对已退出的目标账号，同样解密 lastActiveOrg，用于匹配写入目录；目录唯一时不访问钥匙串，不输出、不持久化组织标识。账号显示名例外（2026-10-29 用户要求）：仅可在本机读取 Claude Code `.claude.json` 的 `oauthAccount.displayName`，不读取其他字段，不持久化、不记录、不发送。
+- 固定账号目录不可迁移或覆盖，删除仅按下方删除规则。不得读取、复制、打印登录凭据，登录由用户自行完成。用量匹配的明确授权例外：仅可在本机访问 Claude Safe Storage / Claude Key，解密 lastActiveOrg 组织标识；不得用于解密登录信息，不输出或持久化密钥，不发送 Claude 请求。会话同步定位例外（2026-11-02 用户要求）：同步目标有多套账号／组织目录时，仅在用户点击同步后、对已退出的目标账号，同样解密 lastActiveOrg，用于匹配写入目录；目录唯一时不访问钥匙串，不输出、不持久化组织标识。Windows 同一例外（2026-11-04 用户授权）：条件相同；以系统 winsqlite3 只读、不加锁、不复制打开目标账号 `Network\Cookies`，只查官方域名、根路径、未过期且唯一的 `lastActiveOrg` 一行；用当前用户 DPAPI 解开 `Local State` 的 `os_crypt.encrypted_key`，只用它以 AES-GCM 解这一行的 `v10` 值，其他前缀、WAL、非空 journal、未知版本一律拒绝；结果须为 UUID 并唯一匹配同名组织目录；密钥和明文用后清零，不解其他 Cookie，不输出、不记录、不持久化。Windows 解密无系统提示。账号显示名例外（2026-10-29 用户要求）：仅可在本机读取 Claude Code `.claude.json` 的 `oauthAccount.displayName`，不读取其他字段，不持久化、不记录、不发送。
 - 必须通过官方主进程和目录识别账号，排除 Helper、GPU、renderer、Claude Code CLI；按 PID 激活。
 - 不强杀 Claude，不以泛泛打开 bundle 代替目标 PID 激活。
 - 不自动修改系统权限、TCC 数据库或安全设置。
