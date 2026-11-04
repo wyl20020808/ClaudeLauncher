@@ -362,15 +362,25 @@ namespace ClaudeLauncher {
             foreach (string path in Directory.EnumerateFiles(records, "local_*.json")) {
                 if (++entries > 5000) return false;
                 FileStream stream;
+                any = true;
+                // 打不开（不属于本人、链接、超限）的记录算未知格式，不当作“没有记录”放行。
                 try { stream = LocalFiles.OpenRead(path, 8 * 1024 * 1024, 7); } catch (IOException) { continue; } catch (UnauthorizedAccessException) { continue; }
                 using (stream) {
                     var head = new byte[(int)Math.Min(4096, stream.Length)]; int count = 0, n;
                     while (count < head.Length && (n = stream.Read(head, count, head.Length - count)) > 0) count += n;
                     if (KnownRecord.IsMatch(Encoding.UTF8.GetString(head, 0, count))) return true;
                 }
-                any = true;
             }
             return !any;
+        }
+        // 写入位置的所有者：记录目录及其上两级（账号、claude-code-sessions），项目目录及其上一级。启动前的存储检查不覆盖这些目录。
+        internal static bool TargetOwned(string records, string config, string slug) {
+            try {
+                string account = Path.GetDirectoryName(records), projects = Path.Combine(config, "projects");
+                foreach (string directory in new[] { records, account, Path.GetDirectoryName(account), projects, Path.Combine(projects, slug) })
+                    if (Directory.Exists(directory) && !Storage.OwnedByMe((SecurityIdentifier)Directory.GetAccessControl(directory, AccessControlSections.Owner).GetOwner(typeof(SecurityIdentifier)))) return false;
+                return true;
+            } catch (IOException) { return false; } catch (UnauthorizedAccessException) { return false; }
         }
 
         // ---- 目录：候选里可能是同一目录（从商店版派生的进程会继承文件重定向），按文件身份去重 ----
@@ -484,6 +494,7 @@ namespace ClaudeLauncher {
             if (config == null) return "目标账号的项目目录无法安全打开，未写入。";
             string records = Records(profiles, organization);
             if (records == null) return "目标账号的记录目录已变化或不安全，未写入。请重新同步。";
+            if (!TargetOwned(records, config, slug)) return "目标账号的会话目录不属于当前用户，未写入。";
             if (!FormatKnown(records)) return "目标账号的会话记录格式与启动器不兼容（Claude 可能改了格式），未写入。";
             string folder = Path.Combine(config, "projects", slug), name = session + ".jsonl";
             try {
@@ -546,6 +557,7 @@ namespace ClaudeLauncher {
             if (!ValidTarget(session, slug)) return "会话标识或项目目录名无效。";
             string records = config == null ? null : Records(profiles, organization);
             if (records == null) return "目标账号的记录目录已变化或不安全，未写入。请重新同步。";
+            if (!TargetOwned(records, config, slug)) return "目标账号的会话目录不属于当前用户，未写入。";
             if (!FormatKnown(records)) return "目标账号的会话记录格式与启动器不兼容（Claude 可能改了格式），未写入。";
             string folder = Path.Combine(config, "projects", slug), target = Path.Combine(folder, session + ".jsonl"), freshName = "local_" + session + ".json";
             string transcriptTemp = null, recordTemp = null, aside = null;

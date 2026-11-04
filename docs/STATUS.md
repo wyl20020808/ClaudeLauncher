@@ -8,7 +8,12 @@
 - Windows 构建与自检（2026-11-04，Windows 11，efd313e 原样、未改代码）：`build.ps1` 编译通过（只有原有的 CS0649／CS0219 警告）；LauncherTests 354、SyncTests 154、SessionSyncTests 282、TutorialTests 83、`--self-test` 248 全部通过。
 - 格式正则：用反射取程序里的 `KnownRecord`，只读本机账号 01 每条 `local_*.json` 的前 4 KB 匹配，33 条全部命中，未输出内容。启动器自己写的记录键顺序与之相同，重复同步（`Replace`）在 SessionSyncTests 里通过。
 - 所有者实测（本机只有账号 01，没有 02～10，所以**没有用真实账号目录、也没有经 GUI 测试，界面上的启动检查和同步会话仍未验证**）：在临时目录里建 4 份 `Roaming\Claude-Second` 结构（含 Network、Local State、ClaudeCodeConfig、claude-code-sessions 记录），用管理员 PowerShell 以 `icacls /setowner` 把所有者分别设为本人、Administrators、SYSTEM、本机 DefaultAccount，再以普通权限（未提权）通过反射调用程序里的 `Storage.Validate(2, …)`（递归与非递归，后者即 `SessionSyncGuard` 用的形式）和 `SessionSync.Publish`。结果：本人、Administrators 均通过且实际写入；SYSTEM、DefaultAccount 均报“存储项不属于当前用户，已停止”。测完用管理员把所有者改回本人并删除临时目录；未改 UAC 或其他系统设置，未碰账号 01。
-- 实测发现（未修，属原有行为，留待决定）：① `Publish`／`Replace` 本身不查目标目录所有者，只靠同步前的 `Storage.Validate(…, false)`；`claude-code-sessions` 不在 `Storage.Items` 里，所以它单独归 SYSTEM 或其他用户时不会被拒（ClaudeCodeConfig 在列表里，会被拒）。② `FormatKnown` 把打不开或不属于本人的记录当作“没有记录”跳过，全部打不开时按兼容放行。③ 内嵌教程 `windows/assets/tutorial/guide.*.md` 仍写“只支持商店版 Claude 4.4212.0.0”，与新规则不符，efd313e 没有改。
+- 实测发现三处原有问题，用户要求修复（2026-11-04）：
+  - ① `Publish`／`Replace` 本身不查目标目录所有者，`claude-code-sessions` 又不在 `Storage.Items` 里，它单独归 SYSTEM 或其他用户时同步不会被拒。修复：新增 `SessionSync.TargetOwned`，在格式检查之前核对记录目录及其上两级、`projects` 和项目目录的所有者，不符报“目标账号的会话目录不属于当前用户，未写入。”（英文词条已加）。`Storage.Items` 未改，启动检查行为不变。
+  - ② `FormatKnown` 把打不开的记录当作“没有记录”。修复：打不开的记录算未知格式，全部打不开时拒绝。
+  - ③ 内嵌教程 `guide.zh.md`／`guide.en.md` 仍写只支持 4.4212.0.0。修复：改为与用户指南一致的“不限版本、格式变了会拒绝”。
+  - 自检：SessionSyncTests 282 → 285（超限记录算未知格式、本人目录通过所有者检查、新提示有英文），LauncherTests 354、SyncTests 154、TutorialTests 83、`--self-test` 248 全部通过。
+  - 实测（同样是临时目录加反射调用，不是 GUI）：只把 `claude-code-sessions` 子树的所有者改为 Administrators、SYSTEM、DefaultAccount，其他存储项仍归本人。同步前检查三种都通过（与修复前相同）；`Publish` 对 Administrators 写入成功，对 SYSTEM 和 DefaultAccount 报“会话目录不属于当前用户”并拒绝写入。修复前的那轮实测里，`Publish` 往属于 SYSTEM 和 DefaultAccount 的记录目录都写入成功了。测完已改回本人并删除临时目录。
 
 ## Windows 1.8.5 已发布（2026-11-04，windows-v1.8.5）
 

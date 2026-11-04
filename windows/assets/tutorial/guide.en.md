@@ -33,7 +33,7 @@ When an account is running out of quota, you can take a session to another accou
 - If the target account has signed in to several accounts or organizations, the launcher reads its current organization once after you click sync and writes only into that folder. If it cannot read it, nothing is written.
 - Open the target account from the launcher. The session appears in the sidebar, with "Synced" and the time after its title. You send the first message yourself.
 
-On Windows this currently supports only the Store version of Claude 4.4212.0.0. Other versions refuse to write.
+Any Claude version works. If the target account's session records change format, the launcher refuses to write and tells you.
 
 ## Usage trend: which account next
 
