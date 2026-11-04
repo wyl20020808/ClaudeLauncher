@@ -2,7 +2,10 @@
 
 ## Windows 1.8.7：同步会话列表以来源记录为准（2026-11-04）
 
-- 发布：用户在看过本节未验证项后要求发布新版本（2026-11-04），版本号改为 1.8.7，发布说明见 [RELEASE-windows-1.8.7](RELEASE-windows-1.8.7.md)。发布结果见下一条记录。
+- 发布：用户在看过本节未验证项后要求发布新版本（2026-11-04），版本号改为 1.8.7，发布说明见 [RELEASE-windows-1.8.7](RELEASE-windows-1.8.7.md)。已发布为 `windows-v1.8.7`（Latest），目标 `3e7c9c6`（dev 与 main 同一提交，快进推送；其中含 macOS 提交 `38c60e9`，macOS 未发布新版本）。发布前远端 dev 多出 `38c60e9`，本地两个提交变基到其上，STATUS 冲突两段都保留；变基后重跑 `build.ps1`、`test-install.ps1`（3 个场景）、`publish-release.ps1 -DryRun`，都通过。正式发布退出 2（未回滚）：草稿附件经 API 逐字节核对通过；GitHub latest/download 的两份清单、Setup、DMG 复核均 OK。
+- 附件：`ClaudeLauncherSetup-1.8.7.exe` 3389265 字节，SHA-256 `41ad16fb98576636ca6201d6a5526f9ee68987d4bf969c377f905593e8b0819f`。原样带入 macOS 1.8.0：`ClaudeLauncher-1.8.0.dmg`（SHA-256 `3a1700ab…ddac4`）和 `latest-macos.json`（SHA-256 `1f303a7e…7314`），未重签。
+- 退出 2 的原因与 1.8.4～1.8.6 相同：自建更新服务未运行，连不上；`updates/public` 已切换到 1.8.7，服务恢复后需复核。
+- 未验证：1.8.6 软件内更新到 1.8.7；同步窗口的分组显示；同步过去的会话在 Windows 客户端侧栏里是否按项目显示、能否续聊。
 
 - 用户反馈：同步没有按项目分、归档的会话也同步了。原因：`SessionSync.List` 直接扫 `projects/<目录名>/*.jsonl`，不看官方记录。本机账号 01 核对：没有记录的 JSONL 都是同一会话改模型／回退前的旧段（出现在当前记录的 `priorCliSessionIds`），会被当成独立会话列出；`isArchived` 不检查；项目内 worktree 的会话目录名不同，完全漏掉。
 - 修复：新增 `SessionSync.ActiveSessions`，读来源账号各账号／组织目录下 `local_*.json` 的 `cliSessionId`、`cwd`、`isArchived`（其余不保存），只列未归档记录对应的 JSONL，按记录 `cwd` 归到清单里最深的项目。AGENTS.md 会话同步例外、SPEC 同步；macOS 未改，SPEC 标 [macOS 待同步]。
