@@ -413,7 +413,7 @@ namespace ClaudeLauncher {
             ApplySettings();
             timer.Tick += async delegate { await Refresh(); };
             // 用量只在主动查看实例页时读取一次：激活窗口、切到实例页、在实例页点击（SPEC 本地界面用量 [Windows]）。
-            window.Activated += async delegate { await ReadUsage(); };
+            window.Activated += async delegate { OfferInitialSyncIfReady(); await ReadUsage(); };
             pages[0].PreviewMouseLeftButtonUp += async delegate { await ReadUsage(); };
             window.Loaded += async delegate {
                 await Refresh(); timer.Start();
@@ -739,7 +739,7 @@ namespace ClaudeLauncher {
                     RenderProjects();
                 }
             };
-            At(canvas, InfoButton("把会话清理后复制到另一个账号接着聊。不带账号信息，原会话不变，两边不会合并。"), 464, 235, 24, 24);
+            At(canvas, InfoButton("把会话清理后同步到另一个账号接着聊。不带账号信息，不合并；同步过的会话以最新版本为准，直接替换另一边的旧版本。"), 464, 235, 24, 24);
             syncSessionsButton = At(canvas, Action("同步会话…", "Primary", "\uE8AB", 13), 492, 228, 156, 38);
             AutomationProperties.SetAutomationId(syncSessionsButton, "SyncSessions");
             syncSessionsButton.IsEnabled = !projectsUnreadable;
@@ -750,7 +750,7 @@ namespace ClaudeLauncher {
         }
         // ---- 同步会话（SPEC 同步会话）：用户点击、预览确认后才写入；目标须已正常退出 ----
         Button syncSessionsButton;
-        bool syncingSessions;
+        bool syncingSessions, offeringInitialSync;
         static string SessionSyncGuard(int to) {
             if (to < 1 || to > 10) return "目标账号编号无效。";
             if (LoginProtection.Read(ProfileDeletion.Local) != 0) return "登录保护期间不能同步会话，请先完成登录并结束保护。";
@@ -762,9 +762,14 @@ namespace ClaudeLauncher {
             return null;
         }
         static string CodeConfigFolder(int number) { return SessionSync.ConfigFolder(number, Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), Core.Root, ProfileDeletion.Local); }
+        static string[] SyncProfiles(int number) { return ProfileDeletion.Candidates(number, Core.Root, ProfileDeletion.Local); }
+        // 启动器自己的文件，恢复默认不清除（SPEC 版本判断、新账号提示）。
+        string LinksPath { get { return IOPath.Combine(IOPath.GetDirectoryName(settingsPath), "session-links.json"); } }
+        string InitialSyncPath { get { return IOPath.Combine(IOPath.GetDirectoryName(settingsPath), "initial-sync.json"); } }
         internal sealed class SessionPicker {
             public Window Dialog; public ComboBox Target; public CheckBox All; public TextBlock Count; public Button Confirm;
             public List<SyncSessionRow> Sessions = new List<SyncSessionRow>(); public List<CheckBox> Rows = new List<CheckBox>(), Groups = new List<CheckBox>(); public List<List<int>> Members = new List<List<int>>(); public List<Expander> Expanders = new List<Expander>();
+            public List<TextBlock> Details = new List<TextBlock>(); public HashSet<int> AutoTicked = new HashSet<int>();
             public List<SyncSessionRow> Selected() { return Rows.Select((r, i) => new { r, i }).Where(x => x.r.IsEnabled && x.r.IsChecked == true).Select(x => Sessions[x.i]).ToList(); }
             public int TargetNumber { get { var item = Target.SelectedItem as ComboBoxItem; return item != null && item.IsEnabled ? (int)item.Tag : 0; } }
             bool? StateOf(IEnumerable<int> indices) {
@@ -776,9 +781,22 @@ namespace ClaudeLauncher {
                 All.IsChecked = StateOf(Enumerable.Range(0, Rows.Count));
                 int count = Selected().Count; Count.Text = "已选 " + count + " 条"; Confirm.IsEnabled = count > 0 && TargetNumber != 0;
             }
+            // 目标已有最新版本的不可勾选；目标较旧的自动勾选。切换目标只撤销这里自动勾选的行，不动用户手动勾选。
             public void TargetChanged() {
                 int to = TargetNumber;
-                for (int i = 0; i < Rows.Count; i++) { bool usable = Sessions[i].Account != to; Rows[i].IsEnabled = usable; if (!usable) Rows[i].IsChecked = false; }
+                for (int i = 0; i < Rows.Count; i++) {
+                    var session = Sessions[i]; SyncVersion held; bool has = session.Versions.TryGetValue(to, out held);
+                    bool current = has && held.Stamp >= session.Stamp, update = has && !current;
+                    Rows[i].IsEnabled = !current;
+                    if (update) { Rows[i].IsChecked = true; AutoTicked.Add(i); }
+                    else { if (current || AutoTicked.Contains(i)) Rows[i].IsChecked = false; AutoTicked.Remove(i); }
+                    Details[i].Text = Appearance.Text("账号 " + Two(session.Account) + " · " + session.Modified.ToString("MM/dd HH:mm")) + " · " + Appearance.Text(current ? "已是最新" : update ? "有更新" : "新增");
+                }
+                Update();
+            }
+            // 未关联的同步副本不勾选：它的原始会话也在列表里，否则会重复写入；有关联的副本代表整组，照常勾选。
+            public void SelectOriginals() {
+                for (int i = 0; i < Rows.Count; i++) if (Rows[i].IsEnabled && (!SessionSync.IsSyncCopy(Sessions[i].Title) || Sessions[i].Linked)) Rows[i].IsChecked = true;
                 Update();
             }
             // 由当前勾选决定，不看控件点击后的状态：半选框点一下应当全选。
@@ -788,12 +806,12 @@ namespace ClaudeLauncher {
                 Update();
             }
         }
-        internal SessionPicker BuildSessionPicker(List<SyncSessionRow> sessions, int[] accounts, ICollection<int> running) {
+        internal SessionPicker BuildSessionPicker(List<SyncSessionRow> sessions, int[] accounts, ICollection<int> running, int preferred = 0) {
             var picker = new SessionPicker { Sessions = sessions, Dialog = Dialog("同步会话到其他账号") };
             picker.Dialog.Width = 700; picker.Dialog.SizeToContent = SizeToContent.Manual; picker.Dialog.Height = Math.Min(640, SystemParameters.WorkArea.Height - 60);
             var root = new DockPanel { Margin = new Thickness(26, 22, 26, 22) }; picker.Dialog.Content = root;
             var head = new StackPanel(); DockPanel.SetDock(head, Dock.Top); root.Children.Add(head);
-            head.Children.Add(new TextBlock { Text = "为勾选的会话各生成一份清理副本放到目标账号：只保留对话文字和工具请求说明，不带账号信息、权限、工具结果和图片。两边之后各自继续，不会合并；重复同步会再生成一份。写入前可以预览。", TextWrapping = TextWrapping.Wrap, Foreground = B(Muted), FontSize = 13 });
+            head.Children.Add(new TextBlock { Text = "为勾选的会话各生成一份清理副本放到目标账号：只保留对话文字和工具请求说明，不带账号信息、权限、工具结果和图片。同步过的会话按最新版本为准：有变动时直接替换目标里的旧版本（旧版本移到回收站），没变动的不可勾选。写入前可以预览。", TextWrapping = TextWrapping.Wrap, Foreground = B(Muted), FontSize = 13 });
             var line = new DockPanel { Margin = new Thickness(0, 14, 0, 10) }; head.Children.Add(line);
             var label = new TextBlock { Text = "目标账号（须已正常退出）", Foreground = B(Ink), VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 12, 0) }; DockPanel.SetDock(label, Dock.Left); line.Children.Add(label);
             picker.Target = new ComboBox { Width = 200, HorizontalAlignment = HorizontalAlignment.Left }; AutomationProperties.SetName(picker.Target, "目标账号"); line.Children.Add(picker.Target);
@@ -815,27 +833,30 @@ namespace ClaudeLauncher {
                 AutomationProperties.SetName(expander, Appearance.Text("展开或折叠：" + name));
                 foreach (int index in members) {
                     var session = sessions[index]; var content = new DockPanel { LastChildFill = true };
-                    var detail = new TextBlock { Text = "账号 " + Two(session.Account) + " · " + session.Modified.ToString("MM/dd HH:mm"), FontSize = 11, Foreground = B(Muted), Margin = new Thickness(10, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center }; DockPanel.SetDock(detail, Dock.Right); content.Children.Add(detail);
-                    content.Children.Add(new TextBlock { Text = session.Title, Foreground = B(Ink), TextTrimming = TextTrimming.CharacterEllipsis, FontSize = 13, Width = 400 });
+                    var detail = new TextBlock { FontSize = 11, Foreground = B(Muted), Margin = new Thickness(10, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center, Width = 210, TextTrimming = TextTrimming.CharacterEllipsis }; DockPanel.SetDock(detail, Dock.Right); content.Children.Add(detail);
+                    content.Children.Add(new TextBlock { Text = session.Title, Foreground = B(Ink), TextTrimming = TextTrimming.CharacterEllipsis, FontSize = 13, Width = 330 });
                     var row = new CheckBox { Content = content, ToolTip = session.Title, Margin = new Thickness(0, 2, 0, 2) }; AutomationProperties.SetName(row, session.Title);
-                    row.Click += delegate { picker.Update(); };
+                    row.Click += delegate { picker.AutoTicked.Remove(index); picker.Update(); };
                     // 行序号必须和 Sessions 下标一致；分组后乱序时按下标放回。
-                    while (picker.Rows.Count <= index) picker.Rows.Add(null);
-                    picker.Rows[index] = row; rows.Children.Add(row);
+                    while (picker.Rows.Count <= index) { picker.Rows.Add(null); picker.Details.Add(null); }
+                    picker.Rows[index] = row; picker.Details[index] = detail; rows.Children.Add(row);
                 }
                 picker.Members.Add(members); picker.Groups.Add(check); picker.Expanders.Add(expander); list.Children.Add(expander);
             }
             picker.All.Click += delegate { picker.Toggle(Enumerable.Range(0, picker.Rows.Count)); };
+            var items = picker.Target.Items.Cast<ComboBoxItem>().ToList();
+            int preferredIndex = items.FindIndex(i => i.IsEnabled && (int)i.Tag == preferred);
+            picker.Target.SelectedIndex = preferredIndex >= 0 ? preferredIndex : items.FindIndex(i => i.IsEnabled);
             picker.Target.SelectionChanged += delegate { picker.TargetChanged(); };
-            picker.Target.SelectedIndex = picker.Target.Items.Cast<ComboBoxItem>().ToList().FindIndex(i => i.IsEnabled);
             picker.TargetChanged();
             return picker;
         }
         internal Window BuildSessionPreview(List<CleanedSession> cleans, List<string> failures, int to, Action confirmed) {
             var dialog = Dialog("预览：同步 " + cleans.Count + " 条会话到账号 " + Two(to)); dialog.Width = 700;
             var panel = (StackPanel)((ScrollViewer)dialog.Content).Content;
-            int bytes = cleans.Sum(c => c.Jsonl.Length);
+            int bytes = cleans.Sum(c => c.Jsonl.Length), replacing = cleans.Count(c => c.Replaces);
             panel.Children.Add(new TextBlock { Text = "共 " + bytes / 1000 + " KB。脱敏只认固定格式，其他私人信息请自己看一遍。", Foreground = B(Ink), TextWrapping = TextWrapping.Wrap });
+            if (replacing > 0) panel.Children.Add(new TextBlock { Text = "其中 " + replacing + " 条会替换账号 " + Two(to) + " 里的旧版本，旧版本移到回收站。替换后那边也只剩清理内容，没有工具结果和图片。", TextWrapping = TextWrapping.Wrap, Foreground = B("#B46A45"), Margin = new Thickness(0, 4, 0, 0) });
             if (bytes > 100 * 1000) panel.Children.Add(new TextBlock { Text = "历史较长的会话会占用目标账号较多额度；启动器不会自动截断。", TextWrapping = TextWrapping.Wrap, Foreground = B(Muted), Margin = new Thickness(0, 4, 0, 0) });
             if (cleans.Any(c => c.Images > 0)) panel.Children.Add(new TextBlock { Text = "部分会话含图片，同步后 AI 看不到它们。", TextWrapping = TextWrapping.Wrap, Foreground = B(Muted), Margin = new Thickness(0, 4, 0, 0) });
             if (failures.Count > 0) {
@@ -843,7 +864,7 @@ namespace ClaudeLauncher {
                 panel.Children.Add(new TextBox { Text = String.Join("\n", failures), IsReadOnly = true, TextWrapping = TextWrapping.Wrap, MaxHeight = 90, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, BorderThickness = new Thickness(0), Background = Brushes.Transparent, Foreground = B(Muted) });
             }
             var text = new StringBuilder();
-            foreach (var clean in cleans) text.Append(Appearance.Language == 1 ? "═══ “" + clean.Title + "” from account " + Two(clean.From) + " ═══\n" : "═══ 「" + clean.Title + "」来自账号 " + Two(clean.From) + " ═══\n").Append(clean.Report).Append("\n\n").Append(clean.Preview).Append('\n');
+            foreach (var clean in cleans) text.Append(Appearance.Language == 1 ? "═══ " + (clean.Replaces ? "Replace" : "New") + " “" + clean.Title + "” from account " + Two(clean.From) + " ═══\n" : "═══ " + (clean.Replaces ? "替换" : "新增") + "「" + clean.Title + "」来自账号 " + Two(clean.From) + " ═══\n").Append(clean.Report).Append("\n\n").Append(clean.Preview).Append('\n');
             var preview = new TextBox { Text = text.ToString(), IsReadOnly = true, TextWrapping = TextWrapping.Wrap, Height = 360, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Margin = new Thickness(0, 12, 0, 14), FontSize = 12, Background = B("#FFFDFA"), Foreground = B(Ink), BorderBrush = B("#EDE4D8") };
             AutomationProperties.SetName(preview, Appearance.Text("将写入的对话")); panel.Children.Add(preview);
             var actions = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right }; panel.Children.Add(actions);
@@ -863,7 +884,61 @@ namespace ClaudeLauncher {
             try { return await Task.Run(() => work(((IProgress<int>)progress).Report)); }
             finally { finished = true; dialog.Close(); window.IsEnabled = true; }
         }
-        async Task ShowSessionSync() {
+        // 关联读取失败时当作没有关联，并且本次不写，免得覆盖损坏的原文件。
+        List<Dictionary<int, string>> LoadSessionLinks(out bool writable) {
+            writable = true;
+            try { return SessionSync.LoadLinks(LinksPath); }
+            catch (Exception error) { writable = false; AddLog("会话关联记录无法读取，本次不保存关联：" + error.Message); return new List<Dictionary<int, string>>(); }
+        }
+        // ---- 新账号提示（SPEC 新手账号提示）：只看目录名和进程状态，不读会话；只问一次 ----
+        internal static int InitialSyncAccount(IEnumerable<int> waiting, List<int> gone, Func<int, bool> exists, Func<int, bool> busy, Func<int, bool> ready) {
+            foreach (int account in waiting) {
+                if (account < 1 || account > 10 || !exists(account)) { gone.Add(account); continue; }
+                if (!busy(account) && ready(account)) return account;
+            }
+            return 0;
+        }
+        List<int> InitialSyncAccounts() {
+            try {
+                if (!File.Exists(InitialSyncPath)) return new List<int>();
+                var root = new System.Web.Script.Serialization.JavaScriptSerializer().DeserializeObject(LocalFiles.Read(InitialSyncPath, 64 * 1024)) as Dictionary<string, object>;
+                object version, raw;
+                if (root == null || !root.TryGetValue("version", out version) || !(version is int) || (int)version != 1 || !root.TryGetValue("accounts", out raw) || !(raw is object[])) return new List<int>();
+                return ((object[])raw).OfType<int>().Where(n => n >= 1 && n <= 10).Distinct().ToList();
+            } catch (Exception error) { Diagnostics.Error("initial_sync_read", error); return new List<int>(); }
+        }
+        internal void SetInitialSync(int account, bool waiting) {
+            var accounts = InitialSyncAccounts(); accounts.Remove(account);
+            if (waiting) accounts.Add(account);
+            try { LocalFiles.Write(InitialSyncPath, new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(new Dictionary<string, object> { { "version", 1 }, { "accounts", accounts } })); }
+            catch (Exception error) { Diagnostics.Error("initial_sync_write", error); }
+        }
+        internal Func<int, bool> SyncTargetReady = n => SessionSync.TargetReady(SyncProfiles(n));
+        void OfferInitialSyncIfReady() {
+            if (snapshotMode || closed || offeringInitialSync || !healthy || loginAccount != 0 || syncingSessions || deleting || updating || tutorialOverlay != null || !window.IsActive || window.OwnedWindows.Count > 0) return;
+            var waiting = InitialSyncAccounts();
+            if (waiting.Count == 0) return;
+            var gone = new List<int>();
+            int account = InitialSyncAccount(waiting, gone, HasData, n => instances.Any(x => x.Number == n) || IsBusy(n), SyncTargetReady);
+            foreach (int n in gone) SetInitialSync(n, false);
+            if (account == 0) return;
+            offeringInitialSync = true; // 扫描在其他流程里也会触发，等这一轮结束再弹窗。
+            window.Dispatcher.BeginInvoke(new Action(async () => {
+                try { if (!closed && window.OwnedWindows.Count == 0 && !syncingSessions) await OfferInitialSync(account); }
+                finally { offeringInitialSync = false; }
+            }));
+        }
+        internal const string InitialSyncOffer = "要把其他账号的项目和会话同步过来吗？默认勾选全部原始会话，之前同步过的副本不勾选；可以调整，写入前还会预览。\n\n写入的是清理副本：只保留对话文字和工具请求说明。\n\n选“以后再说”不再提示，之后可以在项目页点“同步会话…”。";
+        async Task OfferInitialSync(int account) {
+            SetInitialSync(account, false); // 只问一次，“以后再说”不再出现。
+            if (!Enumerable.Range(1, 10).Any(n => n != account && HasData(n))) return;
+            if (Ask("账号 " + Two(account) + " 已准备好", InitialSyncOffer, new[] { "选择并同步…", "以后再说" }, 1, 0) != 0) return;
+            string failure = await Task.Run(() => SessionSyncGuard(account));
+            if (failure != null) { Alert("暂时不能同步", failure); return; }
+            await ShowSessionSync(account);
+        }
+        // newAccount：0 是项目页按钮；否则还用“识别并导入”的只读扫描找未加入清单的项目（不写清单），并为该目标预选。
+        async Task ShowSessionSync(int newAccount = 0) {
             if (syncingSessions || snapshotMode) return;
             syncingSessions = true; syncSessionsButton.IsEnabled = false;
             try {
@@ -872,30 +947,45 @@ namespace ClaudeLauncher {
                 foreach (var project in projects) { try { if (project != null && LocalProjectPath(project.Path)) { Projects.ValidatePath(project.Path); valid.Add(project); } } catch (IOException) { } catch (UnauthorizedAccessException) { } }
                 int[] accounts = Enumerable.Range(1, 10).Where(HasData).ToArray();
                 var sessions = await Task.Run(() => {
-                    var found = new List<SyncSessionRow>();
+                    if (newAccount != 0) {
+                        var found = Projects.Discover(Enumerable.Range(1, 10).SelectMany(n => SyncProfiles(n)).Select(p => IOPath.Combine(p, "claude-code-sessions")));
+                        foreach (string path in found.Paths) {
+                            if (valid.Any(p => String.Equals(p.Path, path, StringComparison.OrdinalIgnoreCase))) continue;
+                            try { string checkedPath = Projects.ValidatePath(path); valid.Add(new LocalProject { Path = checkedPath, Name = IOPath.GetFileName(checkedPath) }); } catch (Exception) { }
+                        }
+                    }
+                    var rows = new List<SyncSessionRow>();
                     foreach (int n in accounts) {
                         string config; try { config = CodeConfigFolder(n); } catch (IOException) { continue; }
                         if (config == null) continue;
-                        foreach (var project in valid) foreach (var row in SessionSync.List(config, project.Path)) { row.Account = n; row.ProjectName = String.IsNullOrEmpty(project.Name) ? IOPath.GetFileName(project.Path) : project.Name; found.Add(row); }
+                        foreach (var project in valid) foreach (var row in SessionSync.List(config, project.Path)) { row.Account = n; row.ProjectName = String.IsNullOrEmpty(project.Name) ? IOPath.GetFileName(project.Path) : project.Name; rows.Add(row); }
                     }
-                    return found.OrderByDescending(r => r.Modified).ToList();
+                    return rows.OrderByDescending(r => r.Stamp).ToList();
                 });
                 if (sessions.Count == 0) { Alert("没有可同步的会话", "公共清单里的项目在各账号下都没有本地会话。"); return; }
+                bool linksWritable; var links = LoadSessionLinks(out linksWritable);
+                sessions = SessionSync.Merge(sessions, links);
                 if (!await ScanNow()) { if (!closed) Alert("实例或保护状态已变化", scanError); return; }
-                var picker = BuildSessionPicker(sessions, accounts, new HashSet<int>(instances.Select(x => x.Number)));
+                var picker = BuildSessionPicker(sessions, accounts, new HashSet<int>(instances.Select(x => x.Number)), newAccount);
+                if (newAccount != 0) picker.SelectOriginals();
                 if (window.IsVisible) picker.Dialog.Owner = window;
                 if (picker.Dialog.ShowDialog() != true) return;
                 int to = picker.TargetNumber; var selected = picker.Selected();
                 if (to == 0) { Alert("目标账号正在运行", "请先在该账号中正常退出，再同步。启动器不会替你退出。"); return; }
+                // 预览前确定写入位置：多套目录时只在这里读一次当前组织；之后预览期间切换组织不会被发现，和 macOS 相同。
+                string[] profiles = SyncProfiles(to); string organization = null, problem = null;
+                bool located = await Task.Run(() => SessionSync.ResolveTarget(profiles, Organization.Read, out organization, out problem));
+                if (!located) { Message("没有确定写入位置，未写入。", true); Alert("无法同步到这个账号", problem); return; }
                 var failures = new List<string>(); string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
                 var cleans = await WithSyncProgress("正在生成清理副本", selected.Count, report => {
                     var result = new List<CleanedSession>(); int done = 0;
                     foreach (var session in selected) {
+                        SyncVersion existing; session.Versions.TryGetValue(to, out existing);
                         CleanedSession clean;
-                        try { clean = SessionSync.Clean(session.Path, session.ProjectPath, home); } catch (Exception error) { clean = new CleanedSession { Error = error.Message }; }
+                        try { clean = SessionSync.Clean(session.Path, session.ProjectPath, home, existing == null ? null : existing.Id); } catch (Exception error) { clean = new CleanedSession { Error = error.Message }; }
                         report(++done);
                         if (clean.Error != null) failures.Add("「" + session.Title + "」：" + Appearance.Text(clean.Error));
-                        else { clean.From = session.Account; result.Add(clean); }
+                        else { clean.From = session.Account; clean.FromId = session.Id; result.Add(clean); }
                     }
                     return result;
                 });
@@ -906,25 +996,32 @@ namespace ClaudeLauncher {
                 if (!confirmed) return;
                 if (loginAccount != 0 || deleting || updating || IsBusy(to)) { Alert("账号正在处理中", "请先结束登录保护或等待检查／启动完成。"); return; }
                 checking.Add(to); Render();
-                int written = 0; string failure = null;
+                int written = 0, replaced = 0; string failure = null;
                 try {
                     try { await ValidateStorage(to); } catch (Exception error) { failure = error.Message; }
                     if (failure == null) failure = await WithSyncProgress("正在写入目标账号", cleans.Count, report => {
-                        string[] profiles = ProfileDeletion.Candidates(to, Core.Root, ProfileDeletion.Local); string config = CodeConfigFolder(to);
+                        string config = CodeConfigFolder(to); Func<string> guard = () => SessionSyncGuard(to);
+                        Func<string, bool> recycle = path => { try { RecycleBin.Move(path); return true; } catch (Exception error) { Diagnostics.Error("session_sync_recycle", error); return false; } };
                         foreach (var clean in cleans) {
-                            string problem = SessionSync.Publish(profiles, config, clean.Slug, clean.SessionId, clean.Jsonl, clean.Record, () => SessionSyncGuard(to));
-                            if (problem != null) return problem;
+                            string problemText = clean.Replaces ? SessionSync.Replace(profiles, organization, config, clean.Slug, clean.SessionId, clean.Jsonl, clean.Record, clean.Stamp, recycle, guard)
+                                : SessionSync.Publish(profiles, organization, config, clean.Slug, clean.SessionId, clean.Jsonl, clean.Record, guard);
+                            if (problemText != null) return problemText;
+                            SessionSync.SetDate(config, clean.Slug, clean.SessionId, clean.Stamp);
+                            // 逐条保存：中途退出时已写入的副本仍有关联。
+                            links = SessionSync.Link(links, clean.From, clean.FromId, to, clean.SessionId);
+                            if (linksWritable) try { SessionSync.SaveLinks(LinksPath, links); } catch (Exception error) { linksWritable = false; Diagnostics.Error("session_links_write", error); }
+                            if (clean.Replaces) replaced++;
                             report(++written);
                         }
                         return null;
                     });
                 } finally { checking.Remove(to); Render(); }
-                string log = "会话同步：账号 " + Two(to) + " 新增 " + written + " 条，替换 0 条，共选择 " + selected.Count + " 条";
+                string log = "会话同步：账号 " + Two(to) + " 新增 " + (written - replaced) + " 条，替换 " + replaced + " 条，共选择 " + (cleans.Count + failures.Count) + " 条";
                 AddLog(log); Message(failure ?? log, failure != null);
-                string info = Appearance.Text("已写入 " + written + " 条。打开账号 " + Two(to) + " 后，它们会出现在侧栏，标题后带“同步”和时间。第一条消息由你发送；如果项目还没被该账号信任，发送时官方会请你确认。");
+                string info = written > 0 ? Appearance.Text("已写入 " + written + " 条。打开账号 " + Two(to) + " 后，它们会出现在侧栏，标题后带“同步”和时间。第一条消息由你发送；如果项目还没被该账号信任，发送时官方会请你确认。") : Appearance.Text("已写入 0 条。");
                 if (failure != null) info += "\n\n" + Appearance.Text(failure);
                 if (failures.Count > 0) info += "\n\n" + Appearance.Text(failures.Count + " 条无法处理，没有同步。");
-                string title = written == cleans.Count ? "会话已同步" : "同步未全部完成";
+                string title = written == cleans.Count ? "会话已同步" : written > 0 ? "同步未全部完成" : "没有写入会话";
                 if (written > 0) { if (Ask(title, info, new[] { "打开账号 " + Two(to), "完成" }, 1, 0) == 0) await Select(to); }
                 else Alert(title, info);
             } catch (Exception error) { Alert("无法同步所选会话", error.Message); }
@@ -948,7 +1045,7 @@ namespace ClaudeLauncher {
             steps.Add(new TutorialStep { Title = "新建账号", Body = "点这里创建下一个空闲账号，然后在打开的 Claude 里登录。最多 10 个。", Targets = new FrameworkElement[] { create } });
             steps.Add(new TutorialStep { Title = "账号管理", Body = "所有账号都在这张表里：搜索、筛选、排序，看运行状态和最近使用，也能直接启动或切换。", Page = 1, Targets = new FrameworkElement[] { rowList } });
             steps.Add(new TutorialStep { Title = "项目管理", Body = "添加常用目录，或从各账号的本机记录里识别导入。所有账号共用这份清单。", Page = 4, Targets = new FrameworkElement[] { importButton, addProjectButton } });
-            steps.Add(new TutorialStep { Title = "同步会话", Body = "把会话复制到另一个账号接着聊。原会话不变，两边不会合并。目标账号要先正常退出；有项目后才能用。", Page = 4, Targets = new FrameworkElement[] { syncSessionsButton } });
+            steps.Add(new TutorialStep { Title = "同步会话", Body = "把会话同步到另一个账号接着聊。同步过的会话以最新版本为准，直接替换旧版本，不合并。目标账号要先正常退出；有项目后才能用。", Page = 4, Targets = new FrameworkElement[] { syncSessionsButton } });
             steps.Add(new TutorialStep { Title = "用量趋势", Body = "账号管理页下方记录近 7 天用量，并建议下一个使用的账号。只用启动器已观察到的数值，不查询 Claude。", Page = 1, Targets = new FrameworkElement[] { trendSection }, Trend = true });
             steps.Add(new TutorialStep { Title = "随时回看", Body = "点这里可以重新播放引导，或查看文档教程。", Targets = new FrameworkElement[] { tutorialEntry } });
             return steps;
@@ -2141,7 +2238,7 @@ namespace ClaudeLauncher {
                 }
             }
             if (superseded) return await latestScan;
-            if (!closed) Render();
+            if (!closed) { Render(); OfferInitialSyncIfReady(); }
             return healthy;
         }
         void Apply(List<Instance> latest) {
@@ -2191,7 +2288,7 @@ namespace ClaudeLauncher {
             if (create) {
                 checking.Add(number); Render(); // 对话框期间占用该编号，防止重入。
                 int choice = Ask("创建账号 " + Two(number) + "？",
-                    "将创建独立的本地数据目录。\n\n直接创建：立即启动，其他 Claude 保持运行。登录时浏览器回调可能打开其他窗口，登录后请核对身份。\n\n进入登录保护：需先正常退出其他 Claude；保护期间只允许打开这个账号，登录更稳妥。",
+                    "将创建独立的本地数据目录。\n\n直接创建：立即启动，其他 Claude 保持运行。登录时浏览器回调可能打开其他窗口，登录后请核对身份。\n\n进入登录保护：需先正常退出其他 Claude；保护期间只允许打开这个账号，登录更稳妥。\n\n登录后在该账号建一个本地会话并正常退出，启动器会提示把其他账号的项目和会话同步过来。",
                     new[] { "直接创建", "进入登录保护", "取消" }, 2, 0);
                 checking.Remove(number);
                 bool ok = await ScanNow();
@@ -2254,6 +2351,7 @@ namespace ClaudeLauncher {
             } finally { checking.Remove(number); if (!closed) Render(); }
         }
         async Task Launch(int number, bool riskAccepted) {
+            if (number != 1 && !HasData(number)) SetInitialSync(number, true); // 新账号：就绪后询问一次同步（SPEC 新账号提示）
             pending[number] = DateTime.UtcNow; Render();
             Message("正在启动账号 " + Two(number) + "…", false);
             try {
@@ -2476,25 +2574,30 @@ namespace ClaudeLauncher {
         // 返回按下的按钮序号；关闭窗口或 Esc 视为 cancelIndex。
         int Ask(string title, string detail, string[] buttons, int cancelIndex, int defaultIndex) {
             if (AskOverride != null) return AskOverride(title, detail, buttons, cancelIndex, defaultIndex);
-            var dialog = Dialog(title);
+            int result = cancelIndex;
+            var dialog = BuildAsk(title, detail, buttons, cancelIndex, defaultIndex, index => result = index);
             // 主窗口隐藏在通知区域时（从托盘菜单操作），对话框居中置顶显示。
             if (window.IsLoaded && window.IsVisible) dialog.Owner = window; else { dialog.WindowStartupLocation = WindowStartupLocation.CenterScreen; dialog.Topmost = true; }
+            dialog.ShowDialog();
+            return result;
+        }
+        // 只建窗口不显示，离屏预览也用它。
+        internal Window BuildAsk(string title, string detail, string[] buttons, int cancelIndex, int defaultIndex, Action<int> chosen) {
+            var dialog = Dialog(title);
             var panel = (StackPanel)((ScrollViewer)dialog.Content).Content;
             panel.Children.Add(new TextBlock { Text = title, FontSize = 18, FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap });
             panel.Children.Add(new TextBlock { Text = detail ?? "", TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 12, 0, 20), Foreground = B("#4A433C"), LineHeight = 21 });
             var actions = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
-            int result = cancelIndex;
             for (int i = 0; i < buttons.Length; i++) {
                 int index = i;
                 var button = new Button { Content = buttons[i], Style = (Style)window.FindResource(i == defaultIndex && buttons.Length > 1 ? "Primary" : "Btn"),
                     Padding = new Thickness(16, 7, 16, 7), Margin = new Thickness(10, 0, 0, 0), IsCancel = i == cancelIndex, IsDefault = i == defaultIndex };
-                button.Click += delegate { result = index; dialog.DialogResult = true; };
+                button.Click += delegate { chosen(index); dialog.DialogResult = true; };
                 actions.Children.Add(button);
                 if (i == defaultIndex) dialog.Loaded += delegate { button.Focus(); };
             }
             panel.Children.Add(actions);
-            dialog.ShowDialog();
-            return result;
+            return dialog;
         }
         void Alert(string title, string detail) { Ask(title, detail, new[] { "知道了" }, 0, 0); }
 

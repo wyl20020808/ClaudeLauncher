@@ -28,8 +28,9 @@ Take turns on a shared project, because the launcher can't detect simultaneous e
 When an account is running out of quota, you can take a session to another account.
 
 - On the Projects page, click Sync Session…, tick the sessions and pick a target account. Quit the target account normally first.
-- The launcher only adds a cleaned copy with no account details. The original session stays as it is, and the two never merge.
-- The target account must have been opened from the launcher and have created a local session once.
+- What gets written is a cleaned copy with no account details, and the two never merge. A session synced before follows its newest version: syncing again replaces the old version on the other side, and the old version goes to the Recycle Bin.
+- The target account must have been opened from the launcher and have created a local session once. For an account the launcher created, once it gets that far and quits, the launcher asks once whether to sync sessions from your other accounts.
+- If the target account has signed in to several accounts or organizations, the launcher reads its current organization once after you click sync and writes only into that folder. If it cannot read it, nothing is written.
 - Open the target account from the launcher. The session appears in the sidebar, with "Synced" and the time after its title. You send the first message yourself.
 
 On Windows this currently supports only the Store version of Claude 4.4212.0.0. Other versions refuse to write.

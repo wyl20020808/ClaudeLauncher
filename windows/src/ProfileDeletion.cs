@@ -162,7 +162,7 @@ namespace ClaudeLauncher {
                 SHCreateItemFromParsingName(Path.GetFullPath(path), IntPtr.Zero, ref iid, out item);
                 operation.DeleteItem(item, IntPtr.Zero); operation.PerformOperations();
                 bool aborted; operation.GetAnyOperationsAborted(out aborted);
-                if (aborted || Directory.Exists(path)) throw new IOException("移入回收站失败或被取消；没有改用永久删除。");
+                if (aborted || Directory.Exists(path) || File.Exists(path)) throw new IOException("移入回收站失败或被取消；没有改用永久删除。");
             } finally {
                 if (item != null) Marshal.FinalReleaseComObject(item);
                 if (operation != null) Marshal.FinalReleaseComObject(operation);

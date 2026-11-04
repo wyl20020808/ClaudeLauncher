@@ -893,3 +893,10 @@
 "组织格式不支持" = "unsupported organization format";
 "当前组织有歧义" = "current organization is ambiguous";
 "组织密钥不可用" = "organization key unavailable";
+"为勾选的会话各生成一份清理副本放到目标账号：只保留对话文字和工具请求说明，不带账号信息、权限、工具结果和图片。同步过的会话按最新版本为准：有变动时直接替换目标里的旧版本（旧版本移到回收站），没变动的不可勾选。写入前可以预览。" = "Creates a cleaned copy of each selected session in the target account: conversation text and tool request notes only, without account data, permissions, tool results or images. A session synced before follows its newest version: if it changed, the old version in the target is replaced (and moved to the Recycle Bin); unchanged ones cannot be ticked. You can preview before anything is written.";
+"其中 %@ 条会替换账号 %@ 里的旧版本，旧版本移到回收站。替换后那边也只剩清理内容，没有工具结果和图片。" = "%@ of these replace older versions in account %@; the old versions go to the Recycle Bin. Those sessions then hold cleaned content only, with no tool results or images.";
+"目标账号有多套账号／组织记录，要读到它当前的组织才能确定写入位置，但这次没有读到（%@）。" = "The target account has records for several accounts or organizations. Its current organization decides where to write, but it could not be read (%@).";
+"无法把旧版本移到回收站，未替换。" = "The old version could not be moved to the Recycle Bin. Nothing was replaced.";
+"新版本发布失败，旧版本保留在同目录的 %@，需要手动改回原名。" = "The new version could not be published. The old version is kept in the same folder as %@; rename it back by hand.";
+"旧版本没能移到回收站，保留在同目录的 %@。" = "The old version could not be moved to the Recycle Bin and is kept in the same folder as %@.";
+"会话关联记录无法读取，本次不保存关联：%@" = "The session link file cannot be read; links are not saved this time: %@";

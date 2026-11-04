@@ -60,6 +60,14 @@ namespace ClaudeLauncher {
                 return info.Volume+":"+info.IndexHigh+":"+info.IndexLow;
             }
         }
+        // 单链接普通文件的身份：卷序列号、文件 ID、大小、修改时间；链接、目录或打不开时为 null。
+        internal static string FileState(string path) {
+            using(var handle=CreateFile(path,0x80,7,IntPtr.Zero,3,0x00200000,IntPtr.Zero)) {
+                Info info;
+                if(handle.IsInvalid||!GetFileInformationByHandle(handle,out info)||(info.Attributes&(0x400|0x10|0x40))!=0||info.Links!=1) return null;
+                return info.Volume+":"+info.IndexHigh+":"+info.IndexLow+":"+(((long)info.SizeHigh<<32)+info.SizeLow)+":"+(uint)info.Modified.dwHighDateTime+":"+(uint)info.Modified.dwLowDateTime;
+            }
+        }
         internal static FileStream OpenRead(string path,long limit,uint share=1) {
             var handle=CreateFile(path,0x80020000,share,IntPtr.Zero,3,0x00200000,IntPtr.Zero);
             try {

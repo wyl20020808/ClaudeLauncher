@@ -17,6 +17,7 @@ internal static class SessionSyncTests {
         return new Dictionary<string, object> { { "type", type }, { "uuid", uuid }, { "parentUuid", parent }, { "isSidechain", false }, { "cwd", cwd }, { "timestamp", "2026-10-30T10:00:00.000Z" }, { "sessionId", "SOURCESESSIONID" }, { "entrypoint", "claude-desktop" }, { "requestId", "SOURCEREQUEST" }, { "permissionMode", "bypassPermissions" }, { "version", "SOURCEVERSION" },
             { "message", new Dictionary<string, object> { { "role", type }, { "model", "SOURCEMODEL" }, { "id", "SOURCEMSG" }, { "usage", new Dictionary<string, object> { { "input_tokens", 1 } } }, { "content", content } } } };
     }
+    static string Id(int n) { return "00000000-0000-4000-8000-" + n.ToString("000000000000"); }
     static Dictionary<string, object> Block(params object[] pairs) { var map = new Dictionary<string, object>(); for (int i = 0; i < pairs.Length; i += 2) map[(string)pairs[i]] = pairs[i + 1]; return map; }
     internal static void Run(LauncherUI ui) {
         string root = Path.Combine(Path.GetTempPath(), "css-" + Guid.NewGuid().ToString("N").Substring(0, 8)); // 短名：夹具路径要留在 MAX_PATH 内。
@@ -158,56 +159,58 @@ internal static class SessionSyncTests {
         string target = Path.Combine(config, "projects", "new-project-slug"), jsonlFile = Path.Combine(target, clean.SessionId + ".jsonl"), recordFile = Path.Combine(records, "local_" + clean.SessionId + ".json");
         string[] profiles = { profile };
         Func<string> safe = () => null; int calls;
-        Check(SessionSync.Publish(profiles, config, "new-project-slug", clean.SessionId, clean.Jsonl, clean.Record, () => "running") == "running" && !File.Exists(jsonlFile), "running target refused");
-        calls = 0; Check(SessionSync.Publish(profiles, config, "new-project-slug", clean.SessionId, clean.Jsonl, clean.Record, () => ++calls >= 2 ? "started" : null) == "started", "target started before the transcript is published");
+        Check(SessionSync.Publish(profiles, null, config, "new-project-slug", clean.SessionId, clean.Jsonl, clean.Record, () => "running") == "running" && !File.Exists(jsonlFile), "running target refused");
+        calls = 0; Check(SessionSync.Publish(profiles, null, config, "new-project-slug", clean.SessionId, clean.Jsonl, clean.Record, () => ++calls >= 2 ? "started" : null) == "started", "target started before the transcript is published");
         Check(!File.Exists(jsonlFile) && !File.Exists(recordFile), "late guard failure leaves neither file");
-        calls = 0; Check(SessionSync.Publish(profiles, config, "new-project-slug", clean.SessionId, clean.Jsonl, clean.Record, () => ++calls >= 3 ? "started" : null) == "started", "target started before the record is published");
+        calls = 0; Check(SessionSync.Publish(profiles, null, config, "new-project-slug", clean.SessionId, clean.Jsonl, clean.Record, () => ++calls >= 3 ? "started" : null) == "started", "target started before the record is published");
         Check(!File.Exists(jsonlFile) && !File.Exists(recordFile), "record failure removes only the new transcript");
         File.WriteAllText(recordFile, "existing record");
-        Check(SessionSync.Publish(profiles, config, "new-project-slug", clean.SessionId, clean.Jsonl, clean.Record, safe) != null, "an existing record is not overwritten");
+        Check(SessionSync.Publish(profiles, null, config, "new-project-slug", clean.SessionId, clean.Jsonl, clean.Record, safe) != null, "an existing record is not overwritten");
         Check(File.ReadAllText(recordFile) == "existing record" && !File.Exists(jsonlFile), "record collision keeps the old record and rolls the transcript back");
         File.Delete(recordFile);
-        Check(SessionSync.Publish(profiles, config, "new-project-slug", clean.SessionId, clean.Jsonl, clean.Record, safe) == null, "publish succeeds");
+        Check(SessionSync.Publish(profiles, null, config, "new-project-slug", clean.SessionId, clean.Jsonl, clean.Record, safe) == null, "publish succeeds");
         Check(File.ReadAllBytes(jsonlFile).SequenceEqual(clean.Jsonl) && File.ReadAllBytes(recordFile).SequenceEqual(clean.Record), "exact bytes published");
         var me = WindowsIdentity.GetCurrent().User;
         foreach (string file in new[] { jsonlFile, recordFile }) {
             var security = File.GetAccessControl(file); var rules = security.GetAccessRules(true, true, typeof(SecurityIdentifier)).Cast<FileSystemAccessRule>().ToList();
             Check(security.AreAccessRulesProtected && rules.Count == 1 && rules[0].IdentityReference.Equals(me), "private file: " + Path.GetFileName(file));
         }
-        Check(SessionSync.Publish(profiles, config, "new-project-slug", clean.SessionId, Encoding.UTF8.GetBytes("other"), clean.Record, safe) != null && File.ReadAllBytes(jsonlFile).SequenceEqual(clean.Jsonl), "never overwrites the transcript");
+        Check(SessionSync.Publish(profiles, null, config, "new-project-slug", clean.SessionId, Encoding.UTF8.GetBytes("other"), clean.Record, safe) != null && File.ReadAllBytes(jsonlFile).SequenceEqual(clean.Jsonl), "never overwrites the transcript");
         Check(Directory.GetFiles(target).Length == 1 && Directory.GetFiles(records).Length == 1, "no temporary files left");
-        Check(SessionSync.Publish(profiles, config, "..\\escape", Guid.NewGuid().ToString(), clean.Jsonl, clean.Record, safe) != null && SessionSync.Publish(profiles, config, "x", "not-a-guid", clean.Jsonl, clean.Record, safe) != null, "invalid slug or session id refused");
-        Check(SessionSync.Publish(new[] { Path.Combine(root, "missing") }, config, "x", Guid.NewGuid().ToString(), clean.Jsonl, clean.Record, safe) != null, "no record directory refused");
+        Check(SessionSync.Publish(profiles, null, config, "..\\escape", Guid.NewGuid().ToString(), clean.Jsonl, clean.Record, safe) != null && SessionSync.Publish(profiles, null, config, "x", "not-a-guid", clean.Jsonl, clean.Record, safe) != null, "invalid slug or session id refused");
+        Check(SessionSync.Publish(new[] { Path.Combine(root, "missing") }, null, config, "x", Guid.NewGuid().ToString(), clean.Jsonl, clean.Record, safe) != null, "no record directory refused");
         // 重解析点：目录链接不能作为写入目标。
         string outsideTarget = Path.Combine(root, "outside-target"), linkedSlug = Path.Combine(config, "projects", "linked-slug"); Directory.CreateDirectory(outsideTarget);
         System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("cmd.exe", "/c mklink /J \"" + linkedSlug + "\" \"" + outsideTarget + "\"") { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true }).WaitForExit();
         string fresh = Guid.NewGuid().ToString();
-        Check(Directory.Exists(linkedSlug) && SessionSync.Publish(profiles, config, "linked-slug", fresh, clean.Jsonl, clean.Record, safe) != null && Directory.GetFiles(outsideTarget).Length == 0, "a linked project folder is refused");
+        Check(Directory.Exists(linkedSlug) && SessionSync.Publish(profiles, null, config, "linked-slug", fresh, clean.Jsonl, clean.Record, safe) != null && Directory.GetFiles(outsideTarget).Length == 0, "a linked project folder is refused");
         Directory.Delete(linkedSlug);
         // 账号／组织目录不唯一时不猜身份。
         string second = Path.Combine(profile, "claude-code-sessions", Guid.NewGuid().ToString()); Directory.CreateDirectory(second);
-        Check(SessionSync.Publish(profiles, config, "new-project-slug", Guid.NewGuid().ToString(), clean.Jsonl, clean.Record, safe) != null, "ambiguous account location refused");
+        Check(SessionSync.Publish(profiles, null, config, "new-project-slug", Guid.NewGuid().ToString(), clean.Jsonl, clean.Record, safe) != null, "ambiguous account location refused");
         Directory.Delete(second);
         string duplicate = Path.Combine(root, "same-as-profile"); // 同一目录经两条路径出现（商店版重定向）算一个。
         System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("cmd.exe", "/c mklink /J \"" + duplicate + "\" \"" + profile + "\"") { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true }).WaitForExit();
         Check(SessionSync.DistinctExisting(new[] { profile, duplicate, Path.Combine(root, "missing") }).Length == 1, "the same directory reached twice counts once");
         Directory.Delete(duplicate);
 
+        Versions(root, project, home, source, folder, config, profile, records);
+
         // 英文：Windows 动态拼出的文字都能对上词条，也不提 Mac。
         int language = Appearance.Language; Appearance.Language = 1;
         try {
-            foreach (string chinese in new[] { "已选 2 条", "账号 02（运行中）", "账号 02 · 10/31 12:05", "预览：同步 3 条会话到账号 02", "会话同步：账号 02 新增 1 条，替换 0 条，共选择 3 条", "共 12 KB。脱敏只认固定格式，其他私人信息请自己看一遍。", "3 条无法处理，不会同步：", "3 条无法处理，没有同步。", "已写入 2 条。打开账号 02 后，它们会出现在侧栏，标题后带“同步”和时间。第一条消息由你发送；如果项目还没被该账号信任，发送时官方会请你确认。", "打开账号 02", "展开或折叠：demo", "同步会话只支持商店版 Claude 4.4212.0.0；当前版本不匹配，已停止写入。", "保留 4 条消息，2 条工具说明。\n丢弃：1 个工具结果、1 个思考块、0 张图片、0 行子代理记录、2 行非主链记录。\n替换：1 处邮箱／密钥／令牌，1 个项目外路径。", "图文说明，随时翻阅。文档在本机打开，不联网。" }) {
+            foreach (string chinese in new[] { "已选 2 条", "账号 02（运行中）", "账号 02 · 10/31 12:05", "预览：同步 3 条会话到账号 02", "会话同步：账号 02 新增 1 条，替换 0 条，共选择 3 条", "共 12 KB。脱敏只认固定格式，其他私人信息请自己看一遍。", "3 条无法处理，不会同步：", "3 条无法处理，没有同步。", "已写入 2 条。打开账号 02 后，它们会出现在侧栏，标题后带“同步”和时间。第一条消息由你发送；如果项目还没被该账号信任，发送时官方会请你确认。", "打开账号 02", "展开或折叠：demo", "同步会话只支持商店版 Claude 4.4212.0.0；当前版本不匹配，已停止写入。", "保留 4 条消息，2 条工具说明。\n丢弃：1 个工具结果、1 个思考块、0 张图片、0 行子代理记录、2 行非主链记录。\n替换：1 处邮箱／密钥／令牌，1 个项目外路径。", "图文说明，随时翻阅。文档在本机打开，不联网。", "账号 02 · 10/31 12:05", "有更新", "已是最新", "新增", "其中 2 条会替换账号 03 里的旧版本，旧版本移到回收站。替换后那边也只剩清理内容，没有工具结果和图片。", "目标账号有多套账号／组织记录，要读到它当前的组织才能确定写入位置，但这次没有读到（Organization key unavailable）。", "无法把旧版本移到回收站，未替换。", "新版本发布失败，旧版本保留在同目录的 .claude-launcher-old-ab12，需要手动改回原名。", "旧版本没能移到回收站，保留在同目录的 .claude-launcher-old-ab12。", "会话关联记录无法读取，本次不保存关联：bad", "账号 03 已准备好", "要把其他账号的项目和会话同步过来吗？默认勾选全部原始会话，之前同步过的副本不勾选；可以调整，写入前还会预览。\n\n写入的是清理副本：只保留对话文字和工具请求说明。\n\n选“以后再说”不再提示，之后可以在项目页点“同步会话…”。", "选择并同步…", "以后再说", "暂时不能同步", "无法同步到这个账号", "没有确定写入位置，未写入。", "没有写入会话", "已写入 0 条。", "目标账号的记录目录已变化或不安全，未写入。请重新同步。", "目标账号还没有可用的本地记录目录。请先在该账号正常创建一次本地会话。", "目标账号当前的组织还没有可用的本地记录目录。请先在该账号正常创建一次本地会话。", "组织密钥不可用", "组织记录正在更新", "当前组织有歧义", "未找到当前组织", "组织格式不支持", "目标账号里的这条会话比来源更新，未替换。", "目标账号里已有同名记录，但不属于这条会话，未替换。", "目标账号的记录目录里有无法安全读取的文件，未替换。", "目标账号里的这条会话刚有变化，未替换。", "无法更新目标账号的记录，未替换。", "无法原子发布新文件，旧版本已放回。", "目标账号里的旧版本无法安全打开，未替换。", "把会话清理后同步到另一个账号接着聊。不带账号信息，不合并；同步过的会话以最新版本为准，直接替换另一边的旧版本。", "为勾选的会话各生成一份清理副本放到目标账号：只保留对话文字和工具请求说明，不带账号信息、权限、工具结果和图片。同步过的会话按最新版本为准：有变动时直接替换目标里的旧版本（旧版本移到回收站），没变动的不可勾选。写入前可以预览。", "官方按钮未显示五小时，按 0% 显示" }) {
                 string english = Appearance.Text(chinese);
-                Check(!System.Text.RegularExpressions.Regex.IsMatch(english, @"[一-鿿]") && !english.Contains("Mac"), "English text for: " + chinese + " => " + english);
+                Check(!System.Text.RegularExpressions.Regex.IsMatch(english, @"[一-鿿]") && !english.Contains("Mac") && !english.Contains("Trash"), "English text for: " + chinese + " => " + english);
             }
             Check(SessionSync.CopyTitle("甲（同步 10/26 12:00）", fixedDate) == "甲 (Synced 10/31 12:05)", "English title suffix");
         } finally { Appearance.Language = language; }
 
         // 选择窗：默认折叠不选、目标账号一次一个、运行中不可选、目标自己的会话不可勾选。
-        var sessions = new List<SyncSessionRow> {
-            new SyncSessionRow { Path = "a", Title = "甲", Account = 1, ProjectPath = @"D:\p1", ProjectName = "p1", Modified = DateTime.Now },
-            new SyncSessionRow { Path = "b", Title = "乙", Account = 2, ProjectPath = @"D:\p1", ProjectName = "p1", Modified = DateTime.Now },
-            new SyncSessionRow { Path = "c", Title = "丙", Account = 1, ProjectPath = @"D:\p2", ProjectName = "p2", Modified = DateTime.Now } };
+        var sessions = SessionSync.Merge(new List<SyncSessionRow> {
+            new SyncSessionRow { Path = "a", Id = Id(1), Title = "甲", Account = 1, ProjectPath = @"D:\p1", ProjectName = "p1", Modified = DateTime.Now, Stamp = 30 },
+            new SyncSessionRow { Path = "b", Id = Id(2), Title = "乙", Account = 2, ProjectPath = @"D:\p1", ProjectName = "p1", Modified = DateTime.Now, Stamp = 20 },
+            new SyncSessionRow { Path = "c", Id = Id(3), Title = "丙", Account = 1, ProjectPath = @"D:\p2", ProjectName = "p2", Modified = DateTime.Now, Stamp = 10 } }, new List<Dictionary<int, string>>());
         var picker = ui.BuildSessionPicker(sessions, new[] { 1, 2, 3 }, new[] { 1 });
         Check(picker.Expanders.Count == 2 && picker.Expanders.All(e => !e.IsExpanded), "projects start collapsed");
         Check(picker.Selected().Count == 0 && !picker.Confirm.IsEnabled, "nothing is selected by default");
@@ -226,5 +229,232 @@ internal static class SessionSyncTests {
         var previewText = LauncherTests.Children(preview).OfType<TextBox>().Select(t => t.Text).ToList();
         Check(previewText.Any(t => t.Contains("全部文字") && t.Contains("报告")) && previewText.Any(t => t.Contains("「x」：坏")) && !confirmed, "preview shows all text, the report and failures, and writes nothing");
         Check(LauncherTests.Children(preview).OfType<TextBox>().All(t => t.IsReadOnly) && LauncherTests.Children(preview).OfType<System.Windows.Controls.Button>().Single(b => b.IsCancel).IsDefault, "preview is read-only and defaults to cancel");
+        PickerVersions(ui);
+    }
+
+    // 替换、关联、多组织定位（macOS 1.7.22～1.8.0）。只用临时目录里的合成文件。
+    static void Versions(string root, string project, string home, string source, string folder, string config, string profile, string records) {
+        string[] profiles = { profile }; Func<string> safe = () => null;
+        string slug = SessionSync.Slug(project), keep = Guid.NewGuid().ToString(), keepFile = Path.Combine(folder, keep + ".jsonl");
+        var refreshed = SessionSync.Clean(source, project, home, keep);
+        Check(refreshed.SessionId == keep && refreshed.Replaces && Encoding.UTF8.GetString(refreshed.Jsonl).Contains(keep), "replacement keeps the target ID");
+        Check(refreshed.Stamp == File.GetLastWriteTimeUtc(source).Ticks, "clean reports the source version in ticks");
+        Check(!SessionSync.Clean(source, project, home).Replaces, "a new copy is not a replacement");
+        byte[] oldBytes = Encoding.UTF8.GetBytes("old\n");
+        Func<string, string> recordFor = id => "{\"sessionId\":\"local_other\",\"cliSessionId\":\"" + id + "\",\"title\":\"旧\",\"model\":\"TARGETMODEL\",\"isArchived\":false,\"lastActivityAt\":1}";
+        string officialRecord = Path.Combine(records, "local_" + Guid.NewGuid() + ".json");
+        File.WriteAllBytes(keepFile, oldBytes); File.WriteAllText(officialRecord, recordFor(keep));
+        string bin = Path.Combine(root, "bin"); Directory.CreateDirectory(bin);
+        Func<string, bool> toBin = path => { File.Move(path, Path.Combine(bin, Path.GetFileName(path))); return true; };
+        Func<bool> oldKept = () => File.ReadAllBytes(keepFile).SequenceEqual(oldBytes);
+        Func<int> leftovers = () => Directory.GetFiles(folder, ".claude-launcher-*").Length + Directory.GetFiles(records, ".claude-launcher-*").Length;
+        long older = new DateTime(2000, 1, 1, 0, 0, 0, DateTimeKind.Utc).Ticks, later = DateTime.UtcNow.AddHours(1).Ticks;
+        Check(SessionSync.Replace(profiles, null, config, slug, keep, refreshed.Jsonl, refreshed.Record, older, toBin, safe) == "目标账号里的这条会话比来源更新，未替换。" && oldKept(), "newer target is not replaced");
+        long exact = File.GetLastWriteTimeUtc(keepFile).Ticks;
+        Check(SessionSync.Replace(profiles, null, config, slug, keep, refreshed.Jsonl, refreshed.Record, exact - 1, toBin, safe) != null && oldKept(), "one tick newer target is still newer");
+        // 同名记录属于其他会话：不覆盖。
+        string foreign = Path.Combine(records, "local_" + keep + ".json"); File.Move(officialRecord, Path.Combine(root, "official.json"));
+        File.WriteAllText(foreign, recordFor(Guid.NewGuid().ToString()));
+        Check(SessionSync.Replace(profiles, null, config, slug, keep, refreshed.Jsonl, refreshed.Record, later, toBin, safe) == "目标账号里已有同名记录，但不属于这条会话，未替换。" && oldKept(), "another session's record is not overwritten");
+        File.Delete(foreign);
+        // 记录目录里有硬链接或过大的 local_*.json：可能就是这一条，拒绝。
+        string elsewhere = Path.Combine(root, "official.json"), hard = Path.Combine(records, "local_hardlink.json");
+        System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("cmd.exe", "/c mklink /H \"" + hard + "\" \"" + elsewhere + "\"") { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true }).WaitForExit();
+        Check(File.Exists(hard), "hard link fixture");
+        Check(SessionSync.Replace(profiles, null, config, slug, keep, refreshed.Jsonl, refreshed.Record, later, toBin, safe) == "目标账号的记录目录里有无法安全读取的文件，未替换。" && oldKept() && File.ReadAllText(elsewhere) == recordFor(keep), "hard-linked record is refused");
+        File.Delete(hard);
+        string big = Path.Combine(records, "local_big.json"); using (var stream = File.Create(big)) stream.SetLength(9L * 1024 * 1024);
+        Check(SessionSync.Replace(profiles, null, config, slug, keep, refreshed.Jsonl, refreshed.Record, later, toBin, safe) == "目标账号的记录目录里有无法安全读取的文件，未替换。" && oldKept(), "oversized record is refused");
+        File.Delete(big);
+        File.Move(elsewhere, officialRecord);
+        // 写好临时文件后目标变了：停止，什么都不动。
+        int checks2 = 0;
+        Check(SessionSync.Replace(profiles, null, config, slug, keep, refreshed.Jsonl, refreshed.Record, later, toBin, () => { if (++checks2 == 2) File.WriteAllText(keepFile, "newer\n"); return null; }) == "目标账号里的这条会话刚有变化，未替换。" && File.ReadAllText(keepFile) == "newer\n" && File.ReadAllText(officialRecord) == recordFor(keep), "a target changed meanwhile is kept and the record untouched");
+        File.WriteAllBytes(keepFile, oldBytes);
+        Check(SessionSync.Replace(profiles, null, config, slug, keep, refreshed.Jsonl, refreshed.Record, later, toBin, () => "running") == "running" && oldKept(), "running target is not replaced");
+        Check(leftovers() == 0, "refusals leave no temporary files");
+        // 新正文发布失败：能放回就放回；放不回时说明旧版本在哪。
+        SessionSync.BeforePublish = target => { foreach (string temp in Directory.GetFiles(folder, ".claude-launcher-session-*")) File.Delete(temp); };
+        try { Check(SessionSync.Replace(profiles, null, config, slug, keep, refreshed.Jsonl, refreshed.Record, later, toBin, safe) == "无法原子发布新文件，旧版本已放回。" && oldKept(), "failed publish puts the old version back"); }
+        finally { SessionSync.BeforePublish = null; }
+        File.WriteAllText(officialRecord, recordFor(keep));
+        SessionSync.BeforePublish = target => File.WriteAllText(target, "intruder");
+        string stuck;
+        try { stuck = SessionSync.Replace(profiles, null, config, slug, keep, refreshed.Jsonl, refreshed.Record, later, toBin, safe); }
+        finally { SessionSync.BeforePublish = null; }
+        var asides = Directory.GetFiles(folder, ".claude-launcher-old-*");
+        Check(stuck != null && stuck.StartsWith("新版本发布失败，旧版本保留在同目录的 ") && asides.Length == 1 && stuck.Contains(Path.GetFileName(asides[0])) && File.ReadAllBytes(asides[0]).SequenceEqual(oldBytes), "unrecoverable publish names where the old version is");
+        File.Delete(keepFile); File.Move(asides[0], keepFile); File.WriteAllText(officialRecord, recordFor(keep));
+        // 回收站失败：换回旧版本。
+        Check(SessionSync.Replace(profiles, null, config, slug, keep, refreshed.Jsonl, refreshed.Record, later, path => false, safe) == "无法把旧版本移到回收站，未替换。" && oldKept() && leftovers() == 0 && Directory.GetFiles(folder, ".claude-launcher-old-*").Length == 0, "failed recycle swaps the old version back");
+        File.WriteAllText(officialRecord, recordFor(keep));
+        Check(SessionSync.Replace(profiles, null, config, slug, keep, refreshed.Jsonl, refreshed.Record, later, toBin, safe) == null, "replace succeeds");
+        Check(File.ReadAllBytes(keepFile).SequenceEqual(refreshed.Jsonl) && Directory.GetFiles(bin).Any(p => File.ReadAllBytes(p).SequenceEqual(oldBytes)) && leftovers() == 0 && Directory.GetFiles(folder, ".claude-launcher-old-*").Length == 0, "new version in place, old one in the bin");
+        string merged = File.ReadAllText(officialRecord); var fields = new JavaScriptSerializer().DeserializeObject(merged) as Dictionary<string, object>;
+        var freshRecord = new JavaScriptSerializer().DeserializeObject(Encoding.UTF8.GetString(refreshed.Record)) as Dictionary<string, object>;
+        Check((string)fields["model"] == "TARGETMODEL" && (string)fields["sessionId"] == "local_other" && (string)fields["title"] == (string)freshRecord["title"] && Convert.ToInt64(fields["lastActivityAt"]) == Convert.ToInt64(freshRecord["lastActivityAt"]) && merged.StartsWith("{\"sessionId\":\"local_other\",\"cliSessionId\":"), "target record keeps its fields, only title and time change, known ones first");
+        Check(!File.Exists(Path.Combine(records, "local_" + keep + ".json")), "no second record for the same session");
+        // 没有记录时按新增写入记录。
+        File.Delete(officialRecord); File.WriteAllBytes(keepFile, oldBytes);
+        Check(SessionSync.Replace(profiles, null, config, slug, keep, refreshed.Jsonl, refreshed.Record, later, toBin, safe) == null && File.ReadAllBytes(Path.Combine(records, "local_" + keep + ".json")).SequenceEqual(refreshed.Record), "missing record is added exclusively");
+        File.Delete(Path.Combine(records, "local_" + keep + ".json"));
+        // 写入后目标时间等于来源，两边读作同一版本；来回同步不叠加说明。
+        long stamp = new DateTime(2026, 11, 1, 8, 0, 0, DateTimeKind.Utc).Ticks + 1234567;
+        SessionSync.SetDate(config, slug, keep, stamp);
+        Check(SessionSync.List(config, project).Any(r => r.Id == keep && r.Stamp == stamp), "copy takes the source's date to the tick");
+        var again = SessionSync.Clean(keepFile, project, home);
+        Check(again.Error == null && again.Preview.Split(new[] { "[这是从其他账号同步的清理副本" }, StringSplitOptions.None).Length == 2, "note does not stack");
+        File.Delete(keepFile);
+
+        // 关联：链式合并、无关的单独一组；合并成一行时代表取最新版本，按项目分开。
+        var links = SessionSync.Link(SessionSync.Link(new List<Dictionary<int, string>>(), 1, Id(1), 2, Id(2)), 2, Id(2), 3, Id(3));
+        Check(links.Count == 1 && links[0].Count == 3 && links[0][1] == Id(1) && links[0][3] == Id(3), "links chain into one group");
+        Check(SessionSync.Link(links, 4, Id(4), 5, Id(5)).Count == 2, "an unrelated pair is its own group");
+        var rows = SessionSync.Merge(new List<SyncSessionRow> {
+            new SyncSessionRow { Account = 2, Id = Id(2), Stamp = 200, ProjectPath = @"D:\p" }, new SyncSessionRow { Account = 1, Id = Id(1), Stamp = 100, ProjectPath = @"d:\P" },
+            new SyncSessionRow { Account = 1, Id = Id(9), Stamp = 100, ProjectPath = @"D:\p" }, new SyncSessionRow { Account = 3, Id = Id(3), Stamp = 100, ProjectPath = @"D:\q" } }, links);
+        Check(rows.Count == 3 && rows[0].Id == Id(2) && rows[0].Versions.Count == 2 && rows[0].Versions[1].Id == Id(1) && rows[0].Linked && !rows[1].Linked && rows[1].Versions.Count == 1 && rows[2].Linked && rows[2].Versions.Count == 1, "newest version represents a group, per project");
+        string linksFile = Path.Combine(root, "settings", "session-links.json");
+        SessionSync.SaveLinks(linksFile, links);
+        var loaded = SessionSync.LoadLinks(linksFile);
+        Check(loaded.Count == 1 && loaded[0].Count == 3 && loaded[0][2] == Id(2), "links round trip");
+        Check(!File.ReadAllText(linksFile).Contains("原标题") && !File.ReadAllText(linksFile).Contains(project), "links hold numbers and IDs only");
+        File.WriteAllText(linksFile, "{\"version\":1,\"links\":[{\"1\":\"" + Id(1) + "\",\"11\":\"" + Id(2) + "\"},{\"01\":\"" + Id(1) + "\",\"2\":\"x\"},{\"1\":\"" + Id(1) + "\",\"2\":\"" + Id(2) + "\"}]}");
+        Check(SessionSync.LoadLinks(linksFile).Count == 1, "invalid link entries are dropped");
+        bool corrupt = false; File.WriteAllText(linksFile, "{"); try { SessionSync.LoadLinks(linksFile); } catch (Exception) { corrupt = true; }
+        Check(corrupt && File.ReadAllText(linksFile) == "{", "a corrupt links file is reported and kept");
+
+        // 多组织：唯一目录不读组织；多套时按当前组织选同名目录；无匹配、跨账号重复、读不到一律拒绝。
+        string currentOrg = Path.GetFileName(records), account = Path.GetFileName(Path.GetDirectoryName(records)), picked, problem; int reads = 0; string organization = currentOrg, why = null;
+        SessionSync.OrganizationReader reader = (string at, out string reason) => { reads++; reason = organization == null ? "组织密钥不可用" : null; Check(at == profile, "reader gets the profile folder"); return organization; };
+        Check(SessionSync.ResolveTarget(profiles, reader, out picked, out problem) && picked == null && reads == 0, "one folder never reads the organization");
+        Check(SessionSync.TargetReady(profiles), "one account and organization folder is ready");
+        Check(!SessionSync.ResolveTarget(new[] { Path.Combine(root, "nothing") }, reader, out picked, out problem) && reads == 0 && problem.Contains("还没有可用的本地记录目录"), "no folder never reads the organization");
+        string secondAccount = Path.Combine(profile, "claude-code-sessions", Guid.NewGuid().ToString()), otherOrg = Path.Combine(secondAccount, Guid.NewGuid().ToString()); Directory.CreateDirectory(otherOrg);
+        Check(!SessionSync.TargetReady(profiles), "several folders are not ready for the new-account prompt");
+        Check(SessionSync.ResolveTarget(profiles, reader, out picked, out problem) && picked == currentOrg && reads == 1, "current organization picks its folder");
+        string extra = Guid.NewGuid().ToString(), dummy = Encoding.UTF8.GetString(refreshed.Record).Replace(keep, extra);
+        Check(SessionSync.Publish(profiles, picked, config, slug, extra, Encoding.UTF8.GetBytes("x\n"), Encoding.UTF8.GetBytes(dummy), safe) == null && File.Exists(Path.Combine(records, "local_" + extra + ".json")) && Directory.GetFiles(otherOrg).Length == 0, "publish goes into the picked folder only");
+        File.Delete(Path.Combine(records, "local_" + extra + ".json")); File.Delete(Path.Combine(folder, extra + ".jsonl"));
+        Check(SessionSync.Publish(profiles, null, config, slug, extra, Encoding.UTF8.GetBytes("x\n"), Encoding.UTF8.GetBytes(dummy), safe) == "目标账号的记录目录已变化或不安全，未写入。请重新同步。", "several folders without an organization refuse to publish");
+        organization = Guid.NewGuid().ToString();
+        Check(!SessionSync.ResolveTarget(profiles, reader, out picked, out problem) && picked == null && problem.Contains("当前的组织还没有"), "organization without a folder refused");
+        organization = null;
+        Check(!SessionSync.ResolveTarget(profiles, reader, out picked, out problem) && picked == null && problem.Contains("组织密钥不可用"), "unreadable organization refused with its reason");
+        organization = currentOrg; Directory.CreateDirectory(Path.Combine(secondAccount, currentOrg));
+        Check(!SessionSync.ResolveTarget(profiles, reader, out picked, out problem) && picked == null, "same organization under two accounts refused");
+        Directory.Delete(secondAccount, true);
+        Check(SessionSync.ResolveTarget(profiles, reader, out picked, out problem) && picked == null, "back to one folder");
+        string stray = Path.Combine(profile, "claude-code-sessions", "not-a-guid"); Directory.CreateDirectory(stray);
+        Check(!SessionSync.TargetReady(profiles) && !SessionSync.ResolveTarget(profiles, reader, out picked, out problem), "an unexpected folder makes the location unsafe");
+        Directory.Delete(stray);
+
+        // 新账号提示：只看目录名和进程状态；运行中或还没目录时继续等；已删的不再等。
+        var gone = new List<int>(); Func<int, bool> yes = n => true, no = n => false;
+        Check(LauncherUI.InitialSyncAccount(new int[0], gone, yes, no, yes) == 0, "nothing waiting");
+        Check(LauncherUI.InitialSyncAccount(new[] { 3 }, gone, yes, yes, yes) == 0 && gone.Count == 0, "running account keeps waiting");
+        Check(LauncherUI.InitialSyncAccount(new[] { 3 }, gone, yes, no, no) == 0 && gone.Count == 0, "account without its folder keeps waiting");
+        Check(LauncherUI.InitialSyncAccount(new[] { 3 }, gone, no, no, yes) == 0 && gone.SequenceEqual(new[] { 3 }), "deleted account stops waiting");
+        gone.Clear();
+        Check(LauncherUI.InitialSyncAccount(new[] { 0, 11, 4, 5 }, gone, n => n == 5, no, yes) == 5 && gone.SequenceEqual(new[] { 0, 11, 4 }), "skips invalid and gone, offers the ready one");
+        OrganizationChecks(root);
+    }
+
+    // 选择窗按版本：有更新自动勾选、已是最新不可勾选；切换目标只撤销自动勾选；新账号默认勾选原始会话和有关联的副本。
+    static void PickerVersions(LauncherUI ui) {
+        Func<string, Dictionary<int, SyncVersion>, bool, SyncSessionRow> row = (title, versions, linked) => new SyncSessionRow { Title = title, Account = 1, Stamp = 200, Modified = DateTime.Now, ProjectPath = @"D:\p", ProjectName = "p", Versions = versions, Linked = linked };
+        Func<long, SyncVersion> v = stamp => new SyncVersion { Id = Id(1), Stamp = stamp };
+        var rows = new List<SyncSessionRow> {
+            row("甲", new Dictionary<int, SyncVersion> { { 1, v(200) }, { 2, v(199) } }, true),
+            row("乙（同步 10/26 12:00）", new Dictionary<int, SyncVersion> { { 1, v(200) } }, false),
+            row("丙（同步 10/26 12:00）", new Dictionary<int, SyncVersion> { { 1, v(200) } }, true),
+            row("丁", new Dictionary<int, SyncVersion> { { 1, v(200) }, { 2, v(200) } }, true) };
+        var picker = ui.BuildSessionPicker(rows, new[] { 1, 2, 4 }, new[] { 1 }, 2);
+        Check(picker.TargetNumber == 2, "preferred target is selected");
+        Check(picker.Rows[0].IsChecked == true && picker.Rows[0].IsEnabled && picker.Details[0].Text.EndsWith("有更新"), "one tick older reads as changed and starts ticked");
+        Check(!picker.Rows[3].IsEnabled && picker.Rows[3].IsChecked != true && picker.Details[3].Text.EndsWith("已是最新"), "same version cannot be ticked");
+        Check(picker.Details[1].Text.EndsWith("新增"), "absent in target reads as new");
+        picker.Rows[1].IsChecked = true;
+        picker.Target.SelectedIndex = 2;
+        Check(picker.TargetNumber == 4 && picker.Rows[0].IsChecked != true && picker.Details[0].Text.EndsWith("新增") && picker.Rows[1].IsChecked == true && picker.Rows[3].IsEnabled, "switching target takes back automatic ticks only");
+        picker.Rows[1].IsChecked = false; picker.SelectOriginals();
+        Check(picker.Rows[0].IsChecked == true && picker.Rows[1].IsChecked != true && picker.Rows[2].IsChecked == true && picker.Rows[3].IsChecked == true, "unlinked copies stay unticked, a linked copy is ticked");
+        Check(SessionSync.IsSyncCopy("甲（同步 10/26 12:00）") && SessionSync.IsSyncCopy("甲（副本 10/26 12:00）") && !SessionSync.IsSyncCopy("甲") && !SessionSync.IsSyncCopy("同步 10/26 12:00"), "copies recognised by their suffix only");
+        bool confirmed = false;
+        var preview = ui.BuildSessionPreview(new List<CleanedSession> { new CleanedSession { Title = "副本", Report = "报告", Preview = "文字", Jsonl = new byte[10], From = 1, Replaces = true } }, new List<string>(), 2, () => confirmed = true);
+        var texts = LauncherTests.Children(preview).OfType<TextBlock>().Select(t => t.Text).Concat(LauncherTests.Children(preview).OfType<TextBox>().Select(t => t.Text)).ToList();
+        Check(texts.Any(t => t.Contains("其中 1 条会替换账号 02 里的旧版本")) && texts.Any(t => t.Contains("═══ 替换「副本」")) && !confirmed, "preview marks replacements");
+    }
+
+    // ---- lastActiveOrg（Windows）：合成 Cookies 库、合成 Local State，密钥用本次随机生成的 ----
+    [System.Runtime.InteropServices.DllImport("winsqlite3.dll", CallingConvention = System.Runtime.InteropServices.CallingConvention.StdCall)] static extern int sqlite3_open_v2(byte[] name, out IntPtr db, int flags, IntPtr vfs);
+    [System.Runtime.InteropServices.DllImport("winsqlite3.dll", CallingConvention = System.Runtime.InteropServices.CallingConvention.StdCall)] static extern int sqlite3_exec(IntPtr db, byte[] sql, IntPtr callback, IntPtr context, IntPtr error);
+    [System.Runtime.InteropServices.DllImport("winsqlite3.dll", CallingConvention = System.Runtime.InteropServices.CallingConvention.StdCall)] static extern int sqlite3_prepare_v2(IntPtr db, byte[] sql, int length, out IntPtr statement, IntPtr tail);
+    [System.Runtime.InteropServices.DllImport("winsqlite3.dll", CallingConvention = System.Runtime.InteropServices.CallingConvention.StdCall)] static extern int sqlite3_bind_blob(IntPtr statement, int index, byte[] data, int length, IntPtr destructor);
+    [System.Runtime.InteropServices.DllImport("winsqlite3.dll", CallingConvention = System.Runtime.InteropServices.CallingConvention.StdCall)] static extern int sqlite3_step(IntPtr statement);
+    [System.Runtime.InteropServices.DllImport("winsqlite3.dll", CallingConvention = System.Runtime.InteropServices.CallingConvention.StdCall)] static extern int sqlite3_finalize(IntPtr statement);
+    [System.Runtime.InteropServices.DllImport("winsqlite3.dll", CallingConvention = System.Runtime.InteropServices.CallingConvention.StdCall)] static extern int sqlite3_close_v2(IntPtr db);
+    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)] struct DataBlob { public int Size; public IntPtr Data; }
+    [System.Runtime.InteropServices.DllImport("crypt32.dll")] static extern bool CryptProtectData(ref DataBlob input, string description, IntPtr entropy, IntPtr reserved, IntPtr prompt, int flags, out DataBlob output);
+    static byte[] U(string text) { return Encoding.UTF8.GetBytes(text + "\0"); }
+    static void Sql(string file, string sql, byte[] blob = null) {
+        IntPtr db, statement;
+        Check(sqlite3_open_v2(U(file), out db, 0x2 | 0x4, IntPtr.Zero) == 0, "fixture database opens");
+        try {
+            if (blob == null) { Check(sqlite3_exec(db, U(sql), IntPtr.Zero, IntPtr.Zero, IntPtr.Zero) == 0, "fixture sql: " + sql); return; }
+            Check(sqlite3_prepare_v2(db, U(sql), -1, out statement, IntPtr.Zero) == 0, "fixture statement");
+            sqlite3_bind_blob(statement, 1, blob, blob.Length, new IntPtr(-1)); Check(sqlite3_step(statement) == 101, "fixture blob"); sqlite3_finalize(statement);
+        } finally { sqlite3_close_v2(db); }
+    }
+    static byte[] Encrypt(string value, string host, byte[] key) {
+        byte[] hash; using (var sha = System.Security.Cryptography.SHA256.Create()) hash = sha.ComputeHash(Encoding.UTF8.GetBytes(host));
+        byte[] plain = hash.Concat(Encoding.ASCII.GetBytes(value)).ToArray(), nonce = Guid.NewGuid().ToByteArray().Take(12).ToArray(), tag = new byte[16];
+        byte[] cipher = Organization.Gcm(key, nonce, plain, tag, true);
+        return Encoding.ASCII.GetBytes("v10").Concat(nonce).Concat(cipher).Concat(tag).ToArray();
+    }
+    static void OrganizationChecks(string root) {
+        string org = "11111111-1111-4111-8111-111111111111", other = "22222222-2222-4222-8222-222222222222";
+        byte[] key = Guid.NewGuid().ToByteArray().Concat(Guid.NewGuid().ToByteArray()).ToArray();
+        byte[] cookie = Encrypt(org, ".claude.ai", key);
+        Check(cookie.Length == 99 && Organization.Decrypt(cookie, ".claude.ai", key) == org, "Chromium v10 AES-GCM with domain hash");
+        Check(Organization.Decrypt(cookie, "claude.ai", key) == null, "domain hash binding");
+        byte[] wrong = (byte[])key.Clone(); wrong[0] ^= 1; Check(Organization.Decrypt(cookie, ".claude.ai", wrong) == null, "wrong key rejected");
+        byte[] tampered = (byte[])cookie.Clone(); tampered[50] ^= 1; Check(Organization.Decrypt(tampered, ".claude.ai", key) == null, "tampered value rejected");
+        byte[] v20 = (byte[])cookie.Clone(); v20[1] = (byte)'2'; Check(Organization.Decrypt(v20, ".claude.ai", key) == null, "other encryption versions rejected");
+        // Local State：密钥经当前用户 DPAPI 保护（与官方相同的格式），读回后才可用。
+        string profile = Path.Combine(root, "OrgProfile"), network = Path.Combine(profile, "Network"), cookies = Path.Combine(network, "Cookies");
+        Directory.CreateDirectory(network);
+        var pinned = System.Runtime.InteropServices.GCHandle.Alloc(key, System.Runtime.InteropServices.GCHandleType.Pinned); DataBlob protectedKey;
+        try { var input = new DataBlob { Size = key.Length, Data = pinned.AddrOfPinnedObject() }; Check(CryptProtectData(ref input, null, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, 0x1, out protectedKey), "fixture DPAPI"); }
+        finally { pinned.Free(); }
+        var wrapped = new byte[protectedKey.Size]; System.Runtime.InteropServices.Marshal.Copy(protectedKey.Data, wrapped, 0, wrapped.Length);
+        File.WriteAllText(Path.Combine(profile, "Local State"), "{\"os_crypt\":{\"encrypted_key\":\"" + Convert.ToBase64String(Encoding.ASCII.GetBytes("DPAPI").Concat(wrapped).ToArray()) + "\"}}");
+        Check(Organization.LoadKey(profile).SequenceEqual(key), "Local State key unwrapped with DPAPI");
+        DateTime now = new DateTime(2026, 11, 4, 0, 0, 0, DateTimeKind.Utc);
+        Func<byte[]> provider = () => key; string why;
+        Check(Organization.Read(profile, now, provider, out why) == null && why == "未找到当前组织", "missing cookie store");
+        Sql(cookies, "CREATE TABLE meta(key TEXT,value TEXT); INSERT INTO meta VALUES('version','24');" +
+            "CREATE TABLE cookies(host_key TEXT,name TEXT,path TEXT,value TEXT,encrypted_value BLOB,has_expires INTEGER,expires_utc INTEGER,is_persistent INTEGER,source_scheme INTEGER,source_port INTEGER,top_frame_site_key TEXT);" +
+            "INSERT INTO cookies VALUES('.claude.ai','sessionKey','/','DO-NOT-READ',x'00',1,20000000000000000,1,2,443,'');" +
+            "INSERT INTO cookies VALUES('unrelated.invalid','lastActiveOrg','/','',x'00',1,20000000000000000,1,2,443,'');" +
+            "INSERT INTO cookies VALUES('.claude.ai','lastActiveOrg','/','',NULL,1,20000000000000000,1,2,443,'');");
+        Sql(cookies, "UPDATE cookies SET encrypted_value=? WHERE name='lastActiveOrg' AND host_key='.claude.ai'", cookie);
+        Check(!File.Exists(cookies + "-wal") && (!File.Exists(cookies + "-journal") || new FileInfo(cookies + "-journal").Length == 0), "fixture leaves no active journal");
+        int keyCalls = 0;
+        Check(Organization.Read(profile, now, () => { keyCalls++; return key; }, out why) == org && keyCalls == 1, "only the selector row is decrypted");
+        Check(Organization.Read(profile, new DateTime(2700, 1, 1, 0, 0, 0, DateTimeKind.Utc), provider, out why) == null && why == "未找到当前组织", "expired selector rejected");
+        Check(Organization.Read(profile, now, () => null, out why) == null && why == "组织密钥不可用", "no key, no fallback");
+        File.WriteAllText(cookies + "-journal", "busy");
+        Check(Organization.Read(profile, now, provider, out why) == null && why == "组织记录正在更新", "active journal is never read");
+        File.Delete(cookies + "-journal");
+        Sql(cookies, "INSERT INTO cookies VALUES('claude.ai','lastActiveOrg','/','',?,1,20000000000000000,1,2,443,'')", Encrypt(other, "claude.ai", key));
+        Check(Organization.Read(profile, now, provider, out why) == null && why == "当前组织有歧义", "two organizations are ambiguous");
+        Sql(cookies, "DELETE FROM cookies WHERE host_key='claude.ai'; UPDATE meta SET value='23' WHERE key='version'");
+        Check(Organization.Read(profile, now, provider, out why) == null && why == "组织格式不支持", "unknown cookie store version");
+        Sql(cookies, "UPDATE meta SET value='24' WHERE key='version'; CREATE VIEW leak AS SELECT value FROM cookies");
+        Check(Organization.Read(profile, now, provider, out why) == org, "reader still works next to unrelated schema");
+        Sql(cookies, "PRAGMA journal_mode=WAL");
+        Check(Organization.Read(profile, now, provider, out why) == null && why == "组织记录正在更新", "WAL store is not read");
+        Check(Organization.Read(Path.Combine(root, "NoProfile"), now, provider, out why) == null && why == "暂无本地记录", "missing profile");
     }
 }

@@ -92,13 +92,20 @@ public static class UiPreview {
         var guide = ui.BuildTutorialDocument(); var guideView = (FrameworkElement)guide.Content; guide.Content = null;
         Save(new System.Windows.Controls.Border { Background = guide.Background, Child = guideView }, new Size(760, 720), Path.Combine(args[0], "tutorial-document.png"));
         // 同步会话：选择窗与预览。
-        var demo = new List<SyncSessionRow> { new SyncSessionRow { Path = "a", Title = "修复登录页样式", Account = 1, ProjectPath = @"D:\Projects\demo-app", ProjectName = "demo-app", Modified = DateTime.Now }, new SyncSessionRow { Path = "b", Title = "整理发布说明", Account = 1, ProjectPath = @"D:\Projects\demo-app", ProjectName = "demo-app", Modified = DateTime.Now.AddHours(-3) }, new SyncSessionRow { Path = "c", Title = "写入门文档", Account = 2, ProjectPath = @"D:\Projects\demo-site", ProjectName = "demo-site", Modified = DateTime.Now.AddDays(-1) } };
-        var picker = ui.BuildSessionPicker(demo, new[] { 1, 2, 3 }, new[] { 1 }); picker.Expanders[0].IsExpanded = true; picker.Toggle(picker.Members[0]);
+        Func<int, long, SyncVersion> version = (n, stamp) => new SyncVersion { Id = "00000000-0000-4000-8000-00000000000" + n, Stamp = stamp };
+        var demo = new List<SyncSessionRow> {
+            new SyncSessionRow { Path = "a", Title = "修复登录页样式", Account = 1, ProjectPath = @"D:\Projects\demo-app", ProjectName = "demo-app", Modified = DateTime.Now, Stamp = 300, Linked = true, Versions = new Dictionary<int, SyncVersion> { { 1, version(1, 300) }, { 2, version(2, 200) } } },
+            new SyncSessionRow { Path = "b", Title = "整理发布说明", Account = 1, ProjectPath = @"D:\Projects\demo-app", ProjectName = "demo-app", Modified = DateTime.Now.AddHours(-3), Stamp = 250, Versions = new Dictionary<int, SyncVersion> { { 1, version(3, 250) } } },
+            new SyncSessionRow { Path = "c", Title = "写入门文档", Account = 1, ProjectPath = @"D:\Projects\demo-app", ProjectName = "demo-app", Modified = DateTime.Now.AddDays(-1), Stamp = 100, Linked = true, Versions = new Dictionary<int, SyncVersion> { { 1, version(4, 100) }, { 2, version(5, 100) } } },
+            new SyncSessionRow { Path = "d", Title = "接口草稿", Account = 3, ProjectPath = @"D:\Projects\demo-site", ProjectName = "demo-site", Modified = DateTime.Now.AddDays(-2), Stamp = 90, Versions = new Dictionary<int, SyncVersion> { { 3, version(6, 90) } } } };
+        var picker = ui.BuildSessionPicker(demo, new[] { 1, 2, 3 }, new[] { 1 }); picker.Expanders[0].IsExpanded = true;
         var pickerView = (FrameworkElement)picker.Dialog.Content; picker.Dialog.Content = null;
         Save(new System.Windows.Controls.Border { Background = picker.Dialog.Background, Child = pickerView, Resources = picker.Dialog.Resources, Width = 700, Height = 640 }, new Size(700, 640), Path.Combine(args[0], "session-picker.png"));
-        var review = ui.BuildSessionPreview(new List<CleanedSession> { new CleanedSession { Title = "修复登录页样式（同步 10/31 12:05）", Report = "保留 4 条消息，2 条工具说明。\n丢弃：3 个工具结果、1 个思考块、0 张图片、0 行子代理记录、2 行非主链记录。\n替换：1 处邮箱／密钥／令牌，1 个项目外路径。", Preview = "【用户】\n[这是从其他账号同步的清理副本…]\n\n登录页按钮错位，帮我看看。\n\n【助手】\n[历史工具请求：Edit，src/login.css]\n已修复。\n", Jsonl = new byte[1200], From = 1 } }, new List<string>(), 2, () => { });
+        var review = ui.BuildSessionPreview(new List<CleanedSession> { new CleanedSession { Title = "修复登录页样式（同步 10/31 12:05）", Report = "保留 4 条消息，2 条工具说明。\n丢弃：3 个工具结果、1 个思考块、0 张图片、0 行子代理记录、2 行非主链记录。\n替换：1 处邮箱／密钥／令牌，1 个项目外路径。", Preview = "【用户】\n[这是从其他账号同步的清理副本…]\n\n登录页按钮错位，帮我看看。\n\n【助手】\n[历史工具请求：Edit，src/login.css]\n已修复。\n", Jsonl = new byte[1200], From = 1, Replaces = true }, new CleanedSession { Title = "整理发布说明（同步 10/31 12:05）", Report = "保留 2 条消息，0 条工具说明。", Preview = "【用户】\n列一下这次发布的改动。\n\n【助手】\n共三项。\n", Jsonl = new byte[600], From = 1 } }, new List<string>(), 2, () => { });
         var reviewView = (FrameworkElement)review.Content; review.Content = null;
         Save(new System.Windows.Controls.Border { Background = review.Background, Child = reviewView, Resources = review.Resources }, new Size(700, 600), Path.Combine(args[0], "session-preview.png"));
+        var offer = ui.BuildAsk("账号 02 已准备好", LauncherUI.InitialSyncOffer, new[] { "选择并同步…", "以后再说" }, 1, 0, index => { }); var offerView = (FrameworkElement)offer.Content; offer.Content = null;
+        Save(new System.Windows.Controls.Border { Background = offer.Background, Child = offerView, Resources = offer.Resources, Width = 520 }, new Size(520, 360), Path.Combine(args[0], "initial-sync.png"));
         // 更新进度窗口：下载中与校验中两种状态。
         var progress = ui.BuildUpdateProgress("1.7.2");
         var content = (FrameworkElement)progress.Window.Content;

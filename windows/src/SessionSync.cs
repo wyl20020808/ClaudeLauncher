@@ -12,8 +12,10 @@ using Microsoft.Win32;
 using Microsoft.Win32.SafeHandles;
 
 namespace ClaudeLauncher {
-    internal sealed class SyncSessionRow { public string Path, Title, ProjectPath, ProjectName; public DateTime Modified; public int Account; }
-    internal sealed class CleanedSession { public string Error, SessionId, Slug, Title, Preview, Report; public byte[] Jsonl, Record; public int Messages, Images, From; }
+    internal sealed class SyncVersion { public string Id; public long Stamp; }
+    // Stamp：最后写入时间的 Ticks（100 ns，NTFS 的最小单位）。Versions：关联组里各账号的版本。
+    internal sealed class SyncSessionRow { public string Path, Id, Title, ProjectPath, ProjectName; public DateTime Modified; public long Stamp; public int Account; public bool Linked; public Dictionary<int, SyncVersion> Versions = new Dictionary<int, SyncVersion>(); }
+    internal sealed class CleanedSession { public string Error, SessionId, Slug, Title, Preview, Report, FromId; public byte[] Jsonl, Record; public int Messages, Images, From; public long Stamp; public bool Replaces; }
     // 同步会话（SPEC 项目清单 / 同步会话）：只读来源，从白名单重新生成清理副本，只新增不覆盖。不启动 CLI、不发请求。
     internal static class SessionSync {
         const long MaxSourceBytes = 512L * 1024 * 1024;
@@ -94,10 +96,57 @@ namespace ClaudeLauncher {
                 foreach (var file in folder.EnumerateFiles("*.jsonl")) {
                     if (rows.Count >= MaxSessions) break;
                     if (!SessionFileName(file.Name) || (file.Attributes & FileAttributes.ReparsePoint) != 0 || file.Length == 0) continue;
-                    rows.Add(new SyncSessionRow { Path = file.FullName, Title = TailTitle(file.FullName) ?? "未命名会话", Modified = file.LastWriteTime, ProjectPath = project });
+                    rows.Add(new SyncSessionRow { Path = file.FullName, Id = file.Name.Substring(0, 36), Title = TailTitle(file.FullName) ?? "未命名会话", Modified = file.LastWriteTime, Stamp = file.LastWriteTimeUtc.Ticks, ProjectPath = project });
                 }
             } catch (IOException) { } catch (UnauthorizedAccessException) { }
-            return rows.OrderByDescending(r => r.Modified).ToList();
+            return rows.OrderByDescending(r => r.Stamp).ToList();
+        }
+        internal static bool IsSyncCopy(string title) { return title != null && OldSuffix.IsMatch(title); }
+
+        // ---- 关联（SPEC 版本判断）：每组是 {账号: 会话 ID}，只存编号和 ID，不存标题或正文 ----
+        internal static List<Dictionary<int, string>> Link(IEnumerable<Dictionary<int, string>> links, int from, string fromId, int to, string toId) {
+            var joined = new Dictionary<int, string>(); var result = new List<Dictionary<int, string>>();
+            foreach (var group in links) {
+                string a, b;
+                if ((group.TryGetValue(from, out a) && a == fromId) || (group.TryGetValue(to, out b) && b == toId)) foreach (var pair in group) joined[pair.Key] = pair.Value;
+                else result.Add(group);
+            }
+            joined[from] = fromId; joined[to] = toId; result.Add(joined);
+            return result;
+        }
+        // 每组一行，代表取最新版本（sessions 已按 Stamp 从新到旧）；关联不跨项目，目标文件按本项目目录查找。
+        internal static List<SyncSessionRow> Merge(IEnumerable<SyncSessionRow> sessions, IList<Dictionary<int, string>> links) {
+            var groups = new Dictionary<string, int>();
+            for (int i = 0; i < links.Count; i++) foreach (var pair in links[i]) groups[pair.Key + ":" + pair.Value] = i;
+            var merged = new Dictionary<string, SyncSessionRow>(StringComparer.OrdinalIgnoreCase); var rows = new List<SyncSessionRow>();
+            foreach (var session in sessions) {
+                int group; bool linked = groups.TryGetValue(session.Account + ":" + session.Id, out group);
+                string key = session.ProjectPath + "\n" + (linked ? "#" + group : session.Account + ":" + session.Id);
+                SyncSessionRow row;
+                if (!merged.TryGetValue(key, out row)) { row = session; row.Versions = new Dictionary<int, SyncVersion>(); merged[key] = row; rows.Add(row); }
+                row.Versions[session.Account] = new SyncVersion { Id = session.Id, Stamp = session.Stamp };
+                if (linked) row.Linked = true;
+            }
+            return rows;
+        }
+        // 启动器自己的文件，恢复默认不清除；损坏或版本不符时当作没有关联，写入时不覆盖损坏的原文件。
+        internal static List<Dictionary<int, string>> LoadLinks(string path) {
+            var result = new List<Dictionary<int, string>>();
+            if (!File.Exists(path)) return result;
+            var root = Json().DeserializeObject(LocalFiles.Read(path, 4 * 1024 * 1024)) as Dictionary<string, object>;
+            object version, raw;
+            if (root == null || !root.TryGetValue("version", out version) || !(version is int) || (int)version != 1 || !root.TryGetValue("links", out raw) || !(raw is object[])) throw new InvalidDataException("会话关联记录无法识别。");
+            foreach (object item in (object[])raw) {
+                var map = item as Dictionary<string, object>; if (map == null) continue;
+                var group = new Dictionary<int, string>(); Guid id; int number;
+                foreach (var pair in map) if (Int32.TryParse(pair.Key, out number) && number >= 1 && number <= 10 && pair.Key == number.ToString() && pair.Value is string && Guid.TryParse((string)pair.Value, out id) && ((string)pair.Value).Length == 36) group[number] = ((string)pair.Value).ToLowerInvariant();
+                if (group.Count >= 2) result.Add(group);
+            }
+            return result;
+        }
+        internal static void SaveLinks(string path, IEnumerable<Dictionary<int, string>> links) {
+            var items = links.Select(g => g.ToDictionary(p => p.Key.ToString(), p => (object)p.Value)).ToList();
+            LocalFiles.Write(path, Json().Serialize(new Dictionary<string, object> { { "version", 1 }, { "links", items } }));
         }
         static JavaScriptSerializer Json() { return new JavaScriptSerializer { MaxJsonLength = Int32.MaxValue, RecursionLimit = 1000 }; }
         // 共享打开：来源账号可能正在运行，不能挡住官方继续写入。
@@ -155,7 +204,7 @@ namespace ClaudeLauncher {
             return row;
         }
         // 读一份快照；没有换行结尾的行是正在写入的半行，忽略。
-        static string ReadRows(string path, List<Row> rows, ref string title, ref int sidechain) {
+        static string ReadRows(string path, List<Row> rows, ref string title, ref int sidechain, ref long version) {
             FileStream stream;
             try {
                 var info = new FileInfo(path);
@@ -183,6 +232,7 @@ namespace ClaudeLauncher {
                     line.Write(buffer, start, count - start);
                 }
                 if (total != size || stream.Length != size || File.GetLastWriteTimeUtc(path) != stamp) return "来源会话正在写入，请等它结束后重试。";
+                version = stamp.Ticks;
             }
             return null;
         }
@@ -227,9 +277,11 @@ namespace ClaudeLauncher {
             return Json().Serialize(value).Replace("\u2028", "\\u2028").Replace("\u2029", "\\u2029");
         }
         sealed class Turn { public string Role, Text, Stamp; }
-        internal static CleanedSession Clean(string source, string project, string home) {
-            var rows = new List<Row>(); string title = null; int sidechain = 0;
-            string failure = ReadRows(source, rows, ref title, ref sidechain);
+        const string CopyNote = "[这是从其他账号同步的清理副本：只保留对话文字和工具请求说明，工具结果、思考内容和图片都已移除。历史中说已完成的改动，请以磁盘上的文件和 git 状态为准。]\n\n";
+        // targetId：替换已关联的副本时沿用目标的会话 ID，否则新建。
+        internal static CleanedSession Clean(string source, string project, string home, string targetId = null) {
+            var rows = new List<Row>(); string title = null; int sidechain = 0; long version = 0;
+            string failure = ReadRows(source, rows, ref title, ref sidechain, ref version);
             if (failure != null) return new CleanedSession { Error = failure };
             var byId = new Dictionary<string, Row>(rows.Count); Row leaf = null;
             foreach (var row in rows) { byId[row.Uuid] = row; if (row.Type == "user" || row.Type == "assistant") leaf = row; }
@@ -278,10 +330,10 @@ namespace ClaudeLauncher {
             }
             while (turns.Count > 0 && turns[0].Role != "user") turns.RemoveAt(0);
             if (turns.Count == 0) return new CleanedSession { Error = "来源会话没有可同步的对话文字。" };
-            turns[0].Text = "[这是从其他账号同步的清理副本：只保留对话文字和工具请求说明，工具结果、思考内容和图片都已移除。历史中说已完成的改动，请以磁盘上的文件和 git 状态为准。]\n\n" + turns[0].Text;
+            if (!turns[0].Text.StartsWith(CopyNote, StringComparison.Ordinal)) turns[0].Text = CopyNote + turns[0].Text; // 来回同步时已带说明，不叠加
             if (turns[turns.Count - 1].Role != "assistant") add("assistant", "（同步的历史到此结束，上一条请求没有留下回复。）", turns[turns.Count - 1].Stamp);
 
-            string session = Guid.NewGuid().ToString(), parentId = null;
+            string session = targetId ?? Guid.NewGuid().ToString(), parentId = null;
             string clean = CopyTitle(cleaner.Text(String.IsNullOrEmpty(title) ? "未命名会话" : title), DateTime.Now);
             var jsonl = new StringBuilder(); var body = new StringBuilder();
             foreach (var turn in turns) {
@@ -298,7 +350,7 @@ namespace ClaudeLauncher {
             // 前四个键顺序与官方相同，之后“识别并导入”只读前缀时也能读到目录。
             string record = Serialize(new Dictionary<string, object> { { "sessionId", "local_" + session }, { "cliSessionId", session }, { "cwd", root }, { "originCwd", root }, { "title", clean }, { "createdAt", now }, { "lastActivityAt", now }, { "isArchived", false } });
             string report = "保留 " + turns.Count + " 条消息，" + toolNotes + " 条工具说明。\n丢弃：" + toolResults + " 个工具结果、" + thinking + " 个思考块、" + images + " 张图片、" + sidechain + " 行子代理记录、" + (rows.Count - chain.Count) + " 行非主链记录。\n替换：" + cleaner.Redacted + " 处邮箱／密钥／令牌，" + cleaner.Outside + " 个项目外路径。";
-            return new CleanedSession { SessionId = session, Slug = slug, Title = clean, Jsonl = new UTF8Encoding(false).GetBytes(jsonl.ToString()), Record = new UTF8Encoding(false).GetBytes(record), Preview = body.ToString(), Report = Appearance.Text(report), Messages = turns.Count, Images = images };
+            return new CleanedSession { SessionId = session, Slug = slug, Title = clean, Jsonl = new UTF8Encoding(false).GetBytes(jsonl.ToString()), Record = new UTF8Encoding(false).GetBytes(record), Preview = body.ToString(), Report = Appearance.Text(report), Messages = turns.Count, Images = images, Stamp = version, Replaces = targetId != null };
         }
 
         // ---- 版本：只放行 4.4212.0.0 商店版（官方记录格式已核对；Windows 客户端续聊未实测，见 docs/STATUS.md） ----
@@ -319,52 +371,106 @@ namespace ClaudeLauncher {
             var found = DistinctExisting(ProfileDeletion.Candidates(number, roaming, local).Select(Core.CodeConfig));
             return found.Length == 1 ? found[0] : null;
         }
-        static string UniqueChild(string parent) {
-            string found = null; int entries = 0; Guid id;
+        // 一层账号或组织目录：只认 GUID 名的子目录；链接、GUID 名的文件或其他名字的目录都算不安全，返回 null。
+        static List<string> Children(string parent) {
+            var names = new List<string>(); int entries = 0; Guid id;
             foreach (string entry in Directory.EnumerateFileSystemEntries(parent)) {
                 if (++entries > 20000) return null;
                 var attributes = File.GetAttributes(entry); bool directory = (attributes & FileAttributes.Directory) != 0;
                 if ((attributes & FileAttributes.ReparsePoint) != 0) return null;
                 if (!Guid.TryParse(Path.GetFileName(entry), out id)) { if (directory) return null; continue; }
-                if (!directory || found != null) return null;
-                found = entry;
+                if (!directory) return null;
+                names.Add(Path.GetFileName(entry));
             }
+            return names;
+        }
+        // 账号层可能有多次登录；同一组织出现在两个账号目录下仍有歧义，拒绝。total 是全部组织目录数，不安全时为 0。
+        static string OrganizationDirectory(string root, string organization, out int total) {
+            total = 0; string found = null; int count = 0;
+            var accounts = Children(root);
+            if (accounts == null) return null;
+            foreach (string account in accounts) {
+                var organizations = Children(Path.Combine(root, account));
+                if (organizations == null) return null;
+                count += organizations.Count;
+                string match = organization == null ? null : organizations.FirstOrDefault(o => String.Equals(o, organization, StringComparison.OrdinalIgnoreCase));
+                if (match == null) continue;
+                if (found != null) return null;
+                found = Path.Combine(root, account, match);
+            }
+            total = count;
             return found;
         }
-        // 目标须有唯一的账号／组织目录：多个位置时不猜身份。
-        internal static string RecordsDirectory(IEnumerable<string> profiles) {
-            var roots = DistinctExisting(profiles.Select(p => Path.Combine(p, "claude-code-sessions")));
+        static string[] SessionRoots(IEnumerable<string> profiles) { return DistinctExisting(profiles.Select(p => Path.Combine(p, "claude-code-sessions"))); }
+        // organization 为 null 时须只有一个账号／组织目录；否则只取该组织的同名目录。
+        internal static string RecordsDirectory(IEnumerable<string> profiles, string organization = null) {
+            var roots = SessionRoots(profiles);
             if (roots.Length != 1) return null;
-            string account = UniqueChild(roots[0]);
-            return account == null ? null : UniqueChild(account);
+            int total;
+            if (organization != null) return OrganizationDirectory(roots[0], organization, out total);
+            var accounts = Children(roots[0]);
+            if (accounts == null || accounts.Count != 1) return null;
+            string account = Path.Combine(roots[0], accounts[0]); var organizations = Children(account);
+            return organizations == null || organizations.Count != 1 ? null : Path.Combine(account, organizations[0]);
+        }
+        // 新账号提示只看目录名：有唯一的账号／组织目录才算就绪，不读组织标识。
+        internal static bool TargetReady(IEnumerable<string> profiles) {
+            try { return RecordsDirectory(profiles) != null; } catch (IOException) { return false; } catch (UnauthorizedAccessException) { return false; }
+        }
+        internal delegate string OrganizationReader(string profile, out string why);
+        // 决定写入位置：目录唯一或没有目录时不调用 read（它会解密组织标识）；多套目录时只认当前组织的同名目录。
+        internal static bool ResolveTarget(string[] profiles, OrganizationReader read, out string organization, out string failure) {
+            organization = null; failure = null;
+            try {
+                if (RecordsDirectory(profiles) != null) return true;
+                var roots = SessionRoots(profiles); int total = 0;
+                if (roots.Length == 1) OrganizationDirectory(roots[0], null, out total);
+                if (total == 0) { failure = "目标账号还没有可用的本地记录目录。请先在该账号正常创建一次本地会话。"; return false; }
+                string why = null, current = read(Path.GetDirectoryName(roots[0]), out why);
+                if (current == null) { failure = "目标账号有多套账号／组织记录，要读到它当前的组织才能确定写入位置，但这次没有读到（" + Appearance.Text(why ?? "组织记录不可读") + "）。"; return false; }
+                if (RecordsDirectory(profiles, current) == null) { failure = "目标账号当前的组织还没有可用的本地记录目录。请先在该账号正常创建一次本地会话。"; return false; }
+                organization = current; return true;
+            }
+            catch (IOException) { failure = "目标账号的记录目录已变化或不安全，未写入。请重新同步。"; return false; }
+            catch (UnauthorizedAccessException) { failure = "目标账号的记录目录已变化或不安全，未写入。请重新同步。"; return false; }
         }
 
         // ---- 发布：同目录临时文件，再用不替换的 File.Move；只给本人权限 ----
+        static string WriteTemporary(string directory, byte[] data) {
+            string temp = Path.Combine(directory, ".claude-launcher-session-" + Guid.NewGuid().ToString("N"));
+            var security = new FileSecurity();
+            security.SetAccessRuleProtection(true, false);
+            security.AddAccessRule(new FileSystemAccessRule(WindowsIdentity.GetCurrent().User, FileSystemRights.FullControl, AccessControlType.Allow));
+            try { using (var stream = new FileStream(temp, FileMode.CreateNew, FileSystemRights.Write, FileShare.None, 4096, FileOptions.None, security)) { stream.Write(data, 0, data.Length); stream.Flush(true); } }
+            catch { Remove(temp); throw; }
+            return temp;
+        }
+        static void Remove(string path) { try { if (path != null && File.Exists(path)) File.Delete(path); } catch (IOException) { } catch (UnauthorizedAccessException) { } }
+        static bool TryMove(string from, string to) { try { File.Move(from, to); return true; } catch (IOException) { return false; } catch (UnauthorizedAccessException) { return false; } }
         static string PublishExclusive(string directory, string name, byte[] data, Func<string> guard) {
-            string temp = Path.Combine(directory, ".claude-launcher-session-" + Guid.NewGuid().ToString("N")), target = Path.Combine(directory, name);
+            string temp = null;
             try {
-                var security = new FileSecurity();
-                security.SetAccessRuleProtection(true, false);
-                security.AddAccessRule(new FileSystemAccessRule(WindowsIdentity.GetCurrent().User, FileSystemRights.FullControl, AccessControlType.Allow));
-                using (var stream = new FileStream(temp, FileMode.CreateNew, FileSystemRights.Write, FileShare.None, 4096, FileOptions.None, security)) { stream.Write(data, 0, data.Length); stream.Flush(true); }
+                temp = WriteTemporary(directory, data);
                 string failure = guard();
                 if (failure != null) return failure;
-                try { File.Move(temp, target); } catch (IOException) { return "无法原子发布新文件，未覆盖任何同名文件。"; }
+                try { File.Move(temp, Path.Combine(directory, name)); } catch (IOException) { return "无法原子发布新文件，未覆盖任何同名文件。"; }
                 return null;
             }
             catch (IOException) { return "写入失败，原有文件未覆盖。"; }
             catch (UnauthorizedAccessException) { return "写入失败，原有文件未覆盖。"; }
-            finally { try { if (File.Exists(temp)) File.Delete(temp); } catch (IOException) { } catch (UnauthorizedAccessException) { } }
+            finally { Remove(temp); }
         }
-        internal static string Publish(IEnumerable<string> profiles, string config, string slug, string session, byte[] jsonl, byte[] record, Func<string> guard) {
+        static bool ValidTarget(string session, string slug) { Guid id; return Guid.TryParse(session, out id) && session.Length == 36 && slug != null && Regex.IsMatch(slug, "^[A-Za-z0-9-]{1,200}$"); }
+        static string Records(IEnumerable<string> profiles, string organization) {
+            try { return RecordsDirectory(profiles, organization); } catch (IOException) { return null; } catch (UnauthorizedAccessException) { return null; }
+        }
+        internal static string Publish(IEnumerable<string> profiles, string organization, string config, string slug, string session, byte[] jsonl, byte[] record, Func<string> guard) {
             string failure = guard();
             if (failure != null) return failure;
-            Guid id;
-            if (!Guid.TryParse(session, out id) || slug == null || !Regex.IsMatch(slug, "^[A-Za-z0-9-]{1,200}$")) return "会话标识或项目目录名无效。";
+            if (!ValidTarget(session, slug)) return "会话标识或项目目录名无效。";
             if (config == null) return "目标账号的项目目录无法安全打开，未写入。";
-            string records;
-            try { records = RecordsDirectory(profiles); } catch (IOException) { records = null; } catch (UnauthorizedAccessException) { records = null; }
-            if (records == null) return "目标没有唯一且安全的账号／组织记录目录。请先在该账号正常创建一次本地会话；多位置时不猜测身份。";
+            string records = Records(profiles, organization);
+            if (records == null) return "目标账号的记录目录已变化或不安全，未写入。请重新同步。";
             string folder = Path.Combine(config, "projects", slug), name = session + ".jsonl";
             try {
                 using (new LocalFiles(config, false)) using (new LocalFiles(records, false)) {
@@ -380,6 +486,114 @@ namespace ClaudeLauncher {
             }
             catch (IOException) { return failure ?? "目标账号的项目目录无法安全打开，未写入。"; }
             catch (UnauthorizedAccessException) { return failure ?? "目标账号的项目目录无法安全打开，未写入。"; }
+        }
+
+        // ---- 替换（SPEC 写入）：目标会话 ID 不变，旧版本进回收站 ----
+        static readonly Regex RecordHead = new Regex("^\\s*\\{\\s*\"sessionId\"\\s*:\\s*\"[^\"\\\\]{1,64}\"\\s*,\\s*\"cliSessionId\"\\s*:\\s*\"([^\"\\\\]{1,64})\"");
+        static readonly string[] RecordKeys = { "sessionId", "cliSessionId", "cwd", "originCwd", "title", "createdAt", "lastActivityAt", "isArchived" };
+        // 按 cliSessionId 找目标自己的记录（官方建的记录名字可能不是 local_<ID>.json）；其他记录只读开头 512 字节。
+        // 打不开、链接、多链接、过大或解析失败的 local_*.json 都设 unsafeFile：它可能就是这一条。
+        static string RecordFor(string records, string session, out Dictionary<string, object> value, out bool unsafeFile) {
+            value = null; unsafeFile = false;
+            foreach (string path in Directory.EnumerateFileSystemEntries(records, "local_*")) {
+                string name = Path.GetFileName(path);
+                if (!name.EndsWith(".json", StringComparison.Ordinal)) continue;
+                FileStream stream;
+                try { stream = LocalFiles.OpenRead(path, 8 * 1024 * 1024, 7); }
+                catch (IOException) { unsafeFile = true; return null; } catch (UnauthorizedAccessException) { unsafeFile = true; return null; }
+                using (stream) {
+                    var head = new byte[(int)Math.Min(512, stream.Length)]; int count = 0, n;
+                    while (count < head.Length && (n = stream.Read(head, count, head.Length - count)) > 0) count += n;
+                    Match match = RecordHead.Match(Encoding.UTF8.GetString(head, 0, count));
+                    if (!match.Success || match.Groups[1].Value != session) continue;
+                    stream.Seek(0, SeekOrigin.Begin);
+                    var data = new byte[stream.Length]; count = 0;
+                    while (count < data.Length && (n = stream.Read(data, count, data.Length - count)) > 0) count += n;
+                    try { value = Json().DeserializeObject(new UTF8Encoding(false, true).GetString(data, 0, count)) as Dictionary<string, object>; }
+                    catch (ArgumentException) { } catch (InvalidOperationException) { }
+                    if (value == null) { unsafeFile = true; return null; }
+                    return name;
+                }
+            }
+            return null;
+        }
+        // 识别导入只读固定前缀，所以已知字段排在前面，其余按名字排序。
+        static byte[] RecordData(Dictionary<string, object> record) {
+            var keys = RecordKeys.Where(record.ContainsKey).Concat(record.Keys.Except(RecordKeys).OrderBy(k => k, StringComparer.Ordinal));
+            return new UTF8Encoding(false).GetBytes("{" + String.Join(",", keys.Select(k => Serialize(k) + ":" + Serialize(record[k]))) + "}");
+        }
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern bool MoveFileEx(string from, string to, uint flags);
+        // stamp：来源的最后写入 Ticks；目标比它新时拒绝。recycle 把文件送进回收站，成功返回 true。
+        // 顺序：写好两个临时文件 → 再查目标未运行、目标文件未变 → 发布记录（失败则什么都没变）→ 旧正文同目录改名留底 →
+        // 发布新正文（失败则放回）→ 留底送回收站（失败则换回旧版本）。记录已改的标题和时间是接受的残留，和 macOS 相同。
+        internal static string Replace(IEnumerable<string> profiles, string organization, string config, string slug, string session, byte[] jsonl, byte[] record, long stamp, Func<string, bool> recycle, Func<string> guard) {
+            string failure = guard();
+            if (failure != null) return failure;
+            if (!ValidTarget(session, slug)) return "会话标识或项目目录名无效。";
+            string records = config == null ? null : Records(profiles, organization);
+            if (records == null) return "目标账号的记录目录已变化或不安全，未写入。请重新同步。";
+            string folder = Path.Combine(config, "projects", slug), target = Path.Combine(folder, session + ".jsonl"), freshName = "local_" + session + ".json";
+            string transcriptTemp = null, recordTemp = null, aside = null;
+            try {
+                using (new LocalFiles(config, false)) using (new LocalFiles(records, false)) using (new LocalFiles(folder, false)) {
+                    string before = LocalFiles.FileState(target);
+                    if (before == null) return "目标账号里的旧版本无法安全打开，未替换。";
+                    if (File.GetLastWriteTimeUtc(target).Ticks > stamp) return "目标账号里的这条会话比来源更新，未替换。";
+                    Dictionary<string, object> existing; bool unsafeFile;
+                    string recordName = RecordFor(records, session, out existing, out unsafeFile);
+                    if (unsafeFile) return "目标账号的记录目录里有无法安全读取的文件，未替换。";
+                    // 这个名字下是另一条会话的记录，不能覆盖。
+                    if (recordName == null && (File.Exists(Path.Combine(records, freshName)) || Directory.Exists(Path.Combine(records, freshName)))) return "目标账号里已有同名记录，但不属于这条会话，未替换。";
+                    byte[] recordBytes = record;
+                    if (recordName != null) {
+                        var fresh = (Dictionary<string, object>)Json().DeserializeObject(Encoding.UTF8.GetString(record));
+                        existing["title"] = fresh["title"]; existing["lastActivityAt"] = fresh["lastActivityAt"];
+                        recordBytes = RecordData(existing);
+                    }
+                    transcriptTemp = WriteTemporary(folder, jsonl); recordTemp = WriteTemporary(records, recordBytes);
+                    failure = guard();
+                    if (failure != null) return failure;
+                    if (LocalFiles.FileState(target) != before) return "目标账号里的这条会话刚有变化，未替换。";
+                    bool recordDone = recordName != null ? MoveFileEx(recordTemp, Path.Combine(records, recordName), 0x1 | 0x8) : TryMove(recordTemp, Path.Combine(records, freshName));
+                    if (!recordDone) return "无法更新目标账号的记录，未替换。";
+                    recordTemp = null;
+                    aside = Path.Combine(folder, ".claude-launcher-old-" + Guid.NewGuid().ToString("N"));
+                    if (!TryMove(target, aside)) { aside = null; return "无法把旧版本移到回收站，未替换。"; }
+                    if (BeforePublish != null) BeforePublish(target);
+                    if (!TryMove(transcriptTemp, target)) {
+                        if (TryMove(aside, target)) { aside = null; return "无法原子发布新文件，旧版本已放回。"; }
+                        return Kept(ref aside, "新版本发布失败，旧版本保留在同目录的 {0}，需要手动改回原名。");
+                    }
+                    transcriptTemp = null;
+                    bool recycled; try { recycled = recycle(aside) && !File.Exists(aside); } catch (IOException) { recycled = false; } catch (UnauthorizedAccessException) { recycled = false; } catch (COMException) { recycled = false; }
+                    if (!recycled) {
+                        string undo = Path.Combine(folder, ".claude-launcher-session-" + Guid.NewGuid().ToString("N"));
+                        if (TryMove(target, undo)) {
+                            if (TryMove(aside, target)) { aside = null; transcriptTemp = undo; return "无法把旧版本移到回收站，未替换。"; }
+                            TryMove(undo, target);
+                        }
+                        return Kept(ref aside, "旧版本没能移到回收站，保留在同目录的 {0}。");
+                    }
+                    aside = null;
+                    return null;
+                }
+            }
+            catch (IOException) { return "目标账号里的旧版本无法安全打开，未替换。"; }
+            catch (UnauthorizedAccessException) { return "目标账号里的旧版本无法安全打开，未替换。"; }
+            finally {
+                // 意外中断时，正文不在原位就把留底放回。
+                if (aside != null && !File.Exists(target)) TryMove(aside, target);
+                Remove(transcriptTemp); Remove(recordTemp);
+            }
+        }
+        internal static Action<string> BeforePublish; // 只供自检制造“新正文发布失败”，正式运行为 null。
+        static string Kept(ref string aside, string format) { string name = Path.GetFileName(aside); aside = null; return String.Format(format, name); }
+        // 让目标正文的修改时间等于来源，两边因此读作同一版本。
+        internal static void SetDate(string config, string slug, string session, long stamp) {
+            if (config == null || !ValidTarget(session, slug)) return;
+            string folder = Path.Combine(config, "projects", slug), path = Path.Combine(folder, session + ".jsonl");
+            try { using (new LocalFiles(folder, false)) if (LocalFiles.FileState(path) != null) File.SetLastWriteTimeUtc(path, new DateTime(stamp, DateTimeKind.Utc)); }
+            catch (IOException) { } catch (UnauthorizedAccessException) { } catch (ArgumentOutOfRangeException) { }
         }
     }
 }
