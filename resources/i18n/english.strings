@@ -791,7 +791,6 @@
 "无法原子发布新文件，未覆盖任何同名文件。" = "The new file could not be published atomically. No file was overwritten.";
 "会话标识或项目目录名无效。" = "The session ID or project folder name is invalid.";
 "目标账号的项目目录无法安全打开，未写入。" = "The target account’s project folder could not be opened safely, so nothing was written.";
-"同步会话只验证过 Claude 4.4212.0；当前版本不匹配，已停止写入。" = "Session sync is verified only on Claude 4.4212.0. The installed version does not match, so nothing was written.";
 "全选" = "Select All";
 "%@（%lu）" = "%@ (%lu)";
 "已选 %lu 条" = "%lu selected";

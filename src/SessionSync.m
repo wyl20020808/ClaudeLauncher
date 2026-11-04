@@ -312,6 +312,15 @@ void TestSessionSync(void) {
     NSString *records = [[[profile stringByAppendingPathComponent:@"claude-code-sessions"] stringByAppendingPathComponent:NSUUID.UUID.UUIDString] stringByAppendingPathComponent:NSUUID.UUID.UUIDString];
     @try {
         NSCAssert([fm createDirectoryAtPath:sub withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions:@0700} error:nil] && [fm createDirectoryAtPath:folder withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions:@0700} error:nil] && [fm createDirectoryAtPath:records withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions:@0700} error:nil],@"fixture directories");
+        // Format compatibility, not version: no records passes; otherwise one record must start with the known keys.
+        NSString *formats = [root stringByAppendingPathComponent:@"formats"];
+        NSCAssert([fm createDirectoryAtPath:formats withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions:@0700} error:nil] && SessionRecordFormatKnown(formats),@"no records yet is compatible");
+        [@"{\"id\":\"x\",\"cwd\":\"/a\"}" writeToFile:[formats stringByAppendingPathComponent:@"local_a.json"] atomically:NO encoding:NSUTF8StringEncoding error:nil];
+        NSCAssert(!SessionRecordFormatKnown(formats),@"only unknown records is incompatible");
+        [@"{\"sessionId\":\"local_x\",\"cliSessionId\":\"x\",\"cwd\":\"/a \\\"b\\\"\",\"originCwd\":\"/a\",\"title\":\"t\"}" writeToFile:[formats stringByAppendingPathComponent:@"local_b.json"] atomically:NO encoding:NSUTF8StringEncoding error:nil];
+        NSCAssert(SessionRecordFormatKnown(formats),@"one known record is enough");
+        NSString *linkedFormats = [root stringByAppendingPathComponent:@"linked-formats"];
+        NSCAssert([fm createDirectoryAtPath:linkedFormats withIntermediateDirectories:YES attributes:@{NSFilePosixPermissions:@0700} error:nil] && symlink([formats stringByAppendingPathComponent:@"local_b.json"].fileSystemRepresentation,[linkedFormats stringByAppendingPathComponent:@"local_b.json"].fileSystemRepresentation) == 0 && !SessionRecordFormatKnown(linkedFormats),@"an unreadable record counts as unknown, not absent");
         NSString *outside = [home stringByAppendingPathComponent:@"Secret/plan.txt"], *inside = [project stringByAppendingPathComponent:@"src/a.m"];
         NSMutableArray *lines = [NSMutableArray array];
         void (^row)(NSDictionary *) = ^(NSDictionary *value) { [lines addObject:[[NSString alloc] initWithData:[NSJSONSerialization dataWithJSONObject:value options:0 error:nil] encoding:NSUTF8StringEncoding]]; };
@@ -418,7 +427,7 @@ void TestSessionSync(void) {
         NSDictionary *refreshed = CleanSession(source,project,home,keep);
         NSCAssert([refreshed[@"sessionId"] isEqual:keep] && [[[NSString alloc] initWithData:refreshed[@"jsonl"] encoding:NSUTF8StringEncoding] containsString:keep],@"replacement keeps the target ID");
         [oldBytes writeToFile:keepFile atomically:NO];
-        [[NSString stringWithFormat:@"{\"sessionId\":\"local_other\",\"cliSessionId\":\"%@\",\"title\":\"旧\",\"model\":\"TARGETMODEL\",\"isArchived\":false}",keep] writeToFile:officialRecord atomically:NO encoding:NSUTF8StringEncoding error:nil];
+        [[NSString stringWithFormat:@"{\"sessionId\":\"local_other\",\"cliSessionId\":\"%@\",\"cwd\":\"/p\",\"originCwd\":\"/p\",\"title\":\"旧\",\"model\":\"TARGETMODEL\",\"isArchived\":false}",keep] writeToFile:officialRecord atomically:NO encoding:NSUTF8StringEncoding error:nil];
         NSString *bin = [root stringByAppendingPathComponent:@"bin"]; [fm createDirectoryAtPath:bin withIntermediateDirectories:YES attributes:nil error:nil];
         NSURL *(^toBin)(NSURL *) = ^NSURL *(NSURL *path) { NSURL *to = [NSURL fileURLWithPath:[bin stringByAppendingPathComponent:path.lastPathComponent]]; return [fm moveItemAtURL:path toURL:to error:nil] ? to : nil; };
         long long older = 1000000000LL*1000000000LL;
@@ -431,7 +440,7 @@ void TestSessionSync(void) {
         [fm removeItemAtPath:officialRecord error:nil]; [foreignBytes writeToFile:foreign atomically:NO];
         NSCAssert(ReplaceSyncedSession(profile,nil,config,configSlug,keep,refreshed[@"jsonl"],refreshed[@"record"],later,toBin,safe) != nil && [[NSData dataWithContentsOfFile:foreign] isEqual:foreignBytes] && [[NSData dataWithContentsOfFile:keepFile] isEqual:oldBytes],@"another session's record is not overwritten");
         [fm removeItemAtPath:foreign error:nil];
-        [[NSString stringWithFormat:@"{\"sessionId\":\"local_other\",\"cliSessionId\":\"%@\",\"title\":\"旧\",\"model\":\"TARGETMODEL\",\"isArchived\":false}",keep] writeToFile:officialRecord atomically:NO encoding:NSUTF8StringEncoding error:nil];
+        [[NSString stringWithFormat:@"{\"sessionId\":\"local_other\",\"cliSessionId\":\"%@\",\"cwd\":\"/p\",\"originCwd\":\"/p\",\"title\":\"旧\",\"model\":\"TARGETMODEL\",\"isArchived\":false}",keep] writeToFile:officialRecord atomically:NO encoding:NSUTF8StringEncoding error:nil];
         NSString *linkedRecord = [records stringByAppendingPathComponent:@"local_hardlink.json"], *elsewhere = [root stringByAppendingPathComponent:@"elsewhere.json"];
         // With the real record gone the scan must reach this link, whatever the directory order.
         NSData *officialBytes = [NSData dataWithContentsOfFile:officialRecord]; [fm removeItemAtPath:officialRecord error:nil];
@@ -446,7 +455,7 @@ void TestSessionSync(void) {
         // A failed publish puts the old version back.
         NSCAssert(ReplaceSyncedSession(profile,nil,config,configSlug,keep,refreshed[@"jsonl"],refreshed[@"record"],later,^NSURL *(NSURL *path) { NSURL *to = toBin(path); [oldBytes writeToFile:keepFile atomically:NO]; return to; },safe) != nil && [[NSData dataWithContentsOfFile:keepFile] isEqual:oldBytes],@"publish conflict is reported");
         [fm removeItemAtPath:[bin stringByAppendingPathComponent:keepFile.lastPathComponent] error:nil];
-        [[NSString stringWithFormat:@"{\"sessionId\":\"local_other\",\"cliSessionId\":\"%@\",\"title\":\"旧\",\"model\":\"TARGETMODEL\",\"isArchived\":false}",keep] writeToFile:officialRecord atomically:NO encoding:NSUTF8StringEncoding error:nil];
+        [[NSString stringWithFormat:@"{\"sessionId\":\"local_other\",\"cliSessionId\":\"%@\",\"cwd\":\"/p\",\"originCwd\":\"/p\",\"title\":\"旧\",\"model\":\"TARGETMODEL\",\"isArchived\":false}",keep] writeToFile:officialRecord atomically:NO encoding:NSUTF8StringEncoding error:nil];
         NSCAssert(ReplaceSyncedSession(profile,nil,config,configSlug,keep,refreshed[@"jsonl"],refreshed[@"record"],later,^NSURL *(NSURL *path) { return nil; },safe) != nil && [[NSData dataWithContentsOfFile:keepFile] isEqual:oldBytes],@"failed trash leaves the old version");
         NSCAssert(ReplaceSyncedSession(profile,nil,config,configSlug,keep,refreshed[@"jsonl"],refreshed[@"record"],later,toBin,^NSString *{ return @"running"; }) != nil && [[NSData dataWithContentsOfFile:keepFile] isEqual:oldBytes],@"running target is not replaced");
         NSCAssert(!ReplaceSyncedSession(profile,nil,config,configSlug,keep,refreshed[@"jsonl"],refreshed[@"record"],later,toBin,safe),@"replace succeeds");

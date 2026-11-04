@@ -9,6 +9,7 @@ void TestProjectImport(void);
 
 // Publishes a cleaned session: transcript first, then the record that points at it. Never overwrites; a failed
 // record removes only the transcript created here. guard is checked before each publication. Returns nil on success.
+BOOL SessionRecordFormatKnown(NSString *directory);
 NSString *PublishSyncedSession(NSString *profile, NSString *organization, NSString *configFolder, NSString *slug, NSString *session,
     NSData *transcript, NSData *record, NSString *(^guard)(void));
 // Replaces a linked session's transcript with a newer version. The old transcript goes through trash (nil: the Trash) and is put

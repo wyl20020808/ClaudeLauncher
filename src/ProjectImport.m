@@ -258,6 +258,34 @@ static NSString *WriteTemporary(int directory, NSString *temporary, NSData *data
     BOOL ready = written == data.length && fsync(file) == 0; close(file);
     return ready ? nil : L(@"写入失败，原有文件未覆盖。");
 }
+// Compatibility is judged by format, not version (SPEC 写入, 2026-11-04): with existing records, at least one must start with
+// sessionId, cliSessionId, cwd, originCwd in that order; no records yet passes on the folder layout alone.
+static BOOL RecordFormatKnown(int records) {
+    int copy = dup(records); DIR *stream = copy >= 0 ? fdopendir(copy) : NULL; BOOL any = NO, known = NO; NSUInteger entries = 0;
+    if (!stream) { if (copy >= 0) close(copy); return NO; }
+    rewinddir(stream);
+    for (struct dirent *entry; !known && (entry = readdir(stream)); ) {
+        NSString *name = [NSString stringWithUTF8String:entry->d_name];
+        if (![name hasPrefix:@"local_"] || ![name hasSuffix:@".json"]) continue;
+        if (++entries > 5000) { any = YES; break; }
+        int file = openat(records,entry->d_name,O_RDONLY|O_NOFOLLOW|O_NONBLOCK|O_CLOEXEC); struct stat info;
+        if (file < 0 || fstat(file,&info) != 0 || !S_ISREG(info.st_mode) || info.st_uid != getuid() || info.st_nlink != 1) { if (file >= 0) close(file); any = YES; continue; } // Unreadable counts as unknown, not as absent.
+        PrefixReader r = {file,0,NO};
+        known = Nonspace(&r) == '{' && [JSONString(&r,64) isEqual:@"sessionId"] && Nonspace(&r) == ':' && JSONString(&r,64) && Nonspace(&r) == ',' &&
+            [JSONString(&r,64) isEqual:@"cliSessionId"] && Nonspace(&r) == ':' && JSONString(&r,64) && Nonspace(&r) == ',' &&
+            [JSONString(&r,64) isEqual:@"cwd"] && Nonspace(&r) == ':' && JSONString(&r,4096) && Nonspace(&r) == ',' &&
+            [JSONString(&r,64) isEqual:@"originCwd"] && Nonspace(&r) == ':';
+        any = YES; close(file);
+    }
+    rewinddir(stream); // The dup shares the directory offset with the caller's descriptor; later scans must start at the top.
+    closedir(stream);
+    return known || !any;
+}
+BOOL SessionRecordFormatKnown(NSString *directory) {
+    int fd = open(directory.fileSystemRepresentation,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
+    if (fd < 0) return NO;
+    BOOL known = RecordFormatKnown(fd); close(fd); return known;
+}
 static NSString *PublishExclusive(int directory, NSString *name, NSData *data, NSString *(^guard)(void)) {
     NSString *temporary = [@".claude-launcher-session-" stringByAppendingString:NSUUID.UUID.UUIDString];
     NSString *failure = WriteTemporary(directory,temporary,data) ?: guard();
@@ -274,6 +302,7 @@ NSString *PublishSyncedSession(NSString *profile, NSString *organization, NSStri
     if (!UUIDString(session) || !slug.length || [slug containsString:@"/"]) return L(@"会话标识或项目目录名无效。");
     int records = RegistrationDirectory(profile,organization);
     if (records < 0) return L(@"目标账号的记录目录已变化或不安全，未写入。请重新同步。");
+    if (!RecordFormatKnown(records)) { close(records); return L(@"目标账号的会话记录格式与启动器不兼容（Claude 可能改了格式），未写入。"); }
     int config = ProfileDirectory(configFolder), projects = -1, folder = -1;
     if (config >= 0) {
         projects = ChildDirectory(config,@"projects");
@@ -346,6 +375,7 @@ NSString *ReplaceSyncedSession(NSString *profile, NSString *organization, NSStri
     if (!UUIDString(session) || !slug.length || [slug containsString:@"/"]) return L(@"会话标识或项目目录名无效。");
     int records = RegistrationDirectory(profile,organization);
     if (records < 0) return L(@"目标账号的记录目录已变化或不安全，未写入。请重新同步。");
+    if (!RecordFormatKnown(records)) { close(records); return L(@"目标账号的会话记录格式与启动器不兼容（Claude 可能改了格式），未写入。"); }
     int config = ProfileDirectory(configFolder), projects = config >= 0 ? ChildDirectory(config,@"projects") : -1, folder = projects >= 0 ? ChildDirectory(projects,slug) : -1;
     NSString *name = [session stringByAppendingString:@".jsonl"]; struct stat info, now;
     NSString *transcriptTemporary = nil, *recordTemporary = nil, *recordName = nil, *freshName = [NSString stringWithFormat:@"local_%@.json",session];

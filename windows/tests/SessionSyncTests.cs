@@ -248,7 +248,7 @@ internal static class SessionSyncTests {
         Check(refreshed.Stamp == File.GetLastWriteTimeUtc(source).Ticks, "clean reports the source version in ticks");
         Check(!SessionSync.Clean(source, project, home).Replaces, "a new copy is not a replacement");
         byte[] oldBytes = Encoding.UTF8.GetBytes("old\n");
-        Func<string, string> recordFor = id => "{\"sessionId\":\"local_other\",\"cliSessionId\":\"" + id + "\",\"title\":\"旧\",\"model\":\"TARGETMODEL\",\"isArchived\":false,\"lastActivityAt\":1}";
+        Func<string, string> recordFor = id => "{\"sessionId\":\"local_other\",\"cliSessionId\":\"" + id + "\",\"cwd\":\"D:\\\\p\",\"originCwd\":\"D:\\\\p\",\"title\":\"旧\",\"model\":\"TARGETMODEL\",\"isArchived\":false,\"lastActivityAt\":1}";
         string officialRecord = Path.Combine(records, "local_" + Guid.NewGuid() + ".json");
         File.WriteAllBytes(keepFile, oldBytes); File.WriteAllText(officialRecord, recordFor(keep));
         string bin = Path.Combine(root, "bin"); Directory.CreateDirectory(bin);

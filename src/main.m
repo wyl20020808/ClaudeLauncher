@@ -528,16 +528,10 @@ static BOOL VisibleWindow(pid_t pid) {
     return NO;
 }
 
-// Session sync was verified only on 4.4212.0 (2026-10-30: display and continuation after restart).
+// Claude version is not checked: the publish step checks the target's record format instead (SPEC 写入, 2026-11-04).
 static NSString *SessionSyncGuard(NSInteger account) {
     if (account < 1 || account > 10) return L(@"目标账号编号无效。");
     if ([NSUserDefaults.standardUserDefaults integerForKey:@"loginProtectionAccount"]) return L(@"登录保护期间不能同步会话，请先完成登录并结束保护。");
-    NSString *version = nil;
-    for (NSString *path in @[@"/Applications/Claude.app",[NSHomeDirectory() stringByAppendingPathComponent:@"Applications/Claude.app"]]) {
-        if (![NSFileManager.defaultManager isExecutableFileAtPath:[path stringByAppendingPathComponent:@"Contents/MacOS/Claude"]]) continue;
-        version = [NSDictionary dictionaryWithContentsOfFile:[path stringByAppendingPathComponent:@"Contents/Info.plist"]][@"CFBundleShortVersionString"]; break;
-    }
-    if (![version isEqual:@"4.4212.0"]) return L(@"同步会话只验证过 Claude 4.4212.0；当前版本不匹配，已停止写入。");
     NSString *failure = nil; NSDictionary *processes = Scan(&failure);
     if (failure) return failure;
     if ([processes[@(account)] count]) return L(@"请保存工作并正常退出目标账号后重试；同步期间不要从其他入口启动它。启动器不会替你退出。");

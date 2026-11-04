@@ -1,5 +1,12 @@
 # 项目状态
 
+## macOS：同步会话改为格式兼容检查（2026-11-04，dev，未发布）
+
+- 与 Windows 同一规则：去掉 `SessionSyncGuard` 里的 4.4212.0 版本检查；`PublishSyncedSession`／`ReplaceSyncedSession` 拿到目标记录目录后调用 `RecordFormatKnown`（已有 `local_*.json` 时至少一条前四个键依次为 `sessionId`、`cliSessionId`、`cwd`、`originCwd`；没有记录时按目录结构判断）。只看本人所有、单链接的普通文件，读前缀不超过 32 KB；打不开的记录（不属于本人、链接、硬链接）算未知格式，与 Windows 1.8.6 相同。
+- 实现注意：扫描用 `dup` 后的目录流，与调用方共享读取位置，开头和结尾都 `rewinddir`，否则后面的 `RecordForSession` 读不到文件（自检“hard-linked record is refused”先失败过，已修）。
+- 自检合成记录补上 `cwd`、`originCwd`（真实官方记录都有，见 2026-10-31、2026-11-04 只读调查），Windows 测试同样补上。新增 3 项格式兼容断言。
+- 验证：`scripts/build.sh` 通过（编译无警告，`--self-test` 全部 PASS）。未生成 DMG、未安装；真实 Claude 新版本上的显示和续聊未验证。
+
 ## Windows 1.8.6：所有者接受 Administrators 组、同步会话改为格式兼容检查（2026-11-04）
 
 - 发布：用户在看过本节未验证项后要求发布新版本（2026-11-04），版本号改为 1.8.6，发布说明见 [RELEASE-windows-1.8.6](RELEASE-windows-1.8.6.md)。已发布为 `windows-v1.8.6`（Latest），目标 `24ab85c`（dev 与 main 同一提交，快进推送）。先跑 `build.ps1`、`test-install.ps1`（3 个场景）、`publish-release.ps1 -DryRun`，都通过；正式发布退出 2（未回滚）：草稿附件经 API 逐字节核对通过；GitHub latest/download 的两份清单、Setup、DMG 复核均 OK。
