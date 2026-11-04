@@ -5,10 +5,10 @@
 ; （%APPDATA%\Claude-*、%LOCALAPPDATA%\Claude-Data、商店版 Packages 目录）或启动器日志/状态目录。
 
 #ifndef AppVersion
-  #define AppVersion "1.8.8"
+  #define AppVersion "1.8.9"
 #endif
 #ifndef FileVersion
-  #define FileVersion "1.8.8.0"
+  #define FileVersion "1.8.9.0"
 #endif
 #ifndef SourceExe
   #define SourceExe "..\artifacts\bin\ClaudeLauncher.exe"
