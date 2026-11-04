@@ -866,7 +866,7 @@
 "同步会话" = "Sync sessions";
 
 /* Windows session sync: placeholders kept separate from the macOS multi-line keys. */
-"同步会话只支持商店版 Claude 4.4212.0.0；当前版本不匹配，已停止写入。" = "Session sync supports only the Store version of Claude 4.4212.0.0. The installed version does not match, so nothing was written.";
+"目标账号的会话记录格式与启动器不兼容（Claude 可能改了格式），未写入。" = "The target account's session records use a format the launcher does not recognize (Claude may have changed it). Nothing was written.";
 "历史较长的会话会占用目标账号较多额度；启动器不会自动截断。" = "Long histories use more of the target account’s quota. The launcher does not shorten them.";
 "部分会话含图片，同步后 AI 看不到它们。" = "Some sessions include images. The AI will not see them after the sync.";
 "%lu 条无法处理，不会同步：" = "%lu could not be processed and will not sync:";

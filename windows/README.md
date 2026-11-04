@@ -2,7 +2,7 @@
 
 同步会话（含最新版本替换、新账号提示、多组织目录定位）、新手教程和永久入口、账号表格去内部滚动、两个说明图标、五小时 0% 估算。同步会话没有在真实账号和 Claude 客户端上实测，只做了文件校对和合成数据自检，详情和未验证项见 [STATUS](../docs/STATUS.md) 与 [发布说明](../docs/RELEASE-windows-1.8.5.md)。
 
-- 同步会话逻辑在 `src/SessionSync.cs`（列表、清理、关联、发布、替换、目录定位），组织读取在 `src/Organization.cs`（winsqlite3 只读、DPAPI、BCrypt AES-GCM），自检在 `tests/SessionSyncTests.cs`；只放行商店版 Claude 4.4212.0.0。`build.ps1` 会拒绝这两个源文件里出现联网或启动进程的 API。
+- 同步会话逻辑在 `src/SessionSync.cs`（列表、清理、关联、发布、替换、目录定位），组织读取在 `src/Organization.cs`（winsqlite3 只读、DPAPI、BCrypt AES-GCM），自检在 `tests/SessionSyncTests.cs`；不限 Claude 版本，写入前检查目标记录格式是否兼容。`build.ps1` 会拒绝这两个源文件里出现联网或启动进程的 API。
 - 启动器自己的记录：`session-links.json`（同步关联）、`initial-sync.json`（待询问的新账号），都在 `%LOCALAPPDATA%\Claude-MultiLauncher`，恢复默认不清除。
 - 教程在 `src/Tutorial.cs` 和 `src/LauncherUI.cs`，文档和配图在 `assets/tutorial/`，构建时内嵌。重新生成配图：编译 `tests/UiPreview.cs` 后运行 `UiPreview.exe --guide assets/tutorial`，只用演示数据。
 ## Windows 1.8.4（2026-10-31，同步 macOS 1.7.18）
@@ -147,7 +147,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup.ps1
 1. **01 数据目录**：MSIX 版为 `%LOCALAPPDATA%\Claude-Data\claude_pzs8sxrjxfjjc`，旧安装可能是 `%APPDATA%\Claude`。02～10 的基础目录为 `%APPDATA%`，沿用已有数据。商店版可能把目录虚拟化到 `Packages\…\LocalCache\Roaming\`，识别、校验、显示和删除都同时覆盖这两处。（SPEC 已确认）
 2. **托盘中没有可见窗口的实例**：仅当该账号恰好一个已核实主进程且无可见窗口时，用**该 PID 自身的可执行文件**、同一 `--user-data-dir` 再启动一次，由 Claude 单实例锁转交给已有进程显示窗口。5 秒后重新扫描，若同账号出现第二个主进程则报错，不结束任何进程。（SPEC 已确认）
 3. **新目录权限**：不修改 ACL，继承 `%APPDATA%` 的默认权限（本人、SYSTEM、Administrators），不等同于 macOS 的 0700。（SPEC 已确认）
-4. **所有者校验**：接受当前用户或启动器令牌默认所有者（提权／关闭 UAC 时为 Administrators 组）；其他所有者拒绝（失败即停止）。（SPEC 已确认）
+4. **所有者校验**：接受当前用户、启动器令牌默认所有者或本机 Administrators 组（提权／关闭 UAC 时建的目录归该组）；其他所有者拒绝（失败即停止）。（SPEC 已确认）
 5. **进程范围**：只扫描当前登录会话中的进程。（SPEC 已确认）
 6. **额外功能**：本地诊断日志（设置页“本地诊断日志 → 打开”）；1.2.0 兼容的 `--apply-update`。
 10. **更新签名者比对**：程序与 Setup 尚无 Authenticode 签名，当前无法执行“同一证书”检查，只依赖清单 RSA 签名与 SHA-256；签名后自动生效。

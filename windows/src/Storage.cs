@@ -55,10 +55,11 @@ namespace ClaudeLauncher {
         }
         public static void Validate(int number, string roaming, string local) { Validate(number, roaming, local, true); }
         // recursive=false 只复查目录链与顶层存储项，用于后台递归检查完成后、启动前的快速复核。
-        // 本进程新建文件的所有者：当前用户，或令牌默认所有者（已提权或关闭 UAC 的管理员为 Administrators 组）。
+        // 接受当前用户、令牌默认所有者，以及本机 Administrators 组：提权或关闭 UAC 时建的目录归该组，之后不提权运行也要认（该组本就能完全控制本人目录）。
+        static readonly SecurityIdentifier Administrators = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
         public static bool OwnedByMe(SecurityIdentifier owner) {
             var me = WindowsIdentity.GetCurrent();
-            return owner != null && (owner.Equals(me.User) || owner.Equals(me.Owner));
+            return owner != null && (owner.Equals(me.User) || owner.Equals(me.Owner) || owner.Equals(Administrators));
         }
         public static void Validate(int number, string roaming, string local, bool recursive) {
             string[] folders = ProfileDeletion.Candidates(number, roaming, local);
@@ -128,7 +129,7 @@ namespace ClaudeLauncher {
             try {
                 Directory.CreateDirectory(root);
                 var me = WindowsIdentity.GetCurrent();
-                Check(Storage.OwnedByMe(me.User) && Storage.OwnedByMe(me.Owner) && !Storage.OwnedByMe(new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null)) && !Storage.OwnedByMe(null), "所有者判断错误");
+                Check(Storage.OwnedByMe(me.User) && Storage.OwnedByMe(me.Owner) && Storage.OwnedByMe(new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null)) && !Storage.OwnedByMe(new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null)) && !Storage.OwnedByMe(null), "所有者判断错误");
                 UpdateChecks(root);
                 // 账号与 Code 配置映射
                 var folders = Enumerable.Range(1, 10).Select(n => Core.Folder(n, roaming)).ToArray();

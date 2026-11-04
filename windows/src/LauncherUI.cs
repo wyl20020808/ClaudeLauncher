@@ -754,7 +754,6 @@ namespace ClaudeLauncher {
         static string SessionSyncGuard(int to) {
             if (to < 1 || to > 10) return "目标账号编号无效。";
             if (LoginProtection.Read(ProfileDeletion.Local) != 0) return "登录保护期间不能同步会话，请先完成登录并结束保护。";
-            if (!SessionSync.VersionAllowed(SessionSync.InstalledPackages())) return "同步会话只支持商店版 Claude 4.4212.0.0；当前版本不匹配，已停止写入。";
             try {
                 if (Core.Scan().Any(x => x.Number == to)) return "请保存工作并正常退出目标账号后重试；同步期间不要从其他入口启动它。启动器不会替你退出。";
                 Storage.Validate(to, Core.Root, ProfileDeletion.Local, false);

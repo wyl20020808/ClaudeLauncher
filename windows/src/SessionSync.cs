@@ -20,7 +20,6 @@ namespace ClaudeLauncher {
     internal static class SessionSync {
         const long MaxSourceBytes = 512L * 1024 * 1024;
         const int TailBytes = 256 * 1024, MaxSessions = 2000, MaxSlug = 200;
-        const string Publisher = "__pzs8sxrjxfjjc";
         const string Terminator = "\\s`'\"()\\[\\]<>|*?，。；：！？、）】》”’";
         static readonly Regex Tags = new Regex(@"<(system-reminder|command-name|command-message|command-args|local-command-stdout|local-command-stderr|local-command-caveat|task-notification|ide_selection|ide_opened_file)\b[^>]*>.*?</\1>", RegexOptions.Singleline);
         static readonly Regex Email = new Regex(@"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}");
@@ -353,12 +352,26 @@ namespace ClaudeLauncher {
             return new CleanedSession { SessionId = session, Slug = slug, Title = clean, Jsonl = new UTF8Encoding(false).GetBytes(jsonl.ToString()), Record = new UTF8Encoding(false).GetBytes(record), Preview = body.ToString(), Report = Appearance.Text(report), Messages = turns.Count, Images = images, Stamp = version, Replaces = targetId != null };
         }
 
-        // ---- 版本：只放行 4.4212.0.0 商店版（官方记录格式已核对；Windows 客户端续聊未实测，见 docs/STATUS.md） ----
-        internal static string[] InstalledPackages() {
-            using (var key = Registry.CurrentUser.OpenSubKey(@"Software\Classes\Local Settings\Software\Microsoft\Windows\CurrentVersion\AppModel\Repository\Packages"))
-                return key == null ? new string[0] : key.GetSubKeyNames().Where(n => n.StartsWith("Claude_", StringComparison.Ordinal) && n.EndsWith(Publisher, StringComparison.Ordinal) && Regex.IsMatch(n, "_(x64|arm64|x86)__")).ToArray();
+        // ---- 格式兼容（SPEC 写入）：不按版本号放行；目标已有记录时，至少一条须是已知格式，否则视为官方格式已变，拒绝写入 ----
+        static readonly Regex KnownRecord = new Regex("^\\s*\\{\\s*\"sessionId\"\\s*:\\s*\"[^\"\\\\]{1,64}\"\\s*,\\s*\"cliSessionId\"\\s*:\\s*\"[^\"\\\\]{1,64}\"\\s*,\\s*\"cwd\"\\s*:\\s*\"(?:[^\"\\\\]|\\\\.)*\"\\s*,\\s*\"originCwd\"\\s*:");
+        internal static bool FormatKnown(string records) {
+            try { return FormatKnownIn(records); } catch (IOException) { return false; } catch (UnauthorizedAccessException) { return false; }
         }
-        internal static bool VersionAllowed(string[] packages) { return packages.Length == 1 && Regex.IsMatch(packages[0], @"^Claude_4\.4212\.0\.0_(x64|arm64)__pzs8sxrjxfjjc$"); }
+        static bool FormatKnownIn(string records) {
+            bool any = false; int entries = 0;
+            foreach (string path in Directory.EnumerateFiles(records, "local_*.json")) {
+                if (++entries > 5000) return false;
+                FileStream stream;
+                try { stream = LocalFiles.OpenRead(path, 8 * 1024 * 1024, 7); } catch (IOException) { continue; } catch (UnauthorizedAccessException) { continue; }
+                using (stream) {
+                    var head = new byte[(int)Math.Min(4096, stream.Length)]; int count = 0, n;
+                    while (count < head.Length && (n = stream.Read(head, count, head.Length - count)) > 0) count += n;
+                    if (KnownRecord.IsMatch(Encoding.UTF8.GetString(head, 0, count))) return true;
+                }
+                any = true;
+            }
+            return !any;
+        }
 
         // ---- 目录：候选里可能是同一目录（从商店版派生的进程会继承文件重定向），按文件身份去重 ----
         internal static string[] DistinctExisting(IEnumerable<string> paths) {
@@ -471,6 +484,7 @@ namespace ClaudeLauncher {
             if (config == null) return "目标账号的项目目录无法安全打开，未写入。";
             string records = Records(profiles, organization);
             if (records == null) return "目标账号的记录目录已变化或不安全，未写入。请重新同步。";
+            if (!FormatKnown(records)) return "目标账号的会话记录格式与启动器不兼容（Claude 可能改了格式），未写入。";
             string folder = Path.Combine(config, "projects", slug), name = session + ".jsonl";
             try {
                 using (new LocalFiles(config, false)) using (new LocalFiles(records, false)) {
@@ -532,6 +546,7 @@ namespace ClaudeLauncher {
             if (!ValidTarget(session, slug)) return "会话标识或项目目录名无效。";
             string records = config == null ? null : Records(profiles, organization);
             if (records == null) return "目标账号的记录目录已变化或不安全，未写入。请重新同步。";
+            if (!FormatKnown(records)) return "目标账号的会话记录格式与启动器不兼容（Claude 可能改了格式），未写入。";
             string folder = Path.Combine(config, "projects", slug), target = Path.Combine(folder, session + ".jsonl"), freshName = "local_" + session + ".json";
             string transcriptTemp = null, recordTemp = null, aside = null;
             try {

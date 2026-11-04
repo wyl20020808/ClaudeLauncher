@@ -40,10 +40,6 @@ internal static class SessionSyncTests {
         Check(SessionSync.Within(SessionSync.Normalize(@"D:\project2\a"), @"D:\proj") == null, "similar prefix is outside");
         Check(SessionSync.Within(SessionSync.Normalize(@"D:\proj"), @"D:\proj") == "", "root itself");
         Check(SessionSync.Normalize(@"\\server\share\a") == null && SessionSync.Normalize("/etc/passwd") == null && SessionSync.Normalize(@"D:\..\..\x") == null, "UNC, posix and escaping paths are rejected");
-        // 版本白名单：只放行唯一的 4.4212.0.0 商店包。
-        Check(SessionSync.VersionAllowed(new[] { "Claude_4.4212.0.0_x64__pzs8sxrjxfjjc" }), "verified version");
-        Check(!SessionSync.VersionAllowed(new[] { "Claude_4.4213.0.0_x64__pzs8sxrjxfjjc" }) && !SessionSync.VersionAllowed(new string[0]), "other version or no package");
-        Check(!SessionSync.VersionAllowed(new[] { "Claude_4.4212.0.0_x64__pzs8sxrjxfjjc", "Claude_4.4213.0.0_x64__pzs8sxrjxfjjc" }), "two installed versions");
         // 标题后缀替换，不叠加。
         var fixedDate = new DateTime(2026, 10, 31, 12, 5, 0);
         Check(SessionSync.CopyTitle(SessionSync.CopyTitle("甲", fixedDate), fixedDate) == "甲（同步 10/31 12:05）", "suffix does not stack");
@@ -57,6 +53,13 @@ internal static class SessionSyncTests {
         string folder = Path.Combine(config, "projects", SessionSync.Slug(project));
         string records = Path.Combine(profile, "claude-code-sessions", Guid.NewGuid().ToString(), Guid.NewGuid().ToString());
         Directory.CreateDirectory(folder); Directory.CreateDirectory(records);
+        // 格式兼容：不看版本号；没有记录算兼容，已有记录时至少一条是已知格式。
+        string formats = Path.Combine(root, "formats"); Directory.CreateDirectory(formats);
+        Check(SessionSync.FormatKnown(formats), "no records yet is compatible");
+        File.WriteAllText(Path.Combine(formats, "local_a.json"), "{\"id\":\"x\",\"cwd\":\"D:\\\\a\"}");
+        Check(!SessionSync.FormatKnown(formats), "only unknown records is incompatible");
+        File.WriteAllText(Path.Combine(formats, "local_b.json"), "{\"sessionId\":\"local_x\",\"cliSessionId\":\"x\",\"cwd\":\"D:\\\\a \\\"b\\\"\",\"originCwd\":\"D:\\\\a\",\"title\":\"t\"}");
+        Check(SessionSync.FormatKnown(formats), "one known record is enough");
         string outside = home + @"\Private\plan.txt", inside = project + @"\src\a.cs";
         string mixedOutside = home.ToUpperInvariant().Replace('\\', '/') + "/Private/MIXED.txt", mixedInside = project.ToLowerInvariant().Replace('\\', '/') + "/src/mixed.cs";
         var lines = new List<string>();
@@ -199,7 +202,7 @@ internal static class SessionSyncTests {
         // 英文：Windows 动态拼出的文字都能对上词条，也不提 Mac。
         int language = Appearance.Language; Appearance.Language = 1;
         try {
-            foreach (string chinese in new[] { "已选 2 条", "账号 02（运行中）", "账号 02 · 10/31 12:05", "预览：同步 3 条会话到账号 02", "会话同步：账号 02 新增 1 条，替换 0 条，共选择 3 条", "共 12 KB。脱敏只认固定格式，其他私人信息请自己看一遍。", "3 条无法处理，不会同步：", "3 条无法处理，没有同步。", "已写入 2 条。打开账号 02 后，它们会出现在侧栏，标题后带“同步”和时间。第一条消息由你发送；如果项目还没被该账号信任，发送时官方会请你确认。", "打开账号 02", "展开或折叠：demo", "同步会话只支持商店版 Claude 4.4212.0.0；当前版本不匹配，已停止写入。", "保留 4 条消息，2 条工具说明。\n丢弃：1 个工具结果、1 个思考块、0 张图片、0 行子代理记录、2 行非主链记录。\n替换：1 处邮箱／密钥／令牌，1 个项目外路径。", "图文说明，随时翻阅。文档在本机打开，不联网。", "账号 02 · 10/31 12:05", "有更新", "已是最新", "新增", "其中 2 条会替换账号 03 里的旧版本，旧版本移到回收站。替换后那边也只剩清理内容，没有工具结果和图片。", "目标账号有多套账号／组织记录，要读到它当前的组织才能确定写入位置，但这次没有读到（Organization key unavailable）。", "无法把旧版本移到回收站，未替换。", "新版本发布失败，旧版本保留在同目录的 .claude-launcher-old-ab12，需要手动改回原名。", "旧版本没能移到回收站，保留在同目录的 .claude-launcher-old-ab12。", "会话关联记录无法读取，本次不保存关联：bad", "账号 03 已准备好", "要把其他账号的项目和会话同步过来吗？默认勾选全部原始会话，之前同步过的副本不勾选；可以调整，写入前还会预览。\n\n写入的是清理副本：只保留对话文字和工具请求说明。\n\n选“以后再说”不再提示，之后可以在项目页点“同步会话…”。", "选择并同步…", "以后再说", "暂时不能同步", "无法同步到这个账号", "没有确定写入位置，未写入。", "没有写入会话", "已写入 0 条。", "目标账号的记录目录已变化或不安全，未写入。请重新同步。", "目标账号还没有可用的本地记录目录。请先在该账号正常创建一次本地会话。", "目标账号当前的组织还没有可用的本地记录目录。请先在该账号正常创建一次本地会话。", "组织密钥不可用", "组织记录正在更新", "当前组织有歧义", "未找到当前组织", "组织格式不支持", "目标账号里的这条会话比来源更新，未替换。", "目标账号里已有同名记录，但不属于这条会话，未替换。", "目标账号的记录目录里有无法安全读取的文件，未替换。", "目标账号里的这条会话刚有变化，未替换。", "无法更新目标账号的记录，未替换。", "无法原子发布新文件，旧版本已放回。", "目标账号里的旧版本无法安全打开，未替换。", "把会话清理后同步到另一个账号接着聊。不带账号信息，不合并；同步过的会话以最新版本为准，直接替换另一边的旧版本。", "为勾选的会话各生成一份清理副本放到目标账号：只保留对话文字和工具请求说明，不带账号信息、权限、工具结果和图片。同步过的会话按最新版本为准：有变动时直接替换目标里的旧版本（旧版本移到回收站），没变动的不可勾选。写入前可以预览。", "官方按钮未显示五小时，按 0% 显示" }) {
+            foreach (string chinese in new[] { "已选 2 条", "账号 02（运行中）", "账号 02 · 10/31 12:05", "预览：同步 3 条会话到账号 02", "会话同步：账号 02 新增 1 条，替换 0 条，共选择 3 条", "共 12 KB。脱敏只认固定格式，其他私人信息请自己看一遍。", "3 条无法处理，不会同步：", "3 条无法处理，没有同步。", "已写入 2 条。打开账号 02 后，它们会出现在侧栏，标题后带“同步”和时间。第一条消息由你发送；如果项目还没被该账号信任，发送时官方会请你确认。", "打开账号 02", "展开或折叠：demo", "目标账号的会话记录格式与启动器不兼容（Claude 可能改了格式），未写入。", "保留 4 条消息，2 条工具说明。\n丢弃：1 个工具结果、1 个思考块、0 张图片、0 行子代理记录、2 行非主链记录。\n替换：1 处邮箱／密钥／令牌，1 个项目外路径。", "图文说明，随时翻阅。文档在本机打开，不联网。", "账号 02 · 10/31 12:05", "有更新", "已是最新", "新增", "其中 2 条会替换账号 03 里的旧版本，旧版本移到回收站。替换后那边也只剩清理内容，没有工具结果和图片。", "目标账号有多套账号／组织记录，要读到它当前的组织才能确定写入位置，但这次没有读到（Organization key unavailable）。", "无法把旧版本移到回收站，未替换。", "新版本发布失败，旧版本保留在同目录的 .claude-launcher-old-ab12，需要手动改回原名。", "旧版本没能移到回收站，保留在同目录的 .claude-launcher-old-ab12。", "会话关联记录无法读取，本次不保存关联：bad", "账号 03 已准备好", "要把其他账号的项目和会话同步过来吗？默认勾选全部原始会话，之前同步过的副本不勾选；可以调整，写入前还会预览。\n\n写入的是清理副本：只保留对话文字和工具请求说明。\n\n选“以后再说”不再提示，之后可以在项目页点“同步会话…”。", "选择并同步…", "以后再说", "暂时不能同步", "无法同步到这个账号", "没有确定写入位置，未写入。", "没有写入会话", "已写入 0 条。", "目标账号的记录目录已变化或不安全，未写入。请重新同步。", "目标账号还没有可用的本地记录目录。请先在该账号正常创建一次本地会话。", "目标账号当前的组织还没有可用的本地记录目录。请先在该账号正常创建一次本地会话。", "组织密钥不可用", "组织记录正在更新", "当前组织有歧义", "未找到当前组织", "组织格式不支持", "目标账号里的这条会话比来源更新，未替换。", "目标账号里已有同名记录，但不属于这条会话，未替换。", "目标账号的记录目录里有无法安全读取的文件，未替换。", "目标账号里的这条会话刚有变化，未替换。", "无法更新目标账号的记录，未替换。", "无法原子发布新文件，旧版本已放回。", "目标账号里的旧版本无法安全打开，未替换。", "把会话清理后同步到另一个账号接着聊。不带账号信息，不合并；同步过的会话以最新版本为准，直接替换另一边的旧版本。", "为勾选的会话各生成一份清理副本放到目标账号：只保留对话文字和工具请求说明，不带账号信息、权限、工具结果和图片。同步过的会话按最新版本为准：有变动时直接替换目标里的旧版本（旧版本移到回收站），没变动的不可勾选。写入前可以预览。", "官方按钮未显示五小时，按 0% 显示" }) {
                 string english = Appearance.Text(chinese);
                 Check(!System.Text.RegularExpressions.Regex.IsMatch(english, @"[一-鿿]") && !english.Contains("Mac") && !english.Contains("Trash"), "English text for: " + chinese + " => " + english);
             }

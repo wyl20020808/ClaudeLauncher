@@ -1,5 +1,11 @@
 # 项目状态
 
+## Windows：所有者接受 Administrators 组、同步会话改为格式兼容检查（2026-11-04，dev，未发布）
+
+- 客户机（1.8.5）同步到 02 报“存储项不属于当前用户：…\Claude-Second\Network”。`dir /q` 显示 10-28 首次运行建的目录（Network、Local State、claude-code-sessions 等）归 `BUILTIN\Administrators`，10-30 以后的新文件归本人：当时提权／关闭 UAC，之后不再提权，令牌默认所有者变回本人，1.8.3 的规则不再认旧目录。`Storage.OwnedByMe` 增加本机 Administrators 组；SYSTEM、其他用户仍拒绝。启动存储检查、同步、配置同步、交接、设置读取共用这一判断。
+- 同一客户机随后报“只支持商店版 Claude 4.4212.0.0”。用户要求兼容即可、不写死版本：去掉版本白名单，`Publish`／`Replace` 在拿到目标记录目录后调用 `SessionSync.FormatKnown`（已有 `local_*.json` 时至少一条前四个键为已知顺序，否则拒绝；没有记录时按目录结构判断）。AGENTS.md、SPEC、Windows README／用户指南、英文词条同步。macOS 仍是 4.4212.0 白名单，未改。
+- 自检：新增 Administrators 所有者 1 项、格式兼容 3 项，删除版本白名单 3 项。本机为 Mac，**未构建、未运行**；客户机实际同步未验证。
+
 ## Windows 1.8.5 已发布（2026-11-04，windows-v1.8.5）
 
 - 发布：用户在看过未验证项（真实客户端显示、续聊、替换后显示、真实 `lastActiveOrg` 读取均未验证）后要求发布，视为确认 4.4212.0.0 只到文件层面验证。目标 `1ac28de`（dev 与 main 同一提交，均为快进推送；功能分支也已推送）。`publish-release.ps1 -KeyFile <secrets\signing-key.dpapi>` 先 `-DryRun` 通过，正式发布退出 2（未回滚）：草稿附件经 API 逐字节核对通过，已转正式并为 Latest；GitHub latest/download 的两份清单、Setup、DMG 复核均 OK。
