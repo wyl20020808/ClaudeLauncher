@@ -55,8 +55,9 @@
 - 正常关闭先扫描唯一官方主进程并核对启动时间，再发送关窗请求。Claude 留在托盘时提示用户从托盘退出。
 - 卡片横向加宽，两个用量圆环靠拢，加入时钟和日历图标，从底部顺时针绘制，按 60%／80% 阈值着色。倒计时每秒本地更新，仅显示天与小时或小时与分钟；缺失项隐藏，未知重置格式及观察时间保留在悬停说明。 圆环标题与倒计时固定使用英文，不随界面语言切换。标题为 `5-hour`、`weekly`，时间为 `2h 30m`、`3d 5h` 等简写。
 - `build.ps1 -Preview` 通过，LauncherTests 364、SyncTests 154、SessionSyncTests 369、TutorialTests 83、自检 248。中文浅色及英文暗色合成预览已查看，覆盖绿／黄／红圆环与缺失用量。符号链接创建受环境限制跳过，拷贝回退通过；保留两项既有编译警告。真实账号启动／激活／关闭、鼠标键盘与高 DPI 待人工验收。
-## macOS 1.8.2：去掉切换推荐、修趋势图、精简文字与布局（2026-11-05）
+## macOS 1.8.2：去掉切换推荐、修趋势图、精简文字与布局（2026-11-05，已发布）
 
+- 发布（用户 2026-11-05 要求）：`macos-v1.8.2`（目标 dev `6c769f1`，未合并 main），固定证书构建，`scripts/publish-macos.sh --dry-run` 通过后正式运行，草稿 API 核对、转 Latest、latest/download 复核全部通过。DMG `ClaudeLauncher-1.8.2.dmg`，8946737 字节，SHA-256 `f32b91c81c649a7422dd718055f0d951ac53069c6c02d660a4239ea9cc70c503`。Windows 文件沿用 1.8.9。
 - 范围见 [RELEASE-macos-1.8.2](RELEASE-macos-1.8.2.md)；`build.sh` 版本 1.8.2（build 33）。规格同步 SPEC 用量提醒条目（只提示，不推荐／切换）。
 - 实现：`alertUsage:` 只写提醒文本，删除 `suggestButton` 与 `switchToSuggested:`（`SuggestedAccount` 仍供项目交接使用）。`UsageTrendView` 在相邻观察间隔超过该限额窗口（5 小时／7 天）时断开线段。`pageTitled:` 去掉副标题参数；设置行静态说明与 `settingsNote` 删除；`infoButton` 改为 `addInfo:to:`，把 i 放在按钮内右侧，`ActionButton` 有子视图时内容左移 10pt。项目页按钮按文字宽度右对齐成一行，刷新改为图标按钮；日志、设置、趋势页内容上移；趋势页滚动视图关闭自动内边距，使标题与其他页齐平。
 - 验证：`build.sh` 自检全部通过；离屏截图（中英文项目页、日志、设置、趋势）已查看；中英文教程配图（项目、趋势）重新生成。
