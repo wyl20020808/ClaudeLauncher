@@ -55,6 +55,13 @@
 - 正常关闭先扫描唯一官方主进程并核对启动时间，再发送关窗请求。Claude 留在托盘时提示用户从托盘退出。
 - 卡片横向加宽，两个用量圆环靠拢，加入时钟和日历图标，从底部顺时针绘制，按 60%／80% 阈值着色。倒计时每秒本地更新，仅显示天与小时或小时与分钟；缺失项隐藏，未知重置格式及观察时间保留在悬停说明。 圆环标题与倒计时固定使用英文，不随界面语言切换。标题为 `5-hour`、`weekly`，时间为 `2h 30m`、`3d 5h` 等简写。
 - `build.ps1 -Preview` 通过，LauncherTests 364、SyncTests 154、SessionSyncTests 369、TutorialTests 83、自检 248。中文浅色及英文暗色合成预览已查看，覆盖绿／黄／红圆环与缺失用量。符号链接创建受环境限制跳过，拷贝回退通过；保留两项既有编译警告。真实账号启动／激活／关闭、鼠标键盘与高 DPI 待人工验收。
+## macOS 1.8.2：去掉切换推荐、修趋势图、精简文字与布局（2026-11-05）
+
+- 范围见 [RELEASE-macos-1.8.2](RELEASE-macos-1.8.2.md)；`build.sh` 版本 1.8.2（build 33）。规格同步 SPEC 用量提醒条目（只提示，不推荐／切换）。
+- 实现：`alertUsage:` 只写提醒文本，删除 `suggestButton` 与 `switchToSuggested:`（`SuggestedAccount` 仍供项目交接使用）。`UsageTrendView` 在相邻观察间隔超过该限额窗口（5 小时／7 天）时断开线段。`pageTitled:` 去掉副标题参数；设置行静态说明与 `settingsNote` 删除；`infoButton` 改为 `addInfo:to:`，把 i 放在按钮内右侧，`ActionButton` 有子视图时内容左移 10pt。项目页按钮按文字宽度右对齐成一行，刷新改为图标按钮；日志、设置、趋势页内容上移；趋势页滚动视图关闭自动内边距，使标题与其他页齐平。
+- 验证：`build.sh` 自检全部通过；离屏截图（中英文项目页、日志、设置、趋势）已查看；中英文教程配图（项目、趋势）重新生成。
+- 未验证：安装后的真实 GUI 点击／悬停（按钮内 i 的命中与弹出位置）、真实数据下的趋势图外观。
+
 ## macOS 1.8.1：界面同步 Windows 1.8.9 之后的改动（2026-11-05，已发布）
 
 - 发布（用户 2026-11-05 要求）：`macos-v1.8.1`（目标 dev `20f5233`，未合并 main），固定证书构建，`scripts/publish-macos.sh --dry-run` 通过后正式运行。草稿创建和四个附件上传成功，但脚本经 API 下载草稿核对时网络中断（unexpected EOF）退出，草稿保留未发布。随后按脚本同一规则手动完成：重新下载草稿，DMG 哈希与本地一致，Windows 清单与 Setup 与当前 Latest 一致，`latest-macos.json` 用 Mac 公钥验签通过；转正式并设为 Latest（上一版 Latest 为 `windows-v1.8.9`），latest/download 的两份清单逐字节一致、DMG 与 Setup 哈希一致。DMG `ClaudeLauncher-1.8.1.dmg`，9713451 字节，SHA-256 `10f76a4e94fbb5bd2122322454f32cc4ce1dab921000ee799d369504e153c28a`。Windows 文件沿用 1.8.9。本版同时包含下节的同步改进和此前 dev 上的格式兼容检查（不再按 Claude 版本号白名单）。
