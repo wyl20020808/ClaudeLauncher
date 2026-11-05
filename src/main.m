@@ -2063,6 +2063,7 @@ static void TestInitialSync(void) {
     }
     done.informativeText = [done.informativeText stringByAppendingFormat:@"\n\n%@",[NSString stringWithFormat:L(@"其中 %@ 条在来源侧栏有分组（%@）。选“打开并建分组”，启动器会在账号 %@ 新建一个会话，输入框里填好整理分组的指令；你检查后按发送，由 Claude 用官方工具建分组，会用掉一条消息的额度。启动器不会替你发送。"),
         @(ids.count).stringValue,[names componentsJoinedByString:@"、"],[NSString stringWithFormat:@"%02ld",(long)to]]];
+    done.informativeText = [done.informativeText stringByAppendingFormat:@"\n\n%@",L(@"指令同时会复制到剪贴板。账号启动较慢时输入框可能是空的，粘贴即可。")];
     [done addButtonWithTitle:L(@"打开并建分组")]; [done addButtonWithTitle:[NSString stringWithFormat:L(@"只打开账号 %@"),[NSString stringWithFormat:@"%02ld",(long)to]]]; [done addButtonWithTitle:L(@"完成")];
     NSModalResponse choice = [done runModal];
     if (choice == NSAlertSecondButtonReturn) { [self selectAccount:self.buttons[to-1]]; return; }
@@ -4030,8 +4031,11 @@ static OSStatus HotKeyHandler(EventHandlerCallRef next, EventRef event, void *co
     }
     if (prepare && !prepare()) return;
     // Claude handles a claude:// argument only at a cold start (4.16336), so this is the one way the link reaches just this account.
-    NSString *link = self.launchLink; self.launchLink = nil; self.launchPrompt = nil;
+    NSString *link = self.launchLink, *prompt = self.launchPrompt; self.launchLink = nil; self.launchPrompt = nil;
     if (link && !SidebarLinkValid(link)) { [self alert:L(@"无法打开账号") detail:L(@"预填链接无效，未启动。")]; return; }
+    // A slow cold start can drop q (4.16336: the first page load is superseded before q is handed over), so the
+    // instruction also goes to the clipboard; the completion dialog says to paste it when the box is empty.
+    if (link && prompt) { [NSPasteboard.generalPasteboard clearContents]; [NSPasteboard.generalPasteboard setString:prompt forType:NSPasteboardTypeString]; }
     self.starting[key] = [NSDate date]; [self refresh];
     self.message.stringValue = [NSString stringWithFormat:L(@"正在启动账号 %02ld…"),(long)account];
     NSWorkspaceOpenConfiguration *config = [NSWorkspaceOpenConfiguration configuration];

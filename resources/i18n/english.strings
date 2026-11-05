@@ -932,6 +932,7 @@
 "来源侧栏分组；同步后副本标题前会加上分组名" = "Sidebar group in the source account; synced copies get the group name in front of their titles";
 "%@ 条副本的标题前会加上来源侧栏的分组名：%@。同步完成后可以选“打开并建分组”，在账号 %@ 里建同名的原生分组（要你自己按发送）。" = "%@ copies get the source sidebar group name in front of their titles: %@. After syncing you can choose “Open and create groups” to create matching native groups in account %@ (you press Send yourself).";
 "其中 %@ 条在来源侧栏有分组（%@）。选“打开并建分组”，启动器会在账号 %@ 新建一个会话，输入框里填好整理分组的指令；你检查后按发送，由 Claude 用官方工具建分组，会用掉一条消息的额度。启动器不会替你发送。" = "%@ of them are in sidebar groups in the source account (%@). Choose “Open and create groups” and the launcher opens a new session in account %@ with a grouping instruction already typed in. Check it and press Send; Claude then creates the groups with its own sidebar tools, which uses one message of your quota. The launcher never sends it for you.";
+"指令同时会复制到剪贴板。账号启动较慢时输入框可能是空的，粘贴即可。" = "The instruction is also copied to the clipboard. If the account starts slowly, the message box may be empty; just paste it.";
 "打开并建分组" = "Open and create groups";
 "只打开账号 %@" = "Just open account %@";
 "指令太长，不能自动填入" = "Instruction too long to fill in";
