@@ -1,5 +1,11 @@
 # 项目状态
 
+## macOS 01 继承 CLAUDE_CONFIG_DIR 修复（2026-11-05，未提交、未发布）
+
+- 现象：账号 01 的几个 Code 会话显示“在磁盘上未找到会话”。原因：09:44 在 02 的 Code 会话里用测试程序冷启动 01，02 终端的 `CLAUDE_CONFIG_DIR` 被继承，01 实例（09:44～18:36）把会话记录写进了 `Claude-Second/ClaudeCodeConfig/projects`。正常重开 01 后，在 `~/.claude` 里找不到这些记录。记录已复制回 `~/.claude/projects`，原件保留。
+- 实测：NSWorkspace 会把调用者的环境合并给新进程，`environment` 只能覆盖、不能删除；调用前先 `unsetenv` 才能挡住。修复：启动前从启动器自身环境 `unsetenv("CLAUDE_CONFIG_DIR")`，02～10 仍由 `environment` 显式设置。SPEC 里原来写的“macOS 不继承启动器环境”已更正。Windows 版本来就会移除，不受影响。
+- 构建与自检通过。真实启动 01 的 GUI 验证：未执行。另外，以前那个 10-26 的 `Claude-Second` 旧痕迹（见下文）可能也是同一原因，未确认。
+
 ## Windows → macOS 交接（2026-11-05）
 
 - 1.8.9 之后的 Windows 界面改动（下方七节）已提交并推送 dev，未发布、未打标签、未合并 main（用户要求只同步远端，不发新版本）。推送前在副本中跑 `build.ps1`：LauncherTests 366、SyncTests 154、SessionSyncTests 369、TutorialTests 80、自检 248 通过；本机工作区的 `windows/artifacts/bin` 被运行中的开发版占用，未在原位重建。

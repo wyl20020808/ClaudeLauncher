@@ -126,7 +126,7 @@ macOS（`src/main.m`）和 Windows（`windows/`）各自原生实现，共同遵
 - 界面只显示本机已有的账号（数据目录存在、正在运行或正在启动），按编号紧凑排列；没有任何账号时显示空状态提示。“新建实例”创建 01～10 中编号最小的未使用账号。编号与目录映射不变。
 - 已有目录直接复用，不迁移、删除、覆盖、修改权限。新目录仅本人可访问。
   - **[Windows 差异，已确认]** 不设置 ACL，新目录继承 `%APPDATA%` 默认权限（本人、SYSTEM、Administrators），与“仅本人可访问”意图一致。
-- 01 的子进程环境不得带 `CLAUDE_CONFIG_DIR`。Windows 用 `UseShellExecute=false` 会继承启动器环境，因此须显式移除；macOS 经 LaunchServices 启动，不继承启动器环境，只附加显式设置的变量，无需处理。
+- 01 的子进程环境不得带 `CLAUDE_CONFIG_DIR`。Windows 用 `UseShellExecute=false` 会继承启动器环境，因此须显式移除。macOS 的 NSWorkspace 也会把启动器自身环境合并给新进程，`environment` 只能覆盖、不能删除（2026-11-05 实测），因此启动前先从启动器自身环境 `unsetenv` 掉该变量。启动器从 02～10 的 Code 终端里运行时尤其要紧：否则 01 会继承 02 的配置目录，Code 会话记录写进 02 的 `ClaudeCodeConfig`，用正常方式重开 01 后显示“在磁盘上未找到会话”。
 
 ### Code 配置状态（两端）
 

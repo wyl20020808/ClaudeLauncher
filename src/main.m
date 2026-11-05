@@ -3745,6 +3745,10 @@ NSString *CloseAccountBlocker(NSArray *expected, NSArray *pids, BOOL busy, BOOL 
     config.arguments = account == 1 ? @[] : @[[ @"--user-data-dir=" stringByAppendingString:ProfilePath(account)]];
     if (link) config.arguments = [config.arguments arrayByAddingObject:link];
     if (codeConfig) config.environment = @{@"CLAUDE_CONFIG_DIR":codeConfig};
+    // NSWorkspace merges the caller's environment into the new app; config.environment can override but not remove.
+    // A launcher started from an 02-10 Code shell would otherwise hand 01 that account's CLAUDE_CONFIG_DIR, and 01's
+    // transcripts would land in the other account's folder (2026-11-05). Drop it from our own environment instead.
+    unsetenv("CLAUDE_CONFIG_DIR");
     NSDate *requested = [NSDate date];
     [self.pendingLaunches addObject:key];
     [NSWorkspace.sharedWorkspace openApplicationAtURL:[NSURL fileURLWithPath:bundlePath] configuration:config completionHandler:^(NSRunningApplication *app, NSError *launchError) {
