@@ -115,13 +115,15 @@ NSInteger UsageRotationAccount(NSArray *points, NSArray<NSNumber *> *accounts, N
     }
     for (NSString *key in @[@"fh",@"sd"]) {
         // Split into runs that never decrease; a drop is a quota reset and must not be bridged by a line.
-        NSMutableArray<NSMutableArray<NSValue *> *> *runs = [NSMutableArray array]; double previous = -1;
+        // A gap longer than the quota window also starts a new run: unseen resets would otherwise draw day-long lines.
+        NSMutableArray<NSMutableArray<NSValue *> *> *runs = [NSMutableArray array]; double previous = -1, previousTime = 0;
+        NSTimeInterval window = [key isEqual:@"fh"] ? 5*3600 : 7*86400;
         for (NSDictionary *point in self.points) {
             if (!point[key] || [point[@"time"] doubleValue] < begin) continue;
-            double value = [point[key] doubleValue];
-            NSPoint at = NSMakePoint(xAt([point[@"time"] doubleValue]), NSMinY(plot)+NSHeight(plot)*value/100);
-            if (!runs.count || value < previous) [runs addObject:[NSMutableArray array]];
-            [runs.lastObject addObject:[NSValue valueWithPoint:at]]; previous = value;
+            double value = [point[key] doubleValue], time = [point[@"time"] doubleValue];
+            NSPoint at = NSMakePoint(xAt(time), NSMinY(plot)+NSHeight(plot)*value/100);
+            if (!runs.count || value < previous || time-previousTime > window) [runs addObject:[NSMutableArray array]];
+            [runs.lastObject addObject:[NSValue valueWithPoint:at]]; previous = value; previousTime = time;
         }
         NSColor *color = self.colors[key];
         for (NSArray<NSValue *> *run in runs) {

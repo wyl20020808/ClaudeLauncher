@@ -107,7 +107,7 @@
 "选择账号打开项目：" = "Choose an account to open the project:";
 "项目操作" = "Project actions";
 "更多项目操作：" = "More project actions:";
-"共 %lu 个项目 · 上次账号仅用于默认选择，不绑定项目" = "%lu projects · last account is only the default choice, not a binding";
+"共 %lu 个项目" = "%lu projects";
 "项目清单未保存" = "Project list not saved";
 "项目名称与分组" = "Project name and group";
 "只修改清单中的显示信息，不改目录名称或位置。名称和分组最多 200 字。" = "Only changes how it is shown in the list, not the folder name or location. Name and group up to 200 characters.";
@@ -231,8 +231,8 @@
 "暂无日志" = "No logs yet";
 "第 %ld 页" = "Page %ld";
 "没有匹配的日志，可清除搜索或切换筛选条件" = "No matching logs. Clear the search or change filters.";
-"共 %lu 条日志 · 每页显示 10 条" = "%lu log entries · 10 per page";
-"匹配 %lu 条 / 共 %lu 条日志 · 每页显示 10 条" = "%lu of %lu log entries match · 10 per page";
+"共 %lu 条日志" = "%lu log entries";
+"匹配 %lu 条 / 共 %lu 条日志" = "%lu of %lu log entries match";
 "系统设置" = "Settings";
 "只管理本地启动器。更改不会修改 Claude 登录、会话或账号配置。" = "Local launcher settings only; Claude sign-ins, sessions and accounts are untouched.";
 "常规" = "General";
