@@ -55,8 +55,10 @@
 - 正常关闭先扫描唯一官方主进程并核对启动时间，再发送关窗请求。Claude 留在托盘时提示用户从托盘退出。
 - 卡片横向加宽，两个用量圆环靠拢，加入时钟和日历图标，从底部顺时针绘制，按 60%／80% 阈值着色。倒计时每秒本地更新，仅显示天与小时或小时与分钟；缺失项隐藏，未知重置格式及观察时间保留在悬停说明。 圆环标题与倒计时固定使用英文，不随界面语言切换。标题为 `5-hour`、`weekly`，时间为 `2h 30m`、`3d 5h` 等简写。
 - `build.ps1 -Preview` 通过，LauncherTests 364、SyncTests 154、SessionSyncTests 369、TutorialTests 83、自检 248。中文浅色及英文暗色合成预览已查看，覆盖绿／黄／红圆环与缺失用量。符号链接创建受环境限制跳过，拷贝回退通过；保留两项既有编译警告。真实账号启动／激活／关闭、鼠标键盘与高 DPI 待人工验收。
-## macOS 1.8.1：界面同步 Windows 1.8.9 之后的改动（2026-11-05，dev，未发布）
+## macOS 1.8.1：界面同步 Windows 1.8.9 之后的改动（2026-11-05，已发布）
 
+- 发布（用户 2026-11-05 要求）：`macos-v1.8.1`（目标 dev `20f5233`，未合并 main），固定证书构建，`scripts/publish-macos.sh --dry-run` 通过后正式运行。草稿创建和四个附件上传成功，但脚本经 API 下载草稿核对时网络中断（unexpected EOF）退出，草稿保留未发布。随后按脚本同一规则手动完成：重新下载草稿，DMG 哈希与本地一致，Windows 清单与 Setup 与当前 Latest 一致，`latest-macos.json` 用 Mac 公钥验签通过；转正式并设为 Latest（上一版 Latest 为 `windows-v1.8.9`），latest/download 的两份清单逐字节一致、DMG 与 Setup 哈希一致。DMG `ClaudeLauncher-1.8.1.dmg`，9713451 字节，SHA-256 `10f76a4e94fbb5bd2122322454f32cc4ce1dab921000ee799d369504e153c28a`。Windows 文件沿用 1.8.9。本版同时包含下节的同步改进和此前 dev 上的格式兼容检查（不再按 Claude 版本号白名单）。
+- 未验证（发布后）：安装到 /Applications 后的 GUI；新版 Claude 上真实同步一条会话后的显示与续聊。
 - 范围：交接第 6～11 项（用量趋势页、教程入口、整卡启动与“···”精简、关闭、用量圆环与倒计时、高清卡片背景）；第 12 项（Windows 标题栏）不做。第 1～5 项见下节，已在前一会话完成并获用户同意（AGENTS.md 已写 macOS 同一例外）。规格见 SPEC 顶部「[macOS] 1.8.1 界面同步」。
 - 实现：`main.m` 新增 `CardButton`（透明原生按钮覆盖整卡，悬停／按下／焦点环，按点位给圆环或卡片提示）、`CardArt`、`CloseAccountBlocker`、`closeAccount:`（重扫进程、核对 PID 与内核启动时间后 `NSRunningApplication -terminate`）、`tickCountdowns`（窗口可见且在实例页时每秒只改本地文字）。`UsageInterface.m` 新增 `UsageResetCountdown`（按 Windows `ResetCountdown` 同一格式）和 `UsageQuotaColor`。删除账号表、搜索／筛选／排序、别名编辑、复制选中路径、账号详情、Finder 显示／复制路径、重新登录保护菜单入口、“同步配置…”入口（`ConfigSync.m` 及其自检保留）和侧栏教程入口。关于页版本并入检查更新行，新增“使用教程”行。`build.sh` 改为打包 `card-*-hd.png`，不再打包 `card-N.webp`。
 - Mac 差异：Windows 的“关闭”用 `CloseMainWindow` 只关窗；macOS 关窗不退出应用，改发正常退出请求（等同 ⌘Q，Claude 可询问或拒绝）。核对过的 Mac 重置说明格式：`14:00 重置`、`周三19:00 重置`、`周四 01:10 重置`（启动器自己保存的观察记录只读核对）、`Resets Thu 01:10`；“发送第一条消息后开始计时”和五小时占位说明隐藏倒计时。
@@ -64,7 +66,7 @@
 - 离屏预览：14 张（实例页浅／深、趋势页浅／深、设置 6 类等）已查看：插画铺满整卡，名字和圆环区域可读；关于页 6 行不溢出。中英文教程配图（实例、项目、趋势）用 `--tutorial-demo -3` 演示数据重新生成。
 - 未验证：真实 GUI（鼠标悬停／按下反馈、Tab 焦点环、空格／回车触发整卡、圆环提示的悬停位置、“···”菜单弹出位置）、“关闭”对真实 Claude 的效果（是否弹确认、托盘／菜单栏残留）、高分屏以外显示器、DMG 体积（新增约 4.8 MB PNG）。未生成 DMG、未安装、未发布。
 
-## macOS 1.8.1：同步 Windows 1.8.7～1.8.9 的会话同步改进（2026-11-04，dev，未提交、未发布）
+## macOS 1.8.1：同步 Windows 1.8.7～1.8.9 的会话同步改进（2026-11-04，随 1.8.1 发布）
 
 - 范围：列表以官方记录为准（1.8.7）、问题诊断（1.8.8）、按侧栏分组与预填建分组（1.8.9）。发布说明草稿 [RELEASE-macos-1.8.1](RELEASE-macos-1.8.1.md)；`build.sh` 版本 1.8.1（build 32）。
 - 实现：`ProjectImport.m` 新增 `EnumerateSessionRecords`（逐级安全打开记录目录，只取 `cliSessionId`、`cwd`、`isArchived`、`sessionId`；不安全的层或读取出错的组织目录只跳过它并给出原因）、`SyncedSidebarId`（按 `cliSessionId` 读回目标记录的侧栏 ID）、`SyncTargetRecordFormat`；`RegistrationChildren` 加可选原因。`SessionSync.m` 新增 `SessionSyncRows`／`SessionSyncScan`、`SidebarGroupsRead`、`SidebarGroupInstruction`、`SidebarNewSessionLink`、`SidebarLinkValid`、`SessionGroupTitle`，`CleanSession` 加分组参数；旧的 `SessionSyncList` 只留给诊断统计旧列法。新文件 `SupportReport.m`。`main.m`：同步窗口分组层与整组勾选、预览说明、写入后读回侧栏 ID、完成窗口“打开并建分组”、诊断入口与报告窗口、报告保存（最近 10 份）。预填链接经打开账号的 `prepare` 回调设置，在启动或激活的那一刻取走，取消打开不会残留到下次点击。
