@@ -10,6 +10,10 @@ NSData *UsageOrganizationMarker(NSString *profile);
 id ObserveUsagePopover(pid_t pid, void (^opened)(void));
 NSDictionary *MergeUsageInterface(NSDictionary *previous, NSDictionary *snapshot, NSArray *identity, NSDate *now);
 NSString *UsageInterfaceTimeLabel(NSDictionary *metric, NSDate *now);
+// Local countdown from the observation time and the official reset text: "3d 5h", "2h 30m", "0m"; "" when unknown.
+NSString *UsageResetCountdown(NSDictionary *metric, NSDate *now);
+// Ring colour: green below 60%, yellow up to 80%, red above.
+unsigned UsageQuotaColor(double percent);
 NSArray *StoredUsageInterface(NSDictionary *records);
 NSDictionary *LoadedUsageInterface(id stored, NSDate *now);
 void TestUsageInterface(void);

@@ -6,10 +6,11 @@ The launcher manages several Claude accounts on one Mac. This guide covers the f
 
 ![Instances page: one card per account](guide-instances.en.jpg)
 
-- **Start**: when an account isn't running, click Start on its card. The launcher checks your local network setup first and opens Claude after you confirm.
-- **Switch**: when an account is running, the button becomes Open and takes you to that account's window. ⌘1–⌘0 open accounts too.
+- **Start**: when an account isn't running, click anywhere on its card. The launcher checks your local network setup first and opens Claude after you confirm.
+- **Switch**: when an account is running, clicking its card takes you to that account's window. ⌘1–⌘0 open accounts too.
+- **Close and delete**: the ··· menu on the card launches or opens, closes (like pressing ⌘Q in Claude) or deletes the account.
+- **Usage**: the two rings show the observed 5-hour and weekly usage, with the time until reset below; a quota not seen yet is left out.
 - **Create**: click + New instance at the top right. The launcher creates the next free account, up to 10. Then sign in yourself in the Claude window that opens.
-- **Manage**: Accounts in the sidebar lists every account in a table you can search, filter and sort. You can also give accounts local aliases.
 
 Each account keeps its own sign-in and sessions. Quitting the launcher doesn't quit Claude.
 
@@ -33,12 +34,12 @@ When an account is running out of quota, you can take a session to another accou
 
 ## Usage trend: which account next
 
-![Usage trend, below the table on the Accounts page](guide-trend.en.jpg)
+![Usage trends page](guide-trend.en.jpg)
 
-- Scroll down on the Accounts page to see each account's 5-hour and weekly usage for the last 7 days.
+- The Usage trends page in the sidebar shows each account's 5-hour and weekly usage for the last 7 days.
 - The banner at the top suggests which account to use next, and can start or switch to it.
 - The numbers only come from what the launcher has seen on screen. It never queries Claude. Recording starts once you open that account's Claude Code.
 
 ## See it again
 
-Click Tutorial at the bottom of the sidebar to replay the tour or come back to this guide.
+In Settings → About → Tutorial, click Tutorial to replay the tour or come back to this guide.

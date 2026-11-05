@@ -370,6 +370,52 @@ NSString *UsageInterfaceTimeLabel(NSDictionary *metric, NSDate *now) {
     return [format stringFromDate:date]; // Time only; tooltips explain it is a local observation time.
 }
 
+unsigned UsageQuotaColor(double percent) { return percent < 60 ? 0x3C8A68 : percent <= 80 ? 0xB88619 : 0xC64D40; }
+
+static NSTextCheckingResult *UsageMatch(NSString *pattern, NSString *text) {
+    return [[NSRegularExpression regularExpressionWithPattern:pattern options:NSRegularExpressionCaseInsensitive error:nil] firstMatchInString:text options:0 range:NSMakeRange(0,text.length)];
+}
+static NSString *UsageGroup(NSTextCheckingResult *match, NSString *text, NSUInteger index) {
+    NSRange range = [match rangeAtIndex:index]; return range.location == NSNotFound ? nil : [text substringWithRange:range];
+}
+// Same forms as Windows UsageInterface.ResetCountdown; anything else (e.g. "first message" texts) stays hidden rather than guessed.
+NSString *UsageResetCountdown(NSDictionary *metric, NSDate *now) {
+    NSDate *observed = metric[@"observedAt"]; NSString *reset = metric[@"reset"];
+    if (![observed isKindOfClass:NSDate.class] || ![reset isKindOfClass:NSString.class] || [observed compare:now] == NSOrderedDescending || [reset isEqual:@"官方按钮未显示五小时，按 0% 显示"]) return @"";
+    NSString *text = [reset stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (!text.length) return @"";
+    NSCalendar *calendar = NSCalendar.currentCalendar; NSDate *target;
+    NSTextCheckingResult *relative = UsageMatch(@"^(?:Resets\\s+in\\s*|剩余\\s*)(?:(\\d{1,4})\\s*(?:hours?|h|小时))?\\s*(?:(\\d{1,4})\\s*(?:minutes?|m|分钟))?\\s*(?:后?重置)?$",text);
+    NSString *hours = UsageGroup(relative,text,1), *minutes = UsageGroup(relative,text,2);
+    if (relative && (hours || minutes)) target = [observed dateByAddingTimeInterval:hours.integerValue*3600.0+minutes.integerValue*60.0];
+    else {
+        if (!UsageMatch(@"^(?:Resets\\s+(?:at\\s+)?)?(?:(?:(?:周|星期)[日天一二三四五六]|(?:Sun|Mon|Tue|Wed|Thu|Fri|Sat)(?:day|sday|nesday|rsday|urday)?)\\s*)?(?:\\d{1,2}:\\d{2}\\s*(?:am|pm)?|\\d{1,2}\\s*(?:am|pm))\\s*(?:重置)?$",text)) return @"";
+        NSTextCheckingResult *time = UsageMatch(@"(?<!\\d)(\\d{1,2})(?::(\\d{2}))?\\s*(am|pm)?",text);
+        NSString *minute = UsageGroup(time,text,2), *half = UsageGroup(time,text,3);
+        if (!time || (!minute && !half)) return @"";
+        NSInteger hour = UsageGroup(time,text,1).integerValue, m = minute.integerValue;
+        if (m > 59 || hour > 23 || (half && (hour < 1 || hour > 12))) return @"";
+        if (half) hour = hour % 12 + ([half caseInsensitiveCompare:@"pm"] == NSOrderedSame ? 12 : 0);
+        target = [calendar dateBySettingHour:hour minute:m second:0 ofDate:observed options:0];
+        NSTextCheckingResult *day = UsageMatch(@"(?:周|星期)([日天一二三四五六])|\\b(Sun|Mon|Tue|Wed|Thu|Fri|Sat)(?:day|sday|nesday|rsday|urday)?\\b",text);
+        if (!target) return @"";
+        if (day) {
+            NSString *zh = UsageGroup(day,text,1), *en = UsageGroup(day,text,2);
+            NSInteger index = zh ? (NSInteger)[@"日一二三四五六" rangeOfString:[zh stringByReplacingOccurrencesOfString:@"天" withString:@"日"]].location
+                : (NSInteger)[@[@"sun",@"mon",@"tue",@"wed",@"thu",@"fri",@"sat"] indexOfObject:en.lowercaseString];
+            NSInteger weekday = [calendar component:NSCalendarUnitWeekday fromDate:target]-1;
+            target = [calendar dateByAddingUnit:NSCalendarUnitDay value:(index-weekday+7)%7 toDate:target options:0];
+            if ([target compare:observed] == NSOrderedAscending) target = [calendar dateByAddingUnit:NSCalendarUnitDay value:7 toDate:target options:0];
+        } else if ([target compare:observed] == NSOrderedAscending) target = [calendar dateByAddingUnit:NSCalendarUnitDay value:1 toDate:target options:0];
+    }
+    NSTimeInterval left = [target timeIntervalSinceDate:now];
+    if (left <= 0) return @"0m";
+    if (left >= 86400) { long d = (long)(left/86400); return [NSString stringWithFormat:@"%ldd %ldh",d,(long)((left-d*86400.0)/3600)]; }
+    long total = (long)ceil(left/60);
+    if (total < 60) return [NSString stringWithFormat:@"%ldm",total];
+    return total % 60 ? [NSString stringWithFormat:@"%ldh %ldm",total/60,total%60] : [NSString stringWithFormat:@"%ldh",total/60];
+}
+
 NSArray *StoredUsageInterface(NSDictionary *records) {
     NSMutableArray *items = [NSMutableArray array];
     for (NSNumber *account in [[records allKeys] sortedArrayUsingSelector:@selector(compare:)]) {
@@ -581,5 +627,17 @@ void TestUsageInterface(void) {
     NSCAssert(symlink(folder.fileSystemRepresentation,sym.fileSystemRepresentation) == 0 && !UsageOrganizationMarker(sym),@"linked profile rejected");
     NSCAssert(UsageOrganizationMarker(folder),@"valid local selector still readable");
     [NSFileManager.defaultManager removeItemAtPath:folder error:nil];
-    puts("PASS: passive Code AX traversal, five-hour/weekly/reset fields, closed popover, ambiguous pages, embedded content, invalid values, account/PID cache isolation, separate observation times and persisted observation validation");
+    // Countdown and ring colours (synthetic dates; 2026-11-04 is a Wednesday in every time zone's local calendar).
+    NSDateComponents *parts = [NSDateComponents new]; parts.year = 2026; parts.month = 11; parts.day = 4; parts.hour = 12;
+    NSDate *wed = [NSCalendar.currentCalendar dateFromComponents:parts];
+    NSString *(^count)(NSString *, NSTimeInterval) = ^(NSString *reset, NSTimeInterval after) { return UsageResetCountdown(@{@"observedAt":wed,@"reset":reset},[wed dateByAddingTimeInterval:after]); };
+    NSCAssert([count(@"14:00 重置",0) isEqual:@"2h"] && [count(@"14:00 重置",1800) isEqual:@"1h 30m"] && [count(@"11:00 重置",0) isEqual:@"23h"],@"clock reset: today, or tomorrow when already past");
+    NSCAssert([count(@"周三19:00 重置",0) isEqual:@"7h"] && [count(@"周六17:00 重置",0) isEqual:@"3d 5h"] && [count(@"星期天12:00 重置",0) isEqual:@"4d 0h"] && [count(@"周三11:00 重置",0) isEqual:@"6d 23h"],@"Chinese weekday resets");
+    NSCAssert([count(@"Resets Thu 01:10",0) isEqual:@"13h 10m"] && [count(@"Resets at 3pm",0) isEqual:@"3h"] && [count(@"Resets Thursday 12am",0) isEqual:@"12h"],@"English weekday and 12-hour resets");
+    NSCAssert([count(@"Resets in 2h 30m",0) isEqual:@"2h 30m"] && [count(@"剩余 3 小时",0) isEqual:@"3h"] && [count(@"Resets in 45 minutes",60) isEqual:@"44m"] && [count(@"Resets in 1 hour",30) isEqual:@"1h"],@"relative resets count from the observation time");
+    NSCAssert([count(@"14:00 重置",7200) isEqual:@"0m"] && [count(@"14:00 重置",9000) isEqual:@"0m"],@"due resets show 0m");
+    for (NSString *bad in @[@"发送第一条消息后开始计时",@"官方按钮未显示五小时，按 0% 显示",@"25:00 重置",@"13pm",@"14:60 重置",@"Resets soon",@"",@"Resets in",@"周八10:00 重置"]) NSCAssert([count(bad,0) isEqual:@""],@"unknown reset text hidden: %@",bad);
+    NSCAssert([UsageResetCountdown(@{@"observedAt":[wed dateByAddingTimeInterval:60],@"reset":@"14:00 重置"},wed) isEqual:@""] && [UsageResetCountdown(nil,wed) isEqual:@""] && [UsageResetCountdown(@{@"observedAt":wed,@"reset":@3},wed) isEqual:@""],@"future observation, missing or malformed metric hidden");
+    NSCAssert(UsageQuotaColor(0) == 0x3C8A68 && UsageQuotaColor(59.9) == 0x3C8A68 && UsageQuotaColor(60) == 0xB88619 && UsageQuotaColor(80) == 0xB88619 && UsageQuotaColor(80.1) == 0xC64D40 && UsageQuotaColor(100) == 0xC64D40,@"ring colour thresholds");
+    puts("PASS: passive Code AX traversal, five-hour/weekly/reset fields, closed popover, ambiguous pages, embedded content, invalid values, account/PID cache isolation, separate observation times, persisted observation validation, reset countdowns and ring colours");
 }
