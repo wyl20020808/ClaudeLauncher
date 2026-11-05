@@ -419,6 +419,8 @@ namespace ClaudeLauncher {
             var sd = UsageInterface.ButtonMetric("用量：每周 · 所有模型：11%周三19:00 重置");
             Check(sd != null && sd.Item1 == "sd" && sd.Item2 == 11, "周按钮解析错误");
             Check(UsageInterface.ButtonMetric("Usage: 7.5% of the 5-hour limit Resets 3pm").Item2 == 7.5, "英文五小时按钮解析错误");
+            Check(UsageInterface.ButtonMetric("Usage: Weekly · All models: 12% Resets Wed 3pm").Item1 == "sd" && UsageInterface.ButtonMetric("用量：每周\u00a0·\u00a0所有模型：12%").Item2 == 12, "英文周值与不换行空格应被识别");
+            Check(UsageInterface.ButtonMetric("Usage: Weekly · Opus: 12%") == null, "英文模型专属周限额不得混入");
             Check(UsageInterface.ButtonMetric("用量：5 小时限额的 101%") == null && UsageInterface.ButtonMetric("上下文 52%") == null && UsageInterface.ButtonMetric("用量：每周 · Opus：5%") == null && UsageInterface.ButtonMetric(null) == null, "无效百分比、上下文与模型专属周限额必须排除");
             Check(UsageInterface.CodeUrl("https://claude.ai/epitaxy") && UsageInterface.CodeUrl("https://claude.ai/epitaxy/local_x") &&
                 !UsageInterface.CodeUrl("https://claude.ai/epitaxyx") && !UsageInterface.CodeUrl("https://claude.ai/epitaxy/") && !UsageInterface.CodeUrl("https://evil.test/epitaxy") &&
@@ -431,6 +433,7 @@ namespace ClaudeLauncher {
             var shell = new UsageNode { Type = "Pane", Children = { new UsageNode { Type = "Document" }, group(new[] { page(code, new[] { group(new[] { button("用量：每周 · 所有模型：11%周三19:00 重置") }) }) }) } };
             UsageRecord read = UsageInterface.ReadSynthetic(shell, 5);
             Check(read.Status == UsageInterface.Observed && read.Weekly.Percent == 11 && read.FiveHour == null, "合成树应读到周值");
+            Check(read.Detail.Contains("reason=panel_not_found") && !read.Detail.Contains("11%") && !read.Detail.Contains("local_"), "缺面板诊断只含原因和计数");
             Check(UsageInterface.ReadSynthetic(page("https://evil.test/epitaxy/x", new[] { button("用量：5 小时限额的 52%") }), 5).FiveHour == null, "非官方页面必须拒绝");
             Check(UsageInterface.ReadSynthetic(group(new[] { button("用量：5 小时限额的 52%") }), 5).Status == "未观察到 Code 用量页面", "Code 页面以外的按钮不得采用");
             Check(UsageInterface.ReadSynthetic(page(code, new[] { new UsageNode { Type = "Text", Name = "用量：5 小时限额的 52%" }, new UsageNode { Type = "Button", Name = "用量：5 小时限额的 52%" } }), 5).Status == "未观察到 Code 用量控件", "正文或不可展开按钮不得提供额度");
@@ -445,12 +448,18 @@ namespace ClaudeLauncher {
             UsageNode weekButton = button("用量：每周 · 所有模型：11%周二19:00 重置");
             read = UsageInterface.ReadSynthetic(page(code, new[] { group(new[] { weekButton, popup("https://claude.ai/settings/usage", limits) }) }), 5);
             Check(read.Status == UsageInterface.Observed && read.FiveHour.Percent == 71 && read.FiveHour.Reset == "15:20 重置" && read.Weekly.Percent == 11 && read.Weekly.Reset == "周二19:00 重置", "面板应读到五小时与每周");
+            Check(read.Detail.Contains("reason=complete"), "完整面板应报告成功原因");
+            var englishPanel = UsageInterface.ReadSynthetic(page(code, new[] { button("Usage: Weekly · All models: 11%"), popup("https://claude.ai/settings/usage", new[] { bar("5-hour limit", 71), bar("Weekly\u00a0· All models", 11) }) }), 5);
+            Check(englishPanel.FiveHour.Percent == 71 && englishPanel.Weekly.Percent == 11, "英文面板大小写与不换行空格兼容");
+            var missingPanelMetric = UsageInterface.ReadSynthetic(page(code, new[] { weekButton, popup("https://claude.ai/settings/usage", new[] { bar("5 小时限额", 71) }) }), 5);
+            Check(missingPanelMetric.Detail.Contains("reason=panel_missing_button_metric"), "面板缺少按钮指标应单独诊断");
             Check(UsageInterface.ReadSynthetic(page(code, new[] { button("用量：每周 · 所有模型：12%周二19:00 重置"), popup("https://claude.ai/settings/usage", limits) }), 5).Status == "界面数据待核对", "面板与按钮不一致必须拒绝");
             Check(UsageInterface.ReadSynthetic(page(code, new[] { weekButton, popup("https://evil.test/settings/usage", limits) }), 5).FiveHour == null, "没有官方用量链接的弹窗不得读取");
             Check(UsageInterface.ReadSynthetic(page(code, new[] { weekButton, popup("https://claude.ai/settings/usage", limits.Concat(new[] { bar("5 小时限额", 70) }).ToArray()) }), 5).Status == "界面数据待核对", "重复指标必须拒绝");
             Check(UsageInterface.ReadSynthetic(page(code, new[] { weekButton, popup("https://claude.ai/settings/usage", limits), popup("https://claude.ai/settings/usage", limits) }), 5).Status == "界面数据待核对", "多个面板必须拒绝");
             read = UsageInterface.ReadSynthetic(page(code, new[] { weekButton, popup("https://claude.ai/settings/usage", new[] { bar("每周 · Opus", 40), bar("每周 · 所有模型", 11), bar("上下文", 52) }) }), 5);
             Check(read.Status == UsageInterface.Observed && read.Weekly.Percent == 11 && read.FiveHour == null, "模型专属周限额与上下文不得采用");
+            Check(read.Detail.Contains("reason=panel_incomplete") && read.Detail.Contains("unknownBars=2"), "缺指标与无面板必须区分，不输出未知控件文字");
             Check(UsageInterface.ReadSynthetic(page(code, new[] { popup("https://claude.ai/settings/usage", limits) }), 5).Status == "未观察到 Code 用量控件", "没有用量按钮时不采用面板");
             Check(UsageInterface.ReadSynthetic(page(code, new[] { weekButton, popup("https://claude.ai/settings/usage", new[] { bar("5 小时限额", 101), bar("每周 · 所有模型", 11) }) }), 5).Status == "界面数据待核对", "越界进度值必须拒绝");
             var watch = new PopupWatch();
@@ -472,6 +481,10 @@ namespace ClaudeLauncher {
             Check(expired.FiveHour.Percent == 0 && expired.FiveHour.Observed == t1.AddHours(5), "同进程超过 5 小时的五小时值按 0%");
             Check(UsageInterface.Merge(first, new UsageRecord { Status = UsageInterface.Observed }, "2|11|5|1|x", t2).FiveHour == null && UsageInterface.Merge(null, first, "2|10|5|1|x", t2).Weekly == null, "没有周值时不估算五小时，也不编造周值");
             Check(UsageInterface.Merge(second, new UsageRecord { Status = "界面读取未完成" }, "2|10|5|1|x", t2) == second && UsageInterface.Merge(second, new UsageRecord { Status = "多个用量界面，待核对" }, "2|10|5|1|x", t2).Status != UsageInterface.Observed, "暂不可读保留旧值，不确定结果不沿用");
+            var restarted = UsageInterface.Merge(second, new UsageRecord { Status = UsageInterface.Observed, FiveHour = new UsageMetric { Percent = 45 } }, "2|11|5|1|x", t2);
+            Check(restarted.FiveHour.Percent == 45 && restarted.Weekly == null, "重启前的周值不得充当当前额度");
+            var estimateTrend = new List<TrendPoint>(); UsageTrend.Observe(estimateTrend, 2, none, t1.ToUniversalTime());
+            Check(estimateTrend.Count == 1 && estimateTrend[0].Five == null && estimateTrend[0].Week == 9, "估算零值不得作为实测写入趋势");
             Check(UsageInterface.TimeLabel(second.FiveHour, t2) == "09:00:00" && UsageInterface.TimeLabel(second.FiveHour, t1.AddDays(1)) == "10-29 09:00" && UsageInterface.TimeLabel(null, t2) == "尚未观察到", "观察时间格式错误");
             string usageFile = Path.Combine(root, "settings", "usage-observations.json");
             Check(UsageInterface.Load(usageFile, t2).Count == 0, "缺少观察记录应为空");

@@ -209,7 +209,22 @@ internal static class SyncTests {
             var popupUsage=(Dictionary<int,UsageRecord>)typeof(LauncherUI).GetField("usage",flags).GetValue(popupUi);
             Check(panelReads==2&&popupUsage[9].FiveHour.Percent==21,"late panel is read on retry");
             panelReads=0;popupUi.UsageReader=(pid,identity)=>{ panelReads++;return weekOnly; };Pump((Task)expanded.Invoke(popupUi,new object[]{4321}));
-            Check(panelReads==3&&popupUsage[9].FiveHour.Percent==21,"retries are bounded and keep the last five-hour value");
+            Check(panelReads==5&&popupUsage[9].FiveHour.Percent==21,"retries are bounded and keep the last five-hour value");
+            // 两个账号同时展开时，先成功的账号不能取消另一个账号的重试。
+            popupState.Add(new Instance{Number=8,ProcessId=4322}); int firstReads=0,secondReads=0;
+            popupUi.UsageReader=(pid,identity)=>pid==4321 ? (++firstReads==1?weekOnly:bothRead) : (++secondReads==1?bothRead:weekOnly);
+            Pump(Task.WhenAll((Task)expanded.Invoke(popupUi,new object[]{4321}),(Task)expanded.Invoke(popupUi,new object[]{4322})));
+            Check(firstReads==2&&secondReads==1&&popupUsage[9].FiveHour.Percent==21,"popup completion belongs to the requested PID only");
+            // 挂起中的同一 PID 展开合并；排队期间不消耗重试次数。
+            var gate=(System.Threading.SemaphoreSlim)typeof(LauncherUI).GetField("usageReadGate",flags).GetValue(popupUi);
+            gate.Wait(); panelReads=0; popupUi.UsageReader=(pid,identity)=>++panelReads==1?weekOnly:bothRead;
+            Task queued=(Task)expanded.Invoke(popupUi,new object[]{4321});
+            Task duplicateExpansion=(Task)expanded.Invoke(popupUi,new object[]{4321});
+            Pump(Task.Delay(1900)); Check(!queued.IsCompleted&&duplicateExpansion.IsCompleted&&panelReads==0,"queued reads await the gate and duplicate notifications coalesce");
+            gate.Release(); Pump(queued); Check(panelReads==2,"a queued expansion retains its retries");
+            gate.Wait(); panelReads=0; Task cancelled=(Task)expanded.Invoke(popupUi,new object[]{4321});
+            typeof(LauncherUI).GetMethod("ClearUsage",flags).Invoke(popupUi,null); gate.Release(); Pump(cancelled);
+            Check(panelReads==0,"clearing usage invalidates queued reads");
             string aliasRoaming=Path.Combine(root,"alias","Roaming"),aliasLocal=Path.Combine(root,"alias","Local");
             string[] aliasPaths=ProfileDeletion.Candidates(9,aliasRoaming,aliasLocal);foreach(string path in aliasPaths) Directory.CreateDirectory(path);
             int recycled=0;int done=ProfileDeletion.Execute(9,aliasRoaming,aliasLocal,aliasPaths,()=>{},path=>{ recycled++;foreach(string each in aliasPaths) Directory.Delete(each,true); });

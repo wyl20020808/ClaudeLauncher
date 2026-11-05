@@ -10,7 +10,7 @@ using System.Web.Script.Serialization;
 using System.Windows.Automation;
 
 namespace ClaudeLauncher {
-    // SPEC 本地界面用量 [Windows]：只读官方 Code 页已显示的用量按钮；不点击、不展开、不注册事件，不联网。
+    // SPEC 本地界面用量 [Windows]：只读官方 Code 页的按钮与用户展开的面板，不点击、不联网。
     public sealed class UsageMetric {
         public double Percent;
         public string Reset = "";
@@ -18,6 +18,7 @@ namespace ClaudeLauncher {
     }
     public sealed class UsageRecord {
         public string Status, Identity;
+        public string Detail = ""; // 仅本次读取的原因与计数，不含控件文字，不写入观察缓存。
         public UsageMetric FiveHour, Weekly;
         public UsageRecord Copy() { return (UsageRecord)MemberwiseClone(); }
     }
@@ -87,12 +88,14 @@ namespace ClaudeLauncher {
         // 返回 ("fh"|"sd", 百分比, 重置说明)；未知格式、越界百分比返回 null。
         public static Tuple<string, double, string> ButtonMetric(string label) {
             if (String.IsNullOrEmpty(label) || label.Length > 512) return null;
+            label = Regex.Replace(label.Trim(), @"\s+", " ");
             var patterns = new[] {
-                Tuple.Create(@"^用量[：:]\s*5 小时限额的 ([0-9]{1,3}(?:\.[0-9]+)?)%(.*)$", "fh"),
+                Tuple.Create(@"^用量[：:]\s*5\s*小时限额的\s*([0-9]{1,3}(?:\.[0-9]+)?)%(.*)$", "fh"),
                 Tuple.Create(@"^Usage: ([0-9]{1,3}(?:\.[0-9]+)?)% of (?:the )?5-hour limit(.*)$", "fh"),
-                Tuple.Create(@"^用量[：:]\s*每周 · 所有模型[：:]\s*([0-9]{1,3}(?:\.[0-9]+)?)%(.*)$", "sd") };
+                Tuple.Create(@"^用量[：:]\s*每周\s*·\s*所有模型[：:]\s*([0-9]{1,3}(?:\.[0-9]+)?)%(.*)$", "sd"),
+                Tuple.Create(@"^Usage:\s*Weekly\s*·\s*all models:\s*([0-9]{1,3}(?:\.[0-9]+)?)%(.*)$", "sd") };
             foreach (var pattern in patterns) {
-                Match match = Regex.Match(label, pattern.Item1);
+                Match match = Regex.Match(label, pattern.Item1, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
                 if (!match.Success) continue;
                 double percent = Double.Parse(match.Groups[1].Value, CultureInfo.InvariantCulture);
                 return percent >= 0 && percent <= 100 ? Tuple.Create(pattern.Item2, percent, match.Groups[2].Value.Trim()) : null;
@@ -110,8 +113,10 @@ namespace ClaudeLauncher {
 
         // 弹窗面板里的指标名；模型专属周限额与上下文不是账号周限额。
         static string MetricKey(string label) {
-            if (label == "5 小时限额" || label == "5-hour limit") return "fh";
-            if (label == "每周 · 所有模型" || label == "Weekly · all models") return "sd";
+            if (String.IsNullOrEmpty(label) || label.Length > 512) return null;
+            label = Regex.Replace(label.Trim(), @"\s+", " ");
+            if (Regex.IsMatch(label, @"^(?:5\s*小时限额|5-hour limit)$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)) return "fh";
+            if (Regex.IsMatch(label, @"^(?:每周\s*·\s*所有模型|Weekly\s*·\s*all models)$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)) return "sd";
             return null;
         }
         static bool UsageSettingsUrl(string value) {
@@ -127,7 +132,7 @@ namespace ClaudeLauncher {
             public Func<T, double?> Range;
             public Func<T, IList<T>> Children;
             public long Deadline;
-            int count, codeAreas;
+            int count, codeAreas, windows, depthSkipped, unknownBars;
             bool limited, conflicted;
             readonly List<Tuple<string, UsageMetric>> buttons = new List<Tuple<string, UsageMetric>>();
             readonly List<Dictionary<string, UsageMetric>> panels = new List<Dictionary<string, UsageMetric>>();
@@ -161,7 +166,7 @@ namespace ClaudeLauncher {
                 }
                 if (type == "ProgressBar" || type == "Slider") {
                     string key = MetricKey(Name(node));
-                    if (key == null) return true;
+                    if (key == null) { unknownBars++; return true; }
                     double? value = Range(node);
                     if (value == null || Double.IsNaN(value.Value) || value < 0 || value > 100 || metrics.ContainsKey(key)) return false;
                     metrics[key] = new UsageMetric { Percent = value.Value, Reset = reset ?? "" }; reset = null;
@@ -171,7 +176,8 @@ namespace ClaudeLauncher {
                 return !limited;
             }
             void Walk(T node, bool inPage, int depth) {
-                if (limited || depth > MaxDepth || !Budget()) return;
+                if (depth > MaxDepth) { depthSkipped++; return; }
+                if (limited || !Budget()) return;
                 string type = Type(node);
                 if (type == "Document") {
                     if (inPage) return; // 不进入嵌套网页
@@ -184,6 +190,7 @@ namespace ClaudeLauncher {
                     if (shown != null) buttons.Add(Tuple.Create(shown.Item1, new UsageMetric { Percent = shown.Item2, Reset = shown.Item3 }));
                     return;
                 }
+                if (type == "Window" && inPage) windows++;
                 if (type == "Window" && inPage && HasUsageLink(node, 0)) {
                     var metrics = new Dictionary<string, UsageMetric>(); string reset = null;
                     if (Panel(node, metrics, ref reset, 0)) panels.Add(metrics); else conflicted = true;
@@ -192,23 +199,28 @@ namespace ClaudeLauncher {
                 if (Skipped.Contains(type)) return;
                 foreach (T child in Kids(node)) Walk(child, inPage, depth + 1);
             }
+            UsageRecord Report(string status, string reason) {
+                return new UsageRecord { Status = status, Detail = "reason=" + reason + "; nodes=" + count + "; pages=" + codeAreas + "; buttons=" + buttons.Count + "; windows=" + windows + "; panels=" + panels.Count + "; depthSkipped=" + depthSkipped + "; unknownBars=" + unknownBars };
+            }
             public UsageRecord Result(T root) {
                 try { Walk(root, false, 0); } catch (ElementNotAvailableException) { limited = true; } catch (InvalidOperationException) { limited = true; } catch (System.Runtime.InteropServices.COMException) { limited = true; }
-                if (limited) return new UsageRecord { Status = "界面读取未完成" };
-                if (buttons.Count > 1) return new UsageRecord { Status = "多个用量界面，待核对" };
-                if (buttons.Count == 0) return new UsageRecord { Status = codeAreas > 0 ? "未观察到 Code 用量控件" : "未观察到 Code 用量页面" };
+                if (limited) return Report("界面读取未完成", "budget_or_unavailable");
+                if (buttons.Count > 1) return Report("多个用量界面，待核对", "multiple_buttons");
+                if (buttons.Count == 0) return Report(codeAreas > 0 ? "未观察到 Code 用量控件" : "未观察到 Code 用量页面", codeAreas > 0 ? "button_not_found" : "page_not_found");
                 string key = buttons[0].Item1; UsageMetric shown = buttons[0].Item2;
                 var found = new Dictionary<string, UsageMetric> { { key, shown } };
-                if (conflicted || panels.Count > 1) return new UsageRecord { Status = "界面数据待核对" };
+                if (conflicted || panels.Count > 1) return Report("界面数据待核对", conflicted ? "invalid_panel" : "multiple_panels");
                 if (panels.Count == 1) {
                     UsageMetric same;
                     // 面板必须与按钮同项一致，才采用面板中的两项。
                     // 按钮文字是取整后的百分比，进度值可能带小数，相差不足 1 才算一致。
-                    if (!panels[0].TryGetValue(key, out same) || Math.Abs(same.Percent - shown.Percent) >= 1) return new UsageRecord { Status = "界面数据待核对" };
+                    if (!panels[0].TryGetValue(key, out same)) return Report("界面数据待核对", "panel_missing_button_metric");
+                    if (Math.Abs(same.Percent - shown.Percent) >= 1) return Report("界面数据待核对", "panel_button_mismatch");
                     found = panels[0];
                 }
                 UsageMetric fh, sd; found.TryGetValue("fh", out fh); found.TryGetValue("sd", out sd);
-                return new UsageRecord { Status = Observed, FiveHour = fh, Weekly = sd };
+                var result = Report(Observed, panels.Count == 0 ? "panel_not_found" : fh == null || sd == null ? "panel_incomplete" : "complete");
+                result.FiveHour = fh; result.Weekly = sd; return result;
             }
         }
         static long After(double seconds) { return Stopwatch.GetTimestamp() + (long)(seconds * Stopwatch.Frequency); }
@@ -241,8 +253,8 @@ namespace ClaudeLauncher {
         // 在后台线程读取一个已核实的官方主进程；首次连接该进程时可在 2.5 秒内等待网页辅助功能树准备好。
         public static UsageRecord ReadProcess(int pid, string identity) {
             IntPtr window = Native.WindowFor(pid);
-            if (window == IntPtr.Zero) return new UsageRecord { Status = "未观察到窗口" };
-            if (worker != null && worker.IsAlive) return new UsageRecord { Status = "界面读取未完成" };
+            if (window == IntPtr.Zero || Native.IsMinimized(window)) return new UsageRecord { Status = "未观察到窗口", Detail = "reason=no_visible_window" };
+            if (worker != null && worker.IsAlive) return new UsageRecord { Status = "界面读取未完成", Detail = "reason=worker_busy" };
             bool first; lock (prepared) first = prepared.Add(identity);
             UsageRecord result = null;
             var watch = Stopwatch.StartNew();
@@ -258,8 +270,8 @@ namespace ClaudeLauncher {
             }) { IsBackground = true };
             worker.SetApartmentState(ApartmentState.MTA);
             worker.Start();
-            if (!worker.Join(TimeSpan.FromSeconds(first ? 3.0 : 2.0))) return new UsageRecord { Status = "界面读取未完成" };
-            return result ?? new UsageRecord { Status = "界面读取未完成" };
+            if (!worker.Join(TimeSpan.FromSeconds(first ? 3.0 : 2.0))) return new UsageRecord { Status = "界面读取未完成", Detail = "reason=worker_timeout" };
+            return result ?? new UsageRecord { Status = "界面读取未完成", Detail = "reason=reader_exception" };
         }
 
         // 用量按钮所在的最近 Document 必须是官方 Code 页。
@@ -288,7 +300,7 @@ namespace ClaudeLauncher {
                 bool unavailable = snapshot != null && (snapshot.Status.StartsWith("未观察到") || snapshot.Status == "界面读取未完成");
                 return unavailable && same ? previous : snapshot ?? new UsageRecord { Status = "未观察到 Code 用量" };
             }
-            var result = new UsageRecord { Status = Observed, Identity = identity };
+            var result = new UsageRecord { Status = Observed, Identity = identity, Detail = snapshot.Detail };
             UsageMetric oldFive = same && previous.FiveHour != null && now - previous.FiveHour.Observed < TimeSpan.FromHours(5) ? previous.FiveHour : null; // 超过一个窗口的五小时值已失效
             result.FiveHour = Pick(snapshot.FiveHour, oldFive, now);
             result.Weekly = Pick(snapshot.Weekly, same ? previous.Weekly : null, now);
@@ -402,7 +414,7 @@ namespace ClaudeLauncher {
                 if (found.Count > 1) { output.WriteLine("账号 " + n.ToString("00") + "：多个主进程，未读取"); continue; }
                 var watch = Stopwatch.StartNew();
                 UsageRecord record = ReadProcess(found[0].ProcessId, Identity(n, found[0]));
-                output.WriteLine("账号 " + n.ToString("00") + "：" + record.Status + "；5小时=" + (record.FiveHour != null ? "已观察" : "无") + "；每周=" + (record.Weekly != null ? "已观察" : "无") + "；" + watch.ElapsedMilliseconds + " ms");
+                output.WriteLine("账号 " + n.ToString("00") + "：" + record.Status + "；5小时=" + (record.FiveHour != null ? "已观察" : "无") + "；每周=" + (record.Weekly != null ? "已观察" : "无") + "；" + watch.ElapsedMilliseconds + " ms；" + record.Detail);
             }
             return 0;
         }

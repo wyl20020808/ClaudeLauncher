@@ -16,8 +16,8 @@ namespace ClaudeLauncher {
         }
         internal static void Observe(List<TrendPoint> points, int account, UsageRecord record, DateTime now) {
             var point = new TrendPoint { Account = account, At = now,
-                // Call with values observed in this read only (including the 0% five-hour estimate), never carried-over ones.
-                Five = record.FiveHour != null ? (double?)record.FiveHour.Percent : null,
+                // Call with freshly observed values only, never carried-over values or estimates.
+                Five = record.FiveHour != null && record.FiveHour.Reset != UsageInterface.FiveHourEstimate ? (double?)record.FiveHour.Percent : null,
                 Week = record.Weekly != null ? (double?)record.Weekly.Percent : null };
             var last = points.LastOrDefault(p => p.Account == account);
             if ((point.Five.HasValue || point.Week.HasValue) && (last == null || last.Five != point.Five || last.Week != point.Week || now - last.At >= TimeSpan.FromMinutes(15))) points.Add(point);

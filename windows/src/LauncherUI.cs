@@ -83,7 +83,8 @@ namespace ClaudeLauncher {
         string TrendPath { get { return settingsPath + ".usageTrend"; } }
         int usageGeneration;
         readonly Dictionary<string, PopupWatch> popupWatches = new Dictionary<string, PopupWatch>(); // 身份 → 展开通知（null：注册中或失败，不重试）
-        readonly HashSet<int> pendingPopups = new HashSet<int>();
+        readonly HashSet<int> readingPopups = new HashSet<int>();
+        readonly System.Threading.SemaphoreSlim usageReadGate = new System.Threading.SemaphoreSlim(1, 1);
         bool readingUsage;
         DateTime lastUsageRead = DateTime.MinValue;
         int loginAccount, page;
@@ -95,7 +96,6 @@ namespace ClaudeLauncher {
         internal Func<int,string,bool,int> LaunchProvider = Core.Launch;
         internal Func<int,string,bool,string,int> LinkLaunchProvider = Core.Launch;
         internal Func<int,string,UsageRecord> UsageReader = UsageInterface.ReadProcess;
-        bool popupPanelRead;
         // 仅供测试：替代模态对话框，返回按钮序号。
         internal Func<string,string,string[],int,int,int> AskOverride = null;
         internal Func<Task<List<Instance>>> ScanProvider = () => Task.Run(() => Core.Scan());
@@ -359,7 +359,7 @@ namespace ClaudeLauncher {
             timer.Tick += async delegate { await Refresh(); };
             countdownTimer.Tick += delegate {
                 foreach (var pair in cards) {
-                    for (int i = 0; i < 2; i++) if (pair.Value.Quotas[i].Visibility == Visibility.Visible)
+                    for (int i = 0; i < 2; i++) if (pair.Value.Quotas[i].Visibility == Visibility.Visible && pair.Value.Metrics[i] != null && pair.Value.Metrics[i].Reset != UsageInterface.FiveHourEstimate)
                         pair.Value.Times[i].Text = UsageInterface.ResetCountdown(pair.Value.Metrics[i], DateTime.Now);
                 }
             };
@@ -1809,17 +1809,21 @@ namespace ClaudeLauncher {
         }
         // 后台读取每个只有一个已核实主进程的账号；读取前后身份一致才采用。读取中保留旧值。
         // trigger 非 0：用户手动展开了该 PID 的官方用量弹窗（D3），只读这一个账号，不要求停在实例页；忙碌时排队合并。
-        async Task ReadUsage(int trigger = 0) {
-            if (trigger != 0) {
-                if (!settings.ShowUsage || snapshotMode || closed || !healthy || loginAccount != 0) return;
-                if (readingUsage) { pendingPopups.Add(trigger); return; }
-            } else if (!CanObserveUsage()) return;
-            readingUsage = true; if (trigger == 0) lastUsageRead = DateTime.UtcNow;
+        async Task<bool> ReadUsage(int trigger = 0) {
+            if (trigger == 0 && !CanObserveUsage()) return false;
+            int generation = usageGeneration;
+            await usageReadGate.WaitAsync();
+            try {
+                if (generation != usageGeneration || !settings.ShowUsage || snapshotMode || closed || !healthy || loginAccount != 0) return false;
+                if (trigger == 0 && !CanObserveUsage()) return false;
+                readingUsage = true; if (trigger == 0) lastUsageRead = DateTime.UtcNow;
+                return await ReadUsageCore(trigger);
+            } finally { readingUsage = false; usageReadGate.Release(); }
+        }
+        async Task<bool> ReadUsageCore(int trigger) {
             int generation = usageGeneration;
             var before = instances.ToList();
-            Dictionary<int, Tuple<UsageRecord, string, DateTime>> results;
-            try {
-                results = await Task.Run(() => {
+            var results = await Task.Run(() => {
                     var read = new Dictionary<int, Tuple<UsageRecord, string, DateTime>>();
                     for (int n = 1; n <= 10; n++) {
                         var found = before.Where(x => x.Number == n).ToList();
@@ -1836,14 +1840,12 @@ namespace ClaudeLauncher {
                     }
                     return read;
                 });
-            } finally { readingUsage = false; }
             if (trigger != 0) foreach (var pair in results) {
                 UsageRecord fresh = pair.Value.Item1;
                 // 只记录状态和有无，不记录百分比。
-                Diagnostics.Write("usage_popup_read", "slot=" + pair.Key + "; status=" + fresh.Status + "; five=" + (fresh.FiveHour != null) + "; week=" + (fresh.Weekly != null));
-                if (fresh.FiveHour != null && fresh.Weekly != null) popupPanelRead = true;
+                Diagnostics.Write("usage_popup_read", "slot=" + pair.Key + "; status=" + fresh.Status + "; five=" + (fresh.FiveHour != null) + "; week=" + (fresh.Weekly != null) + "; " + fresh.Detail);
             }
-            if (closed || generation != usageGeneration || !settings.ShowUsage || loginAccount != 0) return;
+            if (closed || generation != usageGeneration || !settings.ShowUsage || loginAccount != 0) return false;
             bool changed = false;
             foreach (var pair in results) {
                 int n = pair.Key;
@@ -1862,27 +1864,30 @@ namespace ClaudeLauncher {
             }
             foreach (var pair in results) {
                 if (pair.Value.Item2 == null || pair.Value.Item2 != CurrentUsageIdentity(pair.Key)) continue;
-                // 同 macOS：只用本次读到的值（含五小时 0% 估算），沿用的旧值保留原时间，不进入趋势和提醒。
+                // 只用本次实际读到的值；缓存与 0% 估算不进入趋势或提醒。
                 UsageRecord merged = usage[pair.Key];
                 if (merged.Status != UsageInterface.Observed) { ObserveUsageAlert(pair.Key, null); continue; }
-                DateTime at = pair.Value.Item3;
-                var fresh = new UsageRecord { Status = merged.Status, FiveHour = merged.FiveHour != null && merged.FiveHour.Observed == at ? merged.FiveHour : null, Weekly = merged.Weekly != null && merged.Weekly.Observed == at ? merged.Weekly : null };
-                ObserveUsageAlert(pair.Key, fresh.FiveHour);
+                var fresh = pair.Value.Item1;
+                if (fresh.Status != UsageInterface.Observed) continue;
+                ObserveUsageAlert(pair.Key, fresh.FiveHour == null ? null : merged.FiveHour);
                 UsageTrend.Observe(trend, pair.Key, fresh, DateTime.UtcNow);
             }
             try { UsageTrend.Save(TrendPath, trend); } catch (Exception error) { Message("用量趋势保存失败：" + error.Message, true); }
             if (changed) try { UsageInterface.Save(usagePath, savedUsage.Values); } catch (Exception error) { Diagnostics.Error("usage_save_error", error); }
             RenderUsage();
-            if (pendingPopups.Count > 0) { int next = pendingPopups.First(); pendingPopups.Remove(next); await ReadUsage(next); }
+            return results.Any(pair => pair.Value.Item2 != null && pair.Value.Item2 == CurrentUsageIdentity(pair.Key) && pair.Value.Item1.Status == UsageInterface.Observed && pair.Value.Item1.FiveHour != null && pair.Value.Item1.Weekly != null);
         }
-        // 官方面板展开后要一会儿才进入辅助功能树，读得太早只能拿到按钮上的一项。只为这一次手动展开最多读三次，读到两项就停。
+        // 只为一次手动展开读取，排队等待不消耗尝试；每个 PID 独立完成，同 PID 合并。
         async Task ReadExpandedUsage(int pid) {
-            popupPanelRead = false;
-            foreach (int wait in new[] { 200, 500, 1000 }) {
-                await Task.Delay(wait);
-                await ReadUsage(pid);
-                if (popupPanelRead || closed) return;
-            }
+            if (!readingPopups.Add(pid)) return;
+            int generation = usageGeneration;
+            try {
+                foreach (int wait in new[] { 0, 200, 500, 1000, 2000 }) {
+                    if (wait > 0) await Task.Delay(wait);
+                    if (closed || generation != usageGeneration || !settings.ShowUsage || loginAccount != 0 || !healthy || !instances.Any(x => x.ProcessId == pid)) return;
+                    if (await ReadUsage(pid)) return;
+                }
+            } finally { readingPopups.Remove(pid); }
         }
         // D3：为每个只有一个主进程、有可见窗口的账号注册一次展开通知；注册失败不重试；进程变化、登录保护、扫描失败或关闭显示时注销。
         void SyncPopupWatches() {
@@ -2085,14 +2090,21 @@ namespace ClaudeLauncher {
                 for (int row = 0; row < 2; row++) {
                     UsageMetric metric = available ? (row == 0 ? record.FiveHour : record.Weekly) : null;
                     card.Metrics[row] = metric;
-                    card.Values[row].Text = metric != null ? Math.Round(metric.Percent).ToString("0") + "%" : "";
+                    bool estimated = metric != null && metric.Reset == UsageInterface.FiveHourEstimate;
+                    card.Values[row].Text = metric != null ? (estimated ? "≈" : "") + Math.Round(metric.Percent).ToString("0") + "%" : "—";
                     card.Values[row].Foreground = B(metric != null ? Ink : Faint);
-                    card.Quotas[row].Visibility = metric == null ? Visibility.Collapsed : Visibility.Visible;
+                    card.Quotas[row].Visibility = settings.ShowUsage ? Visibility.Visible : Visibility.Collapsed;
                     card.Rings[row].Data = QuotaRing(metric == null ? 0 : metric.Percent);
                     card.Rings[row].Stroke = B(UsageInterface.QuotaColor(metric == null ? 0 : metric.Percent));
-                    card.Times[row].Text = UsageInterface.ResetCountdown(metric, now);
+                    card.Times[row].Text = estimated ? "估算" : metric != null ? UsageInterface.ResetCountdown(metric, now) : available ? "待展开" : found.Count == 0 && !snapshotMode ? "未运行" : "待读取";
                     string tip = metric != null ? UsageNote + "\n观察时间：" + metric.Observed.ToString("yyyy-MM-dd HH:mm:ss") + "\n官方重置说明：" + (metric.Reset.Length > 0 ? metric.Reset : "未提供") : UsageNote;
-                    card.Values[row].ToolTip = card.Times[row].ToolTip = tip;
+                    if (metric == null) {
+                        tip += "\n读取状态：" + status + "\n请在 Claude Code 中手动展开用量弹窗并保持片刻，启动器会记录已显示的两项。";
+                        var historical = trend.Where(p => p.Account == n && (row == 0 ? p.Five : p.Week).HasValue).OrderByDescending(p => p.At).FirstOrDefault();
+                        if (historical != null) tip += "\n历史记录（非当前额度）：" + (row == 0 ? historical.Five : historical.Week).Value.ToString("0.#") + "% · " + historical.At.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss");
+                    }
+                    if (status == "Claude 未运行 · 上次记录") tip += "\n" + status;
+                    card.Quotas[row].ToolTip = card.Values[row].ToolTip = card.Times[row].ToolTip = tip;
                     AutomationProperties.SetName(card.Values[row], (row == 0 ? "5小时已使用" : "每周已使用") + "，" + card.Values[row].Text + "，" + card.Times[row].Text + (available ? "" : "，" + status));
                 }
             }
