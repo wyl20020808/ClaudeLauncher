@@ -6,10 +6,10 @@ The launcher manages several Claude accounts on one Windows PC. This guide cover
 
 ![Instances page: one card per account](guide-instances.en.jpg)
 
-- **Start**: when an account isn't running, click Start on its card. The launcher checks your local network setup first and opens Claude after you confirm.
-- **Switch**: when an account is running, the button becomes Open and takes you to that account's window. Ctrl+1–Ctrl+0 open accounts too.
+- **Start**: when an account isn't running, click anywhere on its card. The launcher checks your local network setup first and opens Claude after you confirm.
+- **Switch**: when an account is running, click anywhere on its card to open its window. Ctrl+1–Ctrl+0 open accounts too.
 - **Create**: click + New instance at the top right. The launcher creates the next free account, up to 10. Then sign in yourself in the Claude window that opens.
-- **Manage**: Accounts in the sidebar lists every account in a table you can search, filter and sort. You can also give accounts local aliases.
+- **Trends**: Usage trends in the sidebar shows usage charts for each account.
 
 Each account keeps its own sign-in and sessions. Quitting the launcher doesn't quit Claude.
 
@@ -37,12 +37,12 @@ Any Claude version works. If the target account's session records change format,
 
 ## Usage trend: which account next
 
-![Usage trend, below the table on the Accounts page](guide-trend.en.jpg)
+![Usage trends page](guide-trend.en.jpg)
 
-- Scroll down on the Accounts page to see each account's 5-hour and weekly usage for the last 7 days.
+- Open Usage trends to see each account's 5-hour and weekly usage for the last 7 days.
 - The banner at the top suggests which account to use next, and can start or switch to it.
 - The numbers only come from what the launcher has seen on screen. It never queries Claude. Recording starts once you open that account's Claude Code.
 
 ## See it again
 
-Click Tutorial at the bottom of the sidebar to replay the tour or come back to this guide.
+Open Settings, About and click Tutorial to replay the tour or come back to this guide.

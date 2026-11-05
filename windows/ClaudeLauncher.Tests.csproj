@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="4.0" DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <PropertyGroup>
     <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
@@ -74,10 +74,10 @@
     <EmbeddedResource Include="assets\update-public-key.xml"><LogicalName>ClaudeLauncher.UpdateKey</LogicalName></EmbeddedResource>
     <EmbeddedResource Include="..\resources\ui\background.webp"><LogicalName>ClaudeLauncher.UI.background</LogicalName></EmbeddedResource>
     <EmbeddedResource Include="..\resources\ui\sidebar.webp"><LogicalName>ClaudeLauncher.UI.sidebar</LogicalName></EmbeddedResource>
-    <EmbeddedResource Include="..\resources\ui\card-1.webp"><LogicalName>ClaudeLauncher.UI.card-1</LogicalName></EmbeddedResource>
-    <EmbeddedResource Include="..\resources\ui\card-2.webp"><LogicalName>ClaudeLauncher.UI.card-2</LogicalName></EmbeddedResource>
-    <EmbeddedResource Include="..\resources\ui\card-3.webp"><LogicalName>ClaudeLauncher.UI.card-3</LogicalName></EmbeddedResource>
-    <EmbeddedResource Include="..\resources\ui\card-4.webp"><LogicalName>ClaudeLauncher.UI.card-4</LogicalName></EmbeddedResource>
+    <EmbeddedResource Include="..\resources\ui\card-1-hd.png"><LogicalName>ClaudeLauncher.UI.card-1</LogicalName></EmbeddedResource>
+    <EmbeddedResource Include="..\resources\ui\card-2-hd.png"><LogicalName>ClaudeLauncher.UI.card-2</LogicalName></EmbeddedResource>
+    <EmbeddedResource Include="..\resources\ui\card-3-hd.png"><LogicalName>ClaudeLauncher.UI.card-3</LogicalName></EmbeddedResource>
+    <EmbeddedResource Include="..\resources\ui\card-4-hd.png"><LogicalName>ClaudeLauncher.UI.card-4</LogicalName></EmbeddedResource>
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
 </Project>

@@ -6,7 +6,7 @@ using System.Runtime.InteropServices;
 using System.Web.Script.Serialization;
 using System.Security.Cryptography;
 namespace ClaudeLauncher {
-    internal sealed class SyncItem { public string Relative, Source, Target, State; public bool Selected; public int TargetAccount; }
+    internal sealed class SyncItem { public string Relative, Source, Target, State; public bool Selected; }
     internal static class ConfigSync {
         static readonly string[] Categories = { "skills", "agents", "commands", "output-styles" };
         [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)] [return: MarshalAs(UnmanagedType.U1)] static extern bool CreateSymbolicLink(string link,string target,uint flags);

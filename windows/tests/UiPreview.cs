@@ -8,9 +8,9 @@ using System.Windows.Media.Imaging;
 using ClaudeLauncher;
 // 以合成进程状态离屏渲染四个页面与更新进度窗口；不扫描或启动 Claude，不打开桌面窗口。
 public static class UiPreview {
-    static void Save(FrameworkElement root, Size size, string path) {
+    static void Save(FrameworkElement root, Size size, string path, double dpi = 96) {
         Appearance.TranslateTree(root); root.Measure(size); root.Arrange(new Rect(size)); root.UpdateLayout();
-        var image = new RenderTargetBitmap((int)size.Width, (int)size.Height, 96, 96, PixelFormats.Pbgra32); image.Render(root);
+        var image = new RenderTargetBitmap((int)Math.Round(size.Width * dpi / 96), (int)Math.Round(size.Height * dpi / 96), dpi, dpi, PixelFormats.Pbgra32); image.Render(root);
         var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(image));
         using (var stream = File.Create(path)) encoder.Save(stream);
     }
@@ -49,7 +49,7 @@ public static class UiPreview {
             var accounts = ui.Snapshot(1, state); ui.SetTrend(points);
             Appearance.TranslateTree(accounts); accounts.Measure(size); accounts.Arrange(new Rect(size)); accounts.UpdateLayout();
             var scroll = (System.Windows.Controls.ScrollViewer)typeof(LauncherUI).GetField("accountsScroll", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance).GetValue(ui);
-            scroll.ScrollToVerticalOffset(360); scroll.UpdateLayout();
+            scroll.ScrollToVerticalOffset(0); scroll.UpdateLayout();
             SaveJpeg(accounts, size, Path.Combine(output, "guide-trend." + languages[language] + ".jpg"));
             Directory.Delete(temp, true);
         }
@@ -66,20 +66,28 @@ public static class UiPreview {
         string example = Path.Combine(temp, "示例项目"); Directory.CreateDirectory(example); File.WriteAllText(Path.Combine(example, "HANDOFF.md"), "合成预览");
         File.WriteAllText(Path.Combine(temp, "settings.json.projects"), new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(new[] { new LauncherUI.LocalProject { Path = example, LastAccount = 1 } }));
         var ui = new LauncherUI(new LauncherSettings { Theme=args.Length>1?Int32.Parse(args[1]):1, Language=args.Length>2?Int32.Parse(args[2]):0 }, Path.Combine(temp, "settings.json"));
-        var state = new List<Instance> { new Instance { Number = 1, ProcessId = 111 } };
+        var state = new List<Instance> { new Instance { Number = 1, ProcessId = 111 }, new Instance { Number = 2, ProcessId = 222 }, new Instance { Number = 3, ProcessId = 333 }, new Instance { Number = 4, ProcessId = 444 } };
         ui.Snapshot(0, state);
         // 合成用量观察：五小时与周各一项，验证卡片右侧布局。
-        ui.SetUsage(1, new UsageRecord { Status = UsageInterface.Observed, FiveHour = new UsageMetric { Percent = 71, Reset = "3:20 重置", Observed = DateTime.Now.AddMinutes(-40) }, Weekly = new UsageMetric { Percent = 11, Reset = "周三19:00 重置", Observed = DateTime.Now.AddMinutes(-2) } });
+        ui.SetUsage(1, new UsageRecord { Status = UsageInterface.Observed, FiveHour = new UsageMetric { Percent = 71, Reset = "Resets in 2 hours 30 minutes", Observed = DateTime.Now }, Weekly = new UsageMetric { Percent = 11, Reset = "周三19:00 重置", Observed = DateTime.Now.AddMinutes(-2) } });
+        ui.SetUsage(2, new UsageRecord { Status = UsageInterface.Observed, FiveHour = new UsageMetric { Percent = 45, Reset = "Resets in 1 hour 20 minutes", Observed = DateTime.Now }, Weekly = new UsageMetric { Percent = 92, Reset = "周三19:00 重置", Observed = DateTime.Now.AddMinutes(-2) } });
         string[] names = { "instances", "accounts", "logs" };
         Directory.CreateDirectory(args[0]);
         for (int page = 0; page < 3; page++) Save(ui.Snapshot(page, state), new Size(1080, 720), Path.Combine(args[0], names[page] + ".png"));
+        var cardPage = ui.Snapshot(0, state);
+        Save(cardPage, new Size(1080, 720), Path.Combine(args[0], "instances-150.png"), 144);
+        var hoverCard = Tree(cardPage).OfType<System.Windows.Controls.Button>().Single(b => System.Windows.Automation.AutomationProperties.GetAutomationId(b) == "Profile2");
+        var hoverKey = (DependencyPropertyKey)typeof(UIElement).GetField("IsMouseOverPropertyKey", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic).GetValue(null);
+        hoverCard.SetValue(hoverKey, true);
+        Save(cardPage, new Size(1080, 720), Path.Combine(args[0], "instances-hover.png"));
+        hoverCard.SetValue(hoverKey, false);
         // 合成趋势：账号页滚到趋势区。
         DateTime now = DateTime.UtcNow; var points = new List<TrendPoint>();
         for (int i = 40; i >= 0; i--) points.Add(new TrendPoint { Account = 1, At = now.AddHours(-i * 3), Five = (i * 7) % 60 + 5, Week = 60 - i });
         var accountsRoot = ui.Snapshot(1, state);
         ui.SetTrend(points); Save(accountsRoot, new Size(1080, 720), Path.Combine(args[0], "accounts-top.png"));
         var scroll = (System.Windows.Controls.ScrollViewer)typeof(LauncherUI).GetField("accountsScroll", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance).GetValue(ui);
-        scroll.ScrollToVerticalOffset(380); scroll.UpdateLayout(); Save(accountsRoot, new Size(1080, 720), Path.Combine(args[0], "accounts-trend.png"));
+        scroll.ScrollToVerticalOffset(0); scroll.UpdateLayout(); Save(accountsRoot, new Size(1080, 720), Path.Combine(args[0], "accounts-trend.png"));
         ui.SetTrend(new TrendPoint[0]);
         Save(ui.Snapshot(4, state), new Size(1080, 720), Path.Combine(args[0], "projects.png"));
         // 系统设置六个分类各一张。
@@ -87,7 +95,7 @@ public static class UiPreview {
         for (int i = 0; i < 6; i++) { section.Invoke(ui, new object[] { i }); Save(ui.Snapshot(3, state), new Size(1080, 720), Path.Combine(args[0], "settings-" + (i + 1) + ".png")); }
         // 新手教程：全部步骤、选择窗和文档。
         var tourRoot = ui.Snapshot(0, state); ui.StartTutorial();
-        for (int i = 0; i < 8; i++) { Save(tourRoot, new Size(1080, 720), Path.Combine(args[0], "tutorial-" + (i + 1) + ".png")); ui.TutorialKey(System.Windows.Input.Key.Return); }
+        for (int i = 0; i < 7; i++) { Save(tourRoot, new Size(1080, 720), Path.Combine(args[0], "tutorial-" + (i + 1) + ".png")); ui.TutorialKey(System.Windows.Input.Key.Return); }
         ui.ShowTutorialPicker(); Save(tourRoot, new Size(1080, 720), Path.Combine(args[0], "tutorial-picker.png")); ui.CloseTutorial();
         var guide = ui.BuildTutorialDocument(); var guideView = (FrameworkElement)guide.Content; guide.Content = null;
         Save(new System.Windows.Controls.Border { Background = guide.Background, Child = guideView }, new Size(760, 720), Path.Combine(args[0], "tutorial-document.png"));

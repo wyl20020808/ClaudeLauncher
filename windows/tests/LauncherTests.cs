@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -8,6 +8,23 @@ using System.Windows.Automation;
 using ClaudeLauncher;
 
 public static class LauncherTests {
+    static void TestWindowFrame() {
+        int previousTheme = Appearance.Theme;
+        var shutdown = Application.Current.ShutdownMode;
+        var probe = new Window { Width = 100, Height = 100, ShowInTaskbar = false };
+        Application.Current.ShutdownMode = ShutdownMode.OnExplicitShutdown;
+        try {
+            Check(Appearance.ColorRef(System.Windows.Media.Color.FromRgb(0x12, 0x34, 0x56)) == 0x563412, "DWM uses COLORREF byte order");
+            var handle = new System.Windows.Interop.WindowInteropHelper(probe).EnsureHandle();
+            foreach (int theme in new[] { 1, 2 }) {
+                Appearance.Theme = theme; Appearance.Refresh();
+                Check(Appearance.ColorRef(Appearance.Brush("#FAF6F0").Color) == (theme == 1 ? 0xF0F6FA : 0x1F2328), "Native title bar uses the application surface color");
+                Check(Appearance.ColorRef(Appearance.Brush("#2B2622").Color) == (theme == 1 ? 0x22262B : 0xDAE6F0), "Native title text follows the theme");
+                if (Appearance.ApplyWindowFrame(probe)) Check(true, "DWM accepts caption, text and border styling");
+                else Console.WriteLine("SKIP: native caption styling unavailable on this Windows version.");
+            }
+        } finally { probe.Close(); Appearance.Theme = previousTheme; Appearance.Refresh(); Application.Current.ShutdownMode = shutdown; }
+    }
     static int checks;
     static void Check(bool condition, string message) { checks++; if (!condition) throw new Exception(message); }
     internal static System.Collections.Generic.IEnumerable<DependencyObject> Children(DependencyObject root) {
@@ -90,6 +107,7 @@ public static class LauncherTests {
         }
         // 构造原生界面以验证 XAML 和控件，测试不显示窗口、不启动 Claude。
         new System.Windows.Application();
+        TestWindowFrame();
         // 合成设置与临时设置路径：不读写用户真实的 settings.json。
         string settingsDir = Path.Combine(Path.GetTempPath(), "claude-settings-test-" + Guid.NewGuid().ToString("N"));
         string settingsFile = Path.Combine(settingsDir, "settings.json");
@@ -109,7 +127,28 @@ public static class LauncherTests {
             Check(pageRoot.ActualWidth == 1080, "Page layout failed");
         }
         var buttons = Children(ui.Snapshot(0, state)).OfType<Button>().ToArray();
-        Check(buttons.Single(b => AutomationProperties.GetAutomationId(b) == "Profile1").Content as string == "打开", "Running account should offer Open");
+        Check(buttons.Single(b => AutomationProperties.GetAutomationId(b) == "Profile1").ToolTip as string == "打开", "Running card should offer Open");
+        var wholeCard = buttons.Single(b => AutomationProperties.GetAutomationId(b) == "Profile1");
+        Check(wholeCard.Width == 784 && wholeCard.Height == 124 && wholeCard.Content is Canvas, "Primary action fills the card");
+        Check(Children((DependencyObject)wholeCard.Content).OfType<TextBlock>().Any(t => t.Text == "weekly"), "Usage region is inside the card action");
+        Check(!Children((DependencyObject)wholeCard.Content).OfType<Button>().Any(), "Secondary actions cannot bubble through the card button");
+        wholeCard.ApplyTemplate();
+        var surface = (Border)wholeCard.Template.FindName("Box", wholeCard);
+        var normalBrush = surface.Background;
+        var hoverKey = (DependencyPropertyKey)typeof(UIElement).GetField("IsMouseOverPropertyKey", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic).GetValue(null);
+        wholeCard.SetValue(hoverKey, true);
+        Check(surface.Background != normalBrush && surface.CornerRadius.TopLeft == 14, "Hover uses the whole rounded card surface");
+        wholeCard.SetValue(hoverKey, false);
+        var cardRoot = (Border)((Grid)wholeCard.Parent).Parent;
+        Func<Point, Button> hitButton = point => {
+            var hit = System.Windows.Media.VisualTreeHelper.HitTest(cardRoot, point);
+            DependencyObject node = hit == null ? null : hit.VisualHit;
+            while (node != null && !(node is Button)) node = System.Windows.Media.VisualTreeHelper.GetParent(node);
+            return node as Button;
+        };
+        Check(hitButton(new Point(100, 60)) == wholeCard && hitButton(new Point(358, 60)) == wholeCard && hitButton(new Point(600, 100)) == wholeCard, "Name, usage and blank regions all hit the card action");
+        Check(hitButton(new Point(752, 60)) != null && hitButton(new Point(752, 60)) != wholeCard, "More menu has its own hit target");
+        Check(((Canvas)wholeCard.Content).Children.OfType<Border>().Any(b => b.Child is Image && b.Opacity == 1 && b.Width == 784 && ((Image)b.Child).OpacityMask != null), "Full-card illustration retains a localized readability mask");
         Check(buttons.Any(b => AutomationProperties.GetAutomationId(b) == "NewInstance"), "New instance button missing");
         // 托盘菜单账号项：与卡片同一份可见性和可用状态，只显示编号与运行状态。
         var trayItems = ui.TrayAccounts();
@@ -161,8 +200,8 @@ public static class LauncherTests {
             typeof(LauncherUI).GetField("snapshotMode", flags).SetValue(alerts, false);
             typeof(LauncherUI).GetMethod("RenderUsage", flags).Invoke(alerts, null);
             var cardMap = (System.Collections.IDictionary)typeof(LauncherUI).GetField("cards", flags).GetValue(alerts);
-            var source = (TextBlock)cardMap[2].GetType().GetField("Source").GetValue(cardMap[2]);
-            Check(source.Text == "Claude 未运行 · 上次记录", "Stopped account keeps last usage");
+            var keptValues = (TextBlock[])cardMap[2].GetType().GetField("Values").GetValue(cardMap[2]);
+            Check(keptValues[0].Text == Math.Round(high.Percent).ToString("0") + "%", "Stopped account keeps last usage without status filler");
             typeof(LauncherUI).GetField("snapshotMode", flags).SetValue(alerts, true);
             typeof(LauncherUI).GetMethod("RecordUse", flags).Invoke(alerts, new object[] { 2 });
             var recentReload = new LauncherUI(new LauncherSettings(), preferences); recentReload.Snapshot(0, new List<Instance>());
@@ -186,13 +225,10 @@ public static class LauncherTests {
     // SPEC 系统设置 [Windows]：六分类、更改即时保存生效、恢复默认立即保存、更新入口受开关约束。
     static void TestSettingsPage(LauncherUI ui, string settingsFile, List<Instance> state) {
         var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
-        // 账号表格不再内部滚动：全部账号显示时表格变高，整页只有一个滚动层。
-        ui.Snapshot(1, state); var layoutTable = typeof(LauncherUI).GetMethod("LayoutAccountTable", flags);
-        var tableBorder = (Border)typeof(LauncherUI).GetField("tablePanel", flags).GetValue(ui); var trendArea = (FrameworkElement)typeof(LauncherUI).GetField("trendSection", flags).GetValue(ui);
+        var trendPage = ui.Snapshot(1, state);
         var pageScroll = (ScrollViewer)typeof(LauncherUI).GetField("accountsScroll", flags).GetValue(ui);
-        Check(!Children((DependencyObject)pageScroll.Content).OfType<ScrollViewer>().Any(), "Account page must not nest a scroller");
-        layoutTable.Invoke(ui, new object[] { 10 }); Check(tableBorder.Height == 86 + 530 && Canvas.GetTop(trendArea) == 394 + 530, "Table must grow to all ten rows");
-        layoutTable.Invoke(ui, new object[] { 1 }); Check(tableBorder.Height == 86 + 159 && Canvas.GetTop(trendArea) == 394 + 159, "Table keeps its three-row minimum");
+        Check(!Children((DependencyObject)pageScroll.Content).OfType<ScrollViewer>().Any(), "Trend page has one scroll surface");
+        Check(!Children(trendPage).OfType<TextBlock>().Any(t => t.Text == "账号管理" || t.Text == "登录邮箱"), "Account management table and navigation removed");
         var infoButtons = Children(ui.Snapshot(4, state)).OfType<Button>().Where(b => (b.ToolTip as string ?? "").StartsWith("从各账号本机记录里")).ToArray();
         Check(infoButtons.Length == 1 && AutomationProperties.GetName(infoButtons[0]).Length > 0, "Import info icon missing");
         var all = Children(ui.Snapshot(3, state)).ToArray();
@@ -244,90 +280,69 @@ public static class LauncherTests {
     // SPEC 账号与日志交互：搜索、状态筛选、别名、可见选择（01、02 为合成运行中进程；其余是否显示取决于本机已有目录，不作断言）。
     static void TestAccountsPage(LauncherUI ui, string settingsFile, List<Instance> state) {
         var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
-        var all = Children(ui.Snapshot(1, state)).ToArray();
-        var search = all.OfType<TextBox>().Single(b => AutomationProperties.GetName(b) == "搜索账号");
-        var status = all.OfType<ComboBox>().Single(b => AutomationProperties.GetName(b) == "账号状态筛选");
-        var selectAll = all.OfType<CheckBox>().Single(b => AutomationProperties.GetName(b) == "全选当前结果");
-        var copy = all.OfType<Button>().Single(b => AutomationProperties.GetAutomationId(b) == "CopySelectedPaths");
-        Action<System.Windows.Controls.Primitives.ButtonBase> click = b => typeof(System.Windows.Controls.Primitives.ButtonBase).GetMethod("OnClick", flags).Invoke(b, null);
-        Func<int, CheckBox> rowBox = n => all.OfType<CheckBox>().Single(b => AutomationProperties.GetName(b) == "选择账号 " + n.ToString("00"));
-        Func<int, bool> shown = n => ((FrameworkElement)((FrameworkElement)rowBox(n).Parent).Parent).Visibility == Visibility.Visible;
-        var selected = (HashSet<int>)typeof(LauncherUI).GetField("selectedAccounts", flags).GetValue(ui);
-
-        Check(shown(1) && shown(2) && !copy.IsEnabled && selectAll.IsChecked == false, "Running accounts listed, nothing selected");
-        search.Text = "账号 02";
-        Check(!shown(1) && shown(2), "Search by number must filter rows");
-        search.Text = "";
-        status.SelectedIndex = Array.IndexOf(new[] { "全部状态", "运行中", "未运行", "处理中", "异常" }, "未运行");
-        Check(!shown(1) && !shown(2), "Status filter must hide running accounts");
-        status.SelectedIndex = 1;
-        Check(shown(1) && shown(2), "Running filter must show running accounts");
-        click(selectAll);
-        Check(selected.SetEquals(new[] { 1, 2 }) && selectAll.IsChecked == true && copy.IsEnabled, "Select all must select current results only");
-        Check(ui.SelectedPathsText().Split(new[] { "\r\n" }, StringSplitOptions.None).Length == 2, "Copy must list visible selected folders");
-        search.Text = "账号 02";
-        Check(selected.SetEquals(new[] { 2 }) && selectAll.IsChecked == true, "Hidden selections must be cleared");
-        search.Text = ""; click(rowBox(1));
-        Check(selected.SetEquals(new[] { 1, 2 }) && selectAll.IsChecked == true, "Row checkbox toggles selection");
-        click(rowBox(2));
-        Check(selected.SetEquals(new[] { 1 }) && selectAll.IsChecked == null, "Partial selection shows mixed state");
-        click(selectAll); click(selectAll);
-        Check(selected.Count == 0 && selectAll.IsChecked == false && !copy.IsEnabled, "Select all toggles off");
-        status.SelectedIndex = 0;
-
-        Check(ui.SetAlias(2, "  工作  ") == null, "Valid alias rejected");
-        var names = AccountNames.Load(Path.Combine(Path.GetDirectoryName(settingsFile), "account-names.json"));
-        Check(names.Count == 1 && names[2] == "工作", "Alias must be saved to the launcher's own file");
-        Check(all.OfType<TextBlock>().Count(t => t.Text == "工作 · 02") == 2, "Card and table must both show alias with number");
-        search.Text = "工作";
-        Check(shown(2) && !shown(1), "Search must match alias");
-        search.Text = "";
-        Check(ui.SetAlias(2, "a\nb") != null && ui.SetAlias(2, new string('长', 25)) != null && AccountNames.Load(Path.Combine(Path.GetDirectoryName(settingsFile), "account-names.json"))[2] == "工作", "Invalid alias must be rejected without changes");
-        // 实例卡片、账号表格与趋势区卡片各一处。
-        Check(ui.SetAlias(2, "   ") == null && Children(ui.Snapshot(1, state)).OfType<TextBlock>().Count(t => t.Text == "账号 02") == 3, "Empty alias restores default name");
-        Check(!new LauncherSettings().ExportJson().Contains("工作"), "Aliases must not be exported with settings");
-
-        // 默认用户名（合成 .claude.json，不读真实文件）：无别名时显示“用户名 · NN”，别名优先，文件变化后重读，缺失回落“账号 NN”。
+        var page = ui.Snapshot(1, state);
+        Check(Children(page).OfType<TextBlock>().Any(t => t.Text == "用量趋势"), "Usage trend is the dedicated page");
+        Check(!Children(page).OfType<Button>().Any(b => AutomationProperties.GetName(b) == "同步配置…" || AutomationProperties.GetName(b) == "复制选中路径"), "Old account actions are removed");
         string nameFile = Path.Combine(Path.GetDirectoryName(settingsFile), "code-02.claude.json");
-        File.WriteAllText(nameFile, "{\"oauthAccount\":{\"displayName\":\"Eric\",\"emailAddress\":\"x@example.invalid\"}}");
+        File.WriteAllText(nameFile, "{\"oauthAccount\":{\"displayName\":\"Eric\"}}");
         ui.CodeNameFiles = n => n == 2 ? new[] { nameFile } : new string[0];
-        var renderAccounts = typeof(LauncherUI).GetMethod("Render", flags);
-        // 实例卡片、账号表格与趋势区卡片各一处；趋势区重建后旧快照会过期，每次重新取。
         Func<string, int> named = text => Children(ui.Snapshot(1, state)).OfType<TextBlock>().Count(t => t.Text == text);
-        renderAccounts.Invoke(ui, null);
-        Check(named("Eric · 02") == 3 && named("账号 01") == 3, "Default name from local Claude Code profile");
-        search.Text = "eric";
-        Check(shown(2) && !shown(1), "Search must match the default user name");
-        search.Text = "";
-        Check(ui.SetAlias(2, "工作") == null && named("工作 · 02") == 3, "Alias overrides the default name");
-        Check(ui.SetAlias(2, "") == null && named("Eric · 02") == 3, "Clearing alias falls back to the default name");
+        Check(named("Eric · 02") == 2, "Local default name remains on card and trend");
+        var aliases = (Dictionary<int, string>)typeof(LauncherUI).GetField("accountNames", flags).GetValue(ui);
+        aliases[2] = "工作";
+        Check(named("工作 · 02") == 2, "Existing aliases still display on card and trend");
+        aliases.Remove(2);
         File.WriteAllText(nameFile, "{\"oauthAccount\":{\"displayName\":\"Eric Wang\"}}");
-        renderAccounts.Invoke(ui, null);
-        Check(named("Eric Wang · 02") == 3, "Changed file must be re-read");
+        Check(named("Eric Wang · 02") == 2, "Changed local name re-read");
         File.Delete(nameFile);
-        renderAccounts.Invoke(ui, null);
-        Check(named("账号 02") == 3 && !ui.DiagnosticsText().Contains("Eric") && !new LauncherSettings().ExportJson().Contains("Eric"), "Missing file falls back; name never exported or in diagnostics");
+        Check(named("账号 02") == 2, "Missing local name falls back");
         ui.CodeNameFiles = n => new string[0];
-
-        // 实例卡片只显示名称与状态；目录与 Code 状态在悬停提示中。
-        var cardTexts = Children(ui.Snapshot(0, state)).OfType<TextBlock>().Select(t => t.Text).ToList();
-        Check(!cardTexts.Any(t => t.StartsWith("Code ") || t == "默认目录" || t == "Second"), "Cards must not show folder or Code chips");
-        var cards = (System.Collections.IDictionary)typeof(LauncherUI).GetField("cards", flags).GetValue(ui);
-        string tip = ((Border)cards[2].GetType().GetField("Root").GetValue(cards[2])).ToolTip as string;
-        Check(tip != null && tip.Contains("目录：") && tip.Contains("Code "), "Card tooltip must carry folder and Code status");
     }
     // SPEC 本地界面用量 [Windows]：卡片显示合成观察记录；关闭显示后清空并删除记录文件。不读取真实 Claude。
     static void TestUsageCards(LauncherUI ui, string settingsFile, List<Instance> state) {
         var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
         var page = ui.Snapshot(0, state);
         Func<IEnumerable<string>> texts = () => Children(page).OfType<TextBlock>().Select(t => t.Text).ToList();
-        Check(!texts().Contains("未接入") && texts().Count(t => t == "尚未观察到") >= 4, "Usage rows must show not-yet-observed instead of placeholder");
+        Check(!texts().Contains("未接入") && !texts().Contains("尚未观察到"), "Missing usage must stay silent");
         DateTime at = DateTime.Now.AddMinutes(-1);
         ui.SetUsage(2, new UsageRecord { Status = UsageInterface.Observed, Weekly = new UsageMetric { Percent = 11, Reset = "周三19:00 重置", Observed = at } });
-        Check(texts().Contains("11%") && texts().Contains(at.ToString("HH:mm:ss")), "Weekly observation must render on the card");
+        Check(texts().Contains("11%") && texts().Contains("5-hour") && texts().Contains("weekly") && texts().Any(t => System.Text.RegularExpressions.Regex.IsMatch(t, @"^\d+(?:d \d+h|h(?: \d+m)?|m)$")), "Quota titles and countdown remain English in the Chinese interface");
         var cards = (System.Collections.IDictionary)typeof(LauncherUI).GetField("cards", flags).GetValue(ui);
         var values = (TextBlock[])cards[2].GetType().GetField("Values").GetValue(cards[2]);
-        Check(values[0].Text == "—" && (values[1].ToolTip as string).Contains("周三19:00 重置") && (values[1].ToolTip as string).Contains("组织"), "Tooltip must carry reset text and the organization limit");
+        var illustration = (Border)cards[2].GetType().GetField("Artwork").GetValue(cards[2]);
+        var informationFade = (System.Windows.Media.LinearGradientBrush)((Image)illustration.Child).OpacityMask;
+        Check(informationFade.GradientStops.First().Color.A == 0 && informationFade.GradientStops[2].Color.A == 45 && informationFade.GradientStops.Last().Color.A == 255, "White overlay fades from fully opaque at left to transparent at right");
+        var panorama = ((Image)illustration.Child).Source as System.Windows.Media.Imaging.BitmapSource;
+        Check(panorama != null && panorama.PixelWidth == 1960 && panorama.PixelHeight == 310 && Math.Abs((double)panorama.PixelWidth / panorama.PixelHeight - 784.0 / 124) < 0.02, "Card uses the new lossless 1960x310 banner directly");
+        var quotaAreas = (Canvas[])cards[2].GetType().GetField("Quotas").GetValue(cards[2]);
+        Check(Canvas.GetLeft(quotaAreas[0]) == 212 && Canvas.GetLeft(quotaAreas[1]) == 324, "Quota rings sit closer to the account name");
+        foreach (var area in quotaAreas) {
+            var track = area.Children.OfType<System.Windows.Shapes.Ellipse>().Single();
+            Check(track.Fill == null && Canvas.GetTop(area) + Canvas.GetTop(track) + track.Height / 2 == 62, "Ring centers align with the card center and have transparent interiors");
+        }
+        Check(illustration.Opacity == 1, "Observed usage preserves artwork prominence");
+        ui.SetUsage(2, new UsageRecord { Status = "未观察到 Code 用量" });
+        Check(illustration.Opacity == 1 && values.All(v => v.Text == ""), "Missing metrics preserve full-card artwork");
+        ui.SetUsage(2, new UsageRecord { Status = UsageInterface.Observed, Weekly = new UsageMetric { Percent = 11, Reset = "周三19:00 重置", Observed = at } });
+        Check(illustration.Opacity == 1, "Receiving usage does not fade the full card");
+        Check(values[0].Text == "" && (values[1].ToolTip as string).Contains("周三19:00 重置") && (values[1].ToolTip as string).Contains("组织"), "Tooltip must carry reset text and the organization limit");
+        Check(UsageInterface.QuotaColor(59.9) == "#3C8A68" && UsageInterface.QuotaColor(60) == "#B88619" && UsageInterface.QuotaColor(80) == "#B88619" && UsageInterface.QuotaColor(80.1) == "#C64D40", "Quota color boundaries");
+        var observed = new DateTime(2026, 11, 4, 18, 0, 0);
+        var metric = new UsageMetric { Observed = observed, Reset = "周三19:00 重置" };
+        Check(UsageInterface.ResetCountdown(metric, observed) == "1h" && UsageInterface.ResetCountdown(metric, observed.AddMinutes(1)) == "59m", "Countdown advances from the observation date");
+        Check(UsageInterface.ResetCountdown(metric, observed.AddHours(2)) == "0m", "Expired reset must not roll forward");
+        metric.Reset = "Resets 7pm";
+        Check(UsageInterface.ResetCountdown(metric, observed) == "1h", "English reset clock");
+        metric.Reset = "Resets in 2 hours 30 minutes";
+        Check(UsageInterface.ResetCountdown(metric, observed) == "2h 30m", "Hours and minutes without seconds or reset suffix");
+        Check(UsageInterface.ResetCountdown(metric, observed.AddMinutes(30)) == "2h", "Relative reset");
+        metric.Reset = "周六19:00 重置";
+        Check(UsageInterface.ResetCountdown(metric, observed) == "3d 1h", "Day countdown omits minutes");
+        metric.Reset = "unknown";
+        Check(UsageInterface.ResetCountdown(metric, observed) == "" && UsageInterface.ResetCountdown(null, observed) == "", "Unknown reset preserves source and absent data stays empty");
+        Check(LauncherUI.QuotaRing(0).IsEmpty() && !LauncherUI.QuotaRing(100).IsEmpty(), "Ring endpoints");
+        var ring = (System.Windows.Media.PathGeometry)LauncherUI.QuotaRing(25);
+        Check(ring.Figures[0].StartPoint == new Point(29, 55.5) && ((System.Windows.Media.ArcSegment)ring.Figures[0].Segments[0]).SweepDirection == System.Windows.Media.SweepDirection.Clockwise, "Ring starts at bottom and follows the left side clockwise");
         string usageFile = Path.Combine(Path.GetDirectoryName(settingsFile), "usage-observations.json");
         File.WriteAllText(usageFile, "{}");
         var all = Children(ui.Snapshot(3, state)).ToArray();
@@ -336,7 +351,7 @@ public static class LauncherTests {
         typeof(System.Windows.Controls.Primitives.ButtonBase).GetMethod("OnClick", flags).Invoke(toggle, null);
         typeof(LauncherUI).GetMethod("SaveSettings", flags).Invoke(ui, null);
         page = ui.Snapshot(0, state);
-        Check(!File.Exists(usageFile) && !texts().Contains("11%") && texts().Contains("本地用量显示已关闭"), "Turning usage off must clear values and delete observations");
+        Check(!File.Exists(usageFile) && !texts().Contains("11%") && !texts().Contains("本地用量显示已关闭"), "Turning usage off must clear values and delete observations silently");
     }
     static void TestLogsPage(LauncherUI ui, string settingsFile, List<Instance> state) {
         var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;

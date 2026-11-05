@@ -20,11 +20,11 @@ Add-Type -AssemblyName PresentationCore
 $art = Join-Path (Split-Path $projectRoot -Parent) 'resources/ui'
 $ui = Join-Path $projectRoot 'artifacts/ui'
 [IO.Directory]::CreateDirectory($ui) | Out-Null
-$widths = [ordered]@{ 'background' = 1254; 'sidebar' = 544; 'card-1' = 640; 'card-2' = 640; 'card-3' = 640; 'card-4' = 640 }
+$widths = [ordered]@{ 'background' = 1254; 'sidebar' = 544 }
 foreach ($name in $widths.Keys) {
     $source = Join-Path $art ($name + '.webp'); $target = Join-Path $ui ($name + '.jpg')
     if (-not (Test-Path -LiteralPath $source)) { throw ('Missing UI artwork: ' + $source) }
-    if (-not (Test-Path -LiteralPath $target) -or (Get-Item -LiteralPath $target).LastWriteTimeUtc -lt (Get-Item -LiteralPath $source).LastWriteTimeUtc) {
+    if (-not (Test-Path -LiteralPath $target) -or (Get-Item -LiteralPath $target).LastWriteTimeUtc -lt (Get-Item -LiteralPath $source).LastWriteTimeUtc -or (Get-Item -LiteralPath $target).LastWriteTimeUtc -lt (Get-Item -LiteralPath $PSCommandPath).LastWriteTimeUtc) {
         $stream = [IO.File]::OpenRead($source)
         try { $frame = [Windows.Media.Imaging.BitmapDecoder]::Create($stream, 'None', 'OnLoad').Frames[0] } finally { $stream.Close() }
         $scale = [Math]::Min(1.0, $widths[$name] / $frame.PixelWidth)
@@ -35,6 +35,11 @@ foreach ($name in $widths.Keys) {
         try { $encoder.Save($file) } finally { $file.Close() }
     }
     $arguments += '/resource:' + $target + ',ClaudeLauncher.UI.' + $name
+}
+foreach ($number in 1..4) {
+    $source = Join-Path $art ('card-' + $number + '-hd.png')
+    if (-not (Test-Path -LiteralPath $source)) { throw ('Missing card artwork: ' + $source) }
+    $arguments += '/resource:' + $source + ',ClaudeLauncher.UI.card-' + $number
 }
 foreach ($file in Get-ChildItem -LiteralPath (Join-Path $projectRoot 'assets/tutorial')) { $arguments += '/resource:' + $file.FullName + ',ClaudeLauncher.Tutorial.' + $file.Name }
 # 离线断言（AGENTS.md）：同步会话、组织读取与问题诊断不得联网、不得启动进程（CLI、浏览器）。

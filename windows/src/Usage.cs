@@ -306,6 +306,41 @@ namespace ClaudeLauncher {
             return metric.Observed.ToString(metric.Observed.Date == now.Date ? "HH:mm:ss" : "MM-dd HH:mm");
         }
 
+        internal static string QuotaColor(double percent) {
+            return percent < 60 ? "#3C8A68" : percent <= 80 ? "#B88619" : "#C64D40";
+        }
+
+        internal static string ResetCountdown(UsageMetric metric, DateTime now) {
+            if (metric == null || metric.Observed > now || String.IsNullOrWhiteSpace(metric.Reset) || metric.Reset == FiveHourEstimate) return "";
+            string text = metric.Reset.Trim();
+            DateTime target;
+            var relative = Regex.Match(text, @"^(?:Resets\s+in\s*|剩余\s*)(?:(\d{1,4})\s*(?:hours?|h|小时))?\s*(?:(\d{1,4})\s*(?:minutes?|m|分钟))?\s*(?:后?重置)?$", RegexOptions.IgnoreCase);
+            if (relative.Success && (relative.Groups[1].Success || relative.Groups[2].Success)) {
+                target = metric.Observed.AddHours(relative.Groups[1].Success ? Int32.Parse(relative.Groups[1].Value) : 0).AddMinutes(relative.Groups[2].Success ? Int32.Parse(relative.Groups[2].Value) : 0);
+            } else {
+                // Only known clock/weekday forms are safe to turn into a local deadline.
+                if (!Regex.IsMatch(text, @"^(?:Resets\s+(?:at\s+)?)?(?:(?:(?:周|星期)[日天一二三四五六]|(?:Sun|Mon|Tue|Wed|Thu|Fri|Sat)(?:day|sday|nesday|rsday|urday)?)\s*)?(?:\d{1,2}:\d{2}\s*(?:am|pm)?|\d{1,2}\s*(?:am|pm))\s*(?:重置)?$", RegexOptions.IgnoreCase)) return "";
+                var time = Regex.Match(text, @"(?<!\d)(\d{1,2})(?::(\d{2}))?\s*(am|pm)?", RegexOptions.IgnoreCase);
+                int hour, minute;
+                if (!time.Success || (!time.Groups[2].Success && !time.Groups[3].Success) || !Int32.TryParse(time.Groups[1].Value, out hour)) return "";
+                minute = time.Groups[2].Success ? Int32.Parse(time.Groups[2].Value) : 0;
+                if (minute > 59 || hour > 23 || (time.Groups[3].Success && (hour < 1 || hour > 12))) return "";
+                if (time.Groups[3].Success) hour = hour % 12 + (time.Groups[3].Value.Equals("pm", StringComparison.OrdinalIgnoreCase) ? 12 : 0);
+                target = metric.Observed.Date.AddHours(hour).AddMinutes(minute);
+                var day = Regex.Match(text, @"(?:周|星期)([日天一二三四五六])|\b(Sun|Mon|Tue|Wed|Thu|Fri|Sat)(?:day|sday|nesday|rsday|urday)?\b", RegexOptions.IgnoreCase);
+                if (day.Success) {
+                    int index = day.Groups[1].Success ? "日一二三四五六".IndexOf(day.Groups[1].Value.Replace("天", "日")) : Array.FindIndex(new[] { "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" }, d => d.Equals(day.Groups[2].Value, StringComparison.OrdinalIgnoreCase));
+                    target = target.AddDays((index - (int)target.DayOfWeek + 7) % 7);
+                    if (target < metric.Observed) target = target.AddDays(7);
+                } else if (target < metric.Observed) target = target.AddDays(1);
+            }
+            TimeSpan left = target - now;
+            if (left <= TimeSpan.Zero) return "0m";
+            if (left.TotalDays >= 1) return ((int)left.TotalDays) + "d " + left.Hours + "h";
+            int minutes = (int)Math.Ceiling(left.TotalMinutes);
+            return (minutes >= 60 ? (minutes / 60) + "h" : "") + (minutes % 60 > 0 ? (minutes >= 60 ? " " : "") + (minutes % 60) + "m" : "");
+        }
+
         // 观察记录：只存百分比、重置说明、观察时间与身份；不存页面、会话、正文或凭据。
         public static void Save(string path, IEnumerable<UsageRecord> records) {
             var items = records.Where(r => r != null && r.Status == Observed && r.Identity != null && (r.FiveHour != null || r.Weekly != null)).Select(r => {

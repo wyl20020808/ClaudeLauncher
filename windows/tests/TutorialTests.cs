@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.IO;
 using System.Linq;
 using System.Collections.Generic;
@@ -39,14 +39,14 @@ internal static class TutorialTests {
         var host = (FrameworkElement)ui.Snapshot(1, state);
         Check(ui.StartTutorialIfFirstRun() && File.Exists(seen), "first run plays and records immediately");
         Check(Field<Canvas>(ui, "tutorialOverlay") != null && Field<int>(ui, "page") == 0, "starts at the welcome step on the instances page");
-        Check(StepCount(ui) == 8, "eight steps with an account");
+        Check(StepCount(ui) == 7, "seven steps with an account");
         Check(!ui.StartTutorialIfFirstRun(), "already running");
         ui.CloseTutorial(); Check(Field<int>(ui, "page") == 1 && Field<Canvas>(ui, "tutorialOverlay") == null, "skip returns to the page it started from");
         Check(!ui.StartTutorialIfFirstRun(), "skipping still counts as seen");
         var later = new LauncherUI(new LauncherSettings(), settings); later.Snapshot(0, state);
         Check(!later.StartTutorialIfFirstRun(), "not shown again after restart");
         var empty = new LauncherUI(new LauncherSettings(), Path.Combine(root, "other.json")); empty.Snapshot(0, new List<Instance>());
-        empty.StartTutorial(); Check(StepCount(empty) == 7, "the account step is omitted without accounts"); empty.CloseTutorial();
+        empty.StartTutorial(); Check(StepCount(empty) == 6, "the account step is omitted without accounts"); empty.CloseTutorial();
         Check(!File.Exists(Path.Combine(root, "other.json.tutorialSeen")), "manual playback does not touch the first-run record");
 
         // 按键：回车／→ 下一步，← 上一步，Esc 跳过；其他键全部吃掉。
@@ -60,7 +60,7 @@ internal static class TutorialTests {
         // 遮罩盖住全部控件：高亮处的控件也点不到。每一步高亮在页内，气泡不遮挡高亮。
         var overlay = Field<Canvas>(ui, "tutorialOverlay");
         var titles = new List<string>();
-        for (int i = 0; i < 8; i++) {
+        for (int i = 0; i < 7; i++) {
             Check(Field<int>(ui, "tutorialIndex") == i, "walks through step " + i);
             var spot = (Rect)typeof(LauncherUI).GetMethod("TutorialSpot", Flags).Invoke(ui, null);
             var card = Field<Border>(ui, "tutorialCard"); var frame = new Rect(Canvas.GetLeft(card), Canvas.GetTop(card), card.DesiredSize.Width, card.DesiredSize.Height);
@@ -81,7 +81,13 @@ internal static class TutorialTests {
         Check(typeof(LauncherUI).GetField("tutorialSteps", Flags).GetValue(ui) == null && Field<Canvas>(ui, "tutorialOverlay") != null, "picker opens the overlay without steps");
         ui.TutorialKey(Key.Return); Check(Field<Canvas>(ui, "tutorialOverlay") != null, "Return does nothing in the picker");
         ui.TutorialKey(Key.Escape); Check(Field<Canvas>(ui, "tutorialOverlay") == null, "Esc closes the picker");
-        Check(System.Windows.Automation.AutomationProperties.GetName(Field<Button>(ui, "tutorialEntry")) == "使用教程", "permanent entry in the sidebar");
+        Check(System.Windows.Automation.AutomationProperties.GetName(Field<Button>(ui, "tutorialEntry")) == "使用教程", "permanent entry in Settings About");
+        var sections = Field<Canvas[]>(ui, "settingsSections");
+        Check(Tree(sections[5]).Contains(Field<Button>(ui, "tutorialEntry")), "Tutorial entry belongs to About");
+        ui.Snapshot(3, state);
+        typeof(LauncherUI).GetMethod("ShowSettingsSection", Flags).Invoke(ui, new object[] { 2 });
+        ui.StartTutorial(); ui.CloseTutorial();
+        Check(Field<int>(ui, "page") == 3 && Field<int>(ui, "settingsSection") == 2, "Tour restores the original settings category");
         Check(launches == 0 && asks == 0, "nothing started or asked during the tour");
 
         // 气泡定位。

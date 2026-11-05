@@ -92,7 +92,7 @@ internal static class SyncTests {
         Check(texts().Any(t=>t=="建议下一个使用：账号 01")&&texts().Any(t=>t=="30%"),"suggestion and latest values shown");
         Check(texts().Any(t=>t.StartsWith("按当前速度")),"forecast shown");
         Check(LauncherTests.Children(section).OfType<System.Windows.Controls.Button>().Any(b=>((string)b.Content).EndsWith("账号 01")),"suggestion can open the account");
-        Check(content.Height>empty-1&&content.Height>700,"page grows to scroll");
+        Check(content.Height>empty-1 && content.Height == System.Windows.Controls.Canvas.GetTop(section) + section.Height,"trend page fits its charts without an empty account table");
         typeof(LauncherUI).GetField("settings",flags).SetValue(ui,new LauncherSettings{ShowUsage=false});
         ui.SetTrend(new TrendPoint[0]);
         Check(texts().Any(t=>t.StartsWith("用量趋势未开启"))&&!LauncherTests.Children(section).OfType<System.Windows.Shapes.Polyline>().Any(),"trend off shows only the notice");

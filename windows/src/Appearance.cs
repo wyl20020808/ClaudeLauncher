@@ -13,6 +13,22 @@ namespace ClaudeLauncher {
     internal static class Appearance {
         internal static int Theme=1, Language;
         internal static bool Dark { get { if(Theme!=0) return Theme==2; try { using(var key=Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize")) return key!=null && Object.Equals(key.GetValue("AppsUseLightTheme"),0); } catch { return false; } } }
+        [System.Runtime.InteropServices.DllImport("dwmapi.dll")]
+        static extern int DwmSetWindowAttribute(IntPtr window, int attribute, ref int value, int size);
+        internal static int ColorRef(Color color) { return color.R | (color.G << 8) | (color.B << 16); }
+        internal static bool ApplyWindowFrame(Window window) {
+            IntPtr handle = new System.Windows.Interop.WindowInteropHelper(window).Handle;
+            if (handle == IntPtr.Zero) return false;
+            int dark = Dark ? 1 : 0;
+            int caption = ColorRef(Brush("#FAF6F0").Color), text = ColorRef(Brush("#2B2622").Color);
+            int border = -2; // DWMWA_COLOR_NONE removes the system accent border.
+            DwmSetWindowAttribute(handle, 20, ref dark, sizeof(int));
+            // Windows 11 caption attributes return an unsupported HRESULT on older Windows.
+            int captionResult = DwmSetWindowAttribute(handle, 35, ref caption, sizeof(int));
+            int textResult = DwmSetWindowAttribute(handle, 36, ref text, sizeof(int));
+            int borderResult = DwmSetWindowAttribute(handle, 34, ref border, sizeof(int));
+            return captionResult >= 0 && textResult >= 0 && borderResult >= 0;
+        }
         static readonly Dictionary<string,SolidColorBrush> brushes=new Dictionary<string,SolidColorBrush>();
         sealed class ColorValue : System.ComponentModel.INotifyPropertyChanged {
             Color value;
