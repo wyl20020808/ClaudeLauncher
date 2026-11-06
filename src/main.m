@@ -152,21 +152,42 @@ static BOOL SharedConfigLinkAllowed(NSString *path, NSString *config) {
     }
     return YES;
 }
+// Claude Code hard-links identical checkpoint backups between sessions of one account (file-history/<session>/<hash>@vN).
+// Counts regular files there by inode; a hard link passes only when all of its links were found inside this account's file-history.
+static NSDictionary<NSString *,NSNumber *> *FileHistoryLinkCounts(NSString *config) {
+    NSMutableDictionary<NSString *,NSNumber *> *counts = [NSMutableDictionary dictionary];
+    NSString *history = [config stringByAppendingPathComponent:@"file-history"];
+    NSMutableArray *pending = [NSMutableArray arrayWithObject:history];
+    while (pending.count) {
+        NSString *folder = pending.lastObject; [pending removeLastObject];
+        for (NSString *name in [NSFileManager.defaultManager contentsOfDirectoryAtPath:folder error:nil]) {
+            NSString *item = [folder stringByAppendingPathComponent:name];
+            struct stat info;
+            if (lstat(item.fileSystemRepresentation,&info) != 0) continue;
+            if (S_ISDIR(info.st_mode)) [pending addObject:item];
+            else if (S_ISREG(info.st_mode) && info.st_nlink > 1) {
+                NSString *key = [NSString stringWithFormat:@"%llu:%llu",(unsigned long long)info.st_dev,(unsigned long long)info.st_ino];
+                counts[key] = @(counts[key].unsignedLongLongValue + 1);
+            }
+        }
+    }
+    return counts;
+}
 // Inspect metadata only. Never open cookies, credential stores, or account configuration contents.
-static NSString *CheckStorageNode(NSString *path, BOOL recursive, NSString *config) {
+static NSString *CheckStorageNode(NSString *path, BOOL recursive, NSString *config, NSDictionary<NSString *,NSNumber *> *internalLinks) {
     struct stat info;
     if (lstat(path.fileSystemRepresentation, &info) != 0)
         return errno == ENOENT ? nil : [NSString stringWithFormat:L(@"无法检查存储路径：%@"), path];
     if (S_ISLNK(info.st_mode)) return SharedConfigLinkAllowed(path,config) ? nil : [NSString stringWithFormat:L(@"隔离检查失败：路径是符号链接：%@"), path];
     if (!S_ISDIR(info.st_mode) && !S_ISREG(info.st_mode)) return [NSString stringWithFormat:L(@"隔离检查失败：存储类型异常：%@"), path];
     if (info.st_uid != getuid()) return [NSString stringWithFormat:L(@"隔离检查失败：目录或文件不属于当前用户：%@"), path];
-    if (S_ISREG(info.st_mode) && info.st_nlink > 1) return [NSString stringWithFormat:L(@"隔离检查失败：存储文件有硬链接：%@"), path];
+    if (S_ISREG(info.st_mode) && info.st_nlink > 1 && internalLinks[[NSString stringWithFormat:@"%llu:%llu",(unsigned long long)info.st_dev,(unsigned long long)info.st_ino]].unsignedLongLongValue != (unsigned long long)info.st_nlink) return [NSString stringWithFormat:L(@"隔离检查失败：存储文件有硬链接：%@"), path];
     if (recursive && S_ISDIR(info.st_mode)) {
         NSError *error = nil;
         NSArray *names = [NSFileManager.defaultManager contentsOfDirectoryAtPath:path error:&error];
         if (!names) return [NSString stringWithFormat:L(@"无法检查存储目录：%@（%@）"),path,error.localizedDescription];
         for (NSString *name in names) {
-            NSString *failure = CheckStorageNode([path stringByAppendingPathComponent:name], YES, config);
+            NSString *failure = CheckStorageNode([path stringByAppendingPathComponent:name], YES, config, internalLinks);
             if (failure) return failure;
         }
     }
@@ -185,7 +206,7 @@ static NSString *ValidateProfileRoot(NSString *path, NSString *expected) {
         }
         if (S_ISLNK(info.st_mode) || !S_ISDIR(info.st_mode)) return [NSString stringWithFormat:L(@"账号目录或其上级是链接/非目录，已停止：%@"),prefix];
     }
-    return CheckStorageNode(path,NO,nil);
+    return CheckStorageNode(path,NO,nil,nil);
 }
 static NSString *ValidateProfileAtPath(NSString *path, NSString *expected) {
     NSString *failure = ValidateProfileRoot(path,expected);
@@ -193,7 +214,8 @@ static NSString *ValidateProfileAtPath(NSString *path, NSString *expected) {
     // Chromium's SingletonSocket/SingletonLock are expected links; they are not credential storage.
     for (NSString *relative in @[@"Cookies",@"Cookies-journal",@"Network",@"Local Storage",@"Session Storage",@"IndexedDB",@"Partitions",@"Local State",@"Preferences",@"config.json",@"Cache",@"Code Cache",@"Service Worker",@"ClaudeCodeConfig"]) {
         NSString *item = [path stringByAppendingPathComponent:relative];
-        failure = CheckStorageNode(item,YES,[relative isEqual:@"ClaudeCodeConfig"] ? item : nil);
+        BOOL config = [relative isEqual:@"ClaudeCodeConfig"];
+        failure = CheckStorageNode(item,YES,config ? item : nil,config ? FileHistoryLinkCounts(item) : nil);
         if (failure) return failure;
     }
     return nil;
@@ -4060,6 +4082,17 @@ static int SelfTest(void) {
         NSCAssert(ValidateProfileAtPath(a,a),@"recursive background policy still rejects deeply nested links");
         NSCAssert([fm removeItemAtPath:nestedLink error:nil],@"remove generated nested link only");
         NSCAssert(!ValidateProfileAtPath(a,a),@"safe nested profile remains usable");
+        // Checkpoint backups hard-linked between sessions of the same account pass; a link leaving file-history still fails.
+        NSString *historyA = [a stringByAppendingPathComponent:@"ClaudeCodeConfig/file-history/s1"], *historyB = [a stringByAppendingPathComponent:@"ClaudeCodeConfig/file-history/s2"];
+        NSCAssert([fm createDirectoryAtPath:historyA withIntermediateDirectories:YES attributes:nil error:nil] && [fm createDirectoryAtPath:historyB withIntermediateDirectories:YES attributes:nil error:nil],@"file-history fixture");
+        NSString *backup = [historyA stringByAppendingPathComponent:@"f@v1"];
+        NSCAssert([@"synthetic-backup" writeToFile:backup atomically:YES encoding:NSUTF8StringEncoding error:nil],@"backup fixture");
+        NSCAssert(linkat(AT_FDCWD,backup.fileSystemRepresentation,AT_FDCWD,[[historyB stringByAppendingPathComponent:@"f@v1"] fileSystemRepresentation],0)==0,@"internal hardlink fixture");
+        NSCAssert(!ValidateProfileAtPath(a,a),@"file-history internal hardlink allowed: %@",ValidateProfileAtPath(a,a));
+        NSString *outsideBackup = [b stringByAppendingPathComponent:@"backup-alias"];
+        NSCAssert(linkat(AT_FDCWD,backup.fileSystemRepresentation,AT_FDCWD,outsideBackup.fileSystemRepresentation,0)==0,@"external hardlink fixture");
+        NSCAssert(ValidateProfileAtPath(a,a),@"file-history hardlink leaving the account rejected");
+        NSCAssert([fm removeItemAtPath:outsideBackup error:nil] && [fm removeItemAtPath:[a stringByAppendingPathComponent:@"ClaudeCodeConfig/file-history"] error:nil],@"remove generated file-history only");
         // Config-sync links pass only at whitelisted entries with targets outside account and launcher data. Targets are never opened.
         NSString *syncConfig = [a stringByAppendingPathComponent:@"ClaudeCodeConfig"], *syncSkills = [syncConfig stringByAppendingPathComponent:@"skills"];
         NSCAssert([fm createDirectoryAtPath:[syncSkills stringByAppendingPathComponent:@"own"] withIntermediateDirectories:YES attributes:nil error:nil],@"skills fixture");

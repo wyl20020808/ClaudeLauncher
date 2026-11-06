@@ -176,6 +176,8 @@ macOS（`src/main.m`）和 Windows（`windows/`）各自原生实现，共同遵
 只检查元数据，从不读取内容。目录及各级上级不得为链接或非目录；以下存储项不得为链接、非本人所有、普通文件硬链接：
 `Cookies`、`Cookies-journal`、`Network`、`Local Storage`、`Session Storage`、`IndexedDB`、`Partitions`、`Local State`、`Preferences`、`config.json`、`Cache`、`Code Cache`、`Service Worker`、`ClaudeCodeConfig`。
 
+检查点硬链接例外（2026-11-06，macOS 本机账号 02 实例）：Claude Code 会把内容相同的检查点备份在同一账号的不同会话之间做成硬链接（`ClaudeCodeConfig/file-history/<会话>/<哈希>@vN`）。启动器先统计本账号 `file-history` 下各普通文件的（设备，inode）出现次数；某个硬链接文件的链接数等于这个次数（全部链接都在本账号 `file-history` 内）时放行，否则仍判为未通过。只看元数据。其他位置的硬链接、指向账号外的链接一律拒绝。[Windows] 待实现：先确认 Windows 版 Claude Code 是否同样产生此类硬链接，再按卷序列号＋文件索引计数。
+
 配置同步链接例外（2026-10-30，修复链接模式导致 02～10 无法启动）：`ClaudeCodeConfig` 内只有配置同步可放置的条目（顶层 `settings.json`、顶层 `*.md`，`skills`、`agents`、`commands`、`output-styles` 的直接子项，不含点开头的名称）可以是符号链接。链接目标解析后须由当前用户所有（目标不存在时跳过所有者判断），不得是 `~/.claude.json`、启动器数据目录，也不得位于账号数据目录或 `~/.claude` 内的白名单条目之外，不得是这些目录的上级。`ClaudeCodeConfig` 或分类目录本身是链接、其他位置的链接仍判为未通过。只看链接元数据，不打开目标内容。[Windows] 目标判定已按本段实现（`ConfigSync.TargetAllowed`）。差异：Windows 还检查目标内容树（硬链接、所有者、大小上限），目标不存在时判为未通过；只解析一层链接，下一层由内容树检查拒绝身份或凭据文件名。
 
 未通过时的处理（2026-10-30 用户决定：本地风险警告，不阻止启动）：
