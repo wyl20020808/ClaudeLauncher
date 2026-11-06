@@ -35,6 +35,28 @@ namespace ClaudeLauncher {
         public static string Display(string path) {
             return path.StartsWith(@"\\?\") ? path.Substring(4) : path;
         }
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        static extern IntPtr FindFirstFileNameW(string name, uint flags, ref uint length, System.Text.StringBuilder link);
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        static extern bool FindNextFileNameW(IntPtr find, ref uint length, System.Text.StringBuilder link);
+        [DllImport("kernel32.dll")] static extern bool FindClose(IntPtr find);
+        // 硬链接的全部名字（卷内路径，不含盘符，如 \Users\me\x）；只读目录项，不打开内容。
+        public static List<string> LinkNames(string path) {
+            var names = new List<string>(); var buffer = new System.Text.StringBuilder(32768); uint length = 32768;
+            IntPtr find = FindFirstFileNameW(Extended(path), 0, ref length, buffer);
+            if (find == new IntPtr(-1)) throw new IOException("无法检查存储项：" + Display(path), Marshal.GetHRForLastWin32Error());
+            try {
+                do { names.Add(buffer.ToString()); buffer.Length = 0; length = 32768; } while (FindNextFileNameW(find, ref length, buffer));
+                if (Marshal.GetLastWin32Error() != 38) throw new IOException("无法检查存储项：" + Display(path)); // 38 = ERROR_HANDLE_EOF
+            } finally { FindClose(find); }
+            return names;
+        }
+        // 硬链接的所有名字都在同一账号目录内才放行：Claude Code 的 file-history 会在会话之间硬链接检查点备份（2026-11-06 实测）。
+        // 与账号目录外（含其他账号）共用的硬链接仍拒绝。
+        public static bool LinksWithin(string path, string folder) {
+            string full = Path.GetFullPath(folder).TrimEnd('\\'), prefix = full.Substring(Path.GetPathRoot(full).Length - 1) + "\\";
+            return LinkNames(path).All(name => name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase));
+        }
         public static int LinkCount(string path) {
             // FILE_READ_ATTRIBUTES，共享全部；BACKUP_SEMANTICS | OPEN_REPARSE_POINT 不跟随链接。
             using (SafeFileHandle handle = CreateFile(Extended(path), 0x80, 7, IntPtr.Zero, 3, 0x02000000 | 0x00200000, IntPtr.Zero)) {
@@ -76,11 +98,11 @@ namespace ClaudeLauncher {
                     if ((attributes.Value & FileAttributes.ReparsePoint) != 0) throw new IOException("账号目录路径含链接或重定向，已停止：" + entry);
                 }
                 if (Attributes(folder) == null) continue;
-                foreach (string name in Items) Check(Path.Combine(folder, name), recursive);
+                foreach (string name in Items) Check(Path.Combine(folder, name), recursive, folder);
             }
         }
         // 逐项检查存储项及其内部：不跟随链接，检查期间消失的条目跳过，其余异常一律停止。
-        static void Check(string root, bool recursive) {
+        static void Check(string root, bool recursive, string folder) {
             var pending = new Stack<string>(); pending.Push(Extended(root));
             while (pending.Count > 0) {
                 string path = pending.Pop(), shown = Display(path);
@@ -98,7 +120,7 @@ namespace ClaudeLauncher {
                 } catch (FileNotFoundException) { continue; } catch (DirectoryNotFoundException) { continue; }
                 catch (UnauthorizedAccessException) { throw new IOException("无法读取存储项所有者，已停止：" + shown); }
                 if (!OwnedByMe(owner)) throw new IOException("存储项不属于当前用户，已停止：" + shown);
-                if (!directory && LinkCount(path) > 1) throw new IOException("存储项是硬链接，已停止：" + shown);
+                if (!directory && LinkCount(path) > 1 && !LinksWithin(path, folder)) throw new IOException("存储项与账号目录外的文件共用硬链接，已停止：" + shown);
                 if (!directory || !recursive) continue;
                 try { foreach (string entry in Directory.EnumerateFileSystemEntries(path)) pending.Push(entry); }
                 catch (DirectoryNotFoundException) { }
@@ -256,6 +278,26 @@ namespace ClaudeLauncher {
                 Check(CreateHardLink(longFile, outside, IntPtr.Zero), "无法创建长路径硬链接夹具");
                 Rejects(() => Storage.Validate(2, roaming, local), "长路径下的硬链接必须拒绝");
                 File.Delete(longFile);
+                Storage.Validate(2, roaming, local);
+                // 账号目录内部的硬链接放行（Claude Code file-history 在会话间硬链接备份）；跨账号仍拒绝
+                string history = Path.Combine(Core.CodeConfig(folder), "file-history");
+                Directory.CreateDirectory(Path.Combine(history, "a")); Directory.CreateDirectory(Path.Combine(history, "b"));
+                File.WriteAllText(Path.Combine(history, @"a\x@v3"), "x");
+                Check(CreateHardLink(Path.Combine(history, @"b\x@v3"), Path.Combine(history, @"a\x@v3"), IntPtr.Zero), "无法创建账号内硬链接夹具");
+                Check(Storage.LinkNames(Path.Combine(history, @"a\x@v3")).Count == 2, "硬链接名字数量错误");
+                Storage.Validate(2, roaming, local);
+                Check(CreateHardLink(Storage.Extended(longFile), Path.Combine(history, @"a\x@v3"), IntPtr.Zero), "无法创建长路径账号内硬链接夹具");
+                Storage.Validate(2, roaming, local);
+                File.Delete(longFile);
+                Directory.CreateDirectory(folders[2]);
+                Check(CreateHardLink(Path.Combine(folders[2], "shared"), Path.Combine(history, @"a\x@v3"), IntPtr.Zero), "无法创建跨账号硬链接夹具");
+                Rejects(() => Storage.Validate(2, roaming, local), "与其他账号共用的硬链接必须拒绝");
+                File.Delete(Path.Combine(folders[2], "shared"));
+                Directory.CreateDirectory(Path.Combine(folder, "Network"));
+                Check(CreateHardLink(Path.Combine(folder, @"Network\x"), outside, IntPtr.Zero) && CreateHardLink(Path.Combine(folder, "Preferences"), outside, IntPtr.Zero), "无法创建账号内外混合硬链接夹具");
+                Rejects(() => Storage.Validate(2, roaming, local), "账号内外混合的硬链接必须拒绝");
+                File.Delete(Path.Combine(folder, @"Network\x")); File.Delete(Path.Combine(folder, "Preferences"));
+                Directory.Delete(history, true); Directory.Delete(folders[2]);
                 Storage.Validate(2, roaming, local);
                 Junction(folders[2], target);
                 Rejects(() => Storage.Validate(3, roaming, local), "链接账号目录必须拒绝");
@@ -419,6 +461,8 @@ namespace ClaudeLauncher {
             var sd = UsageInterface.ButtonMetric("用量：每周 · 所有模型：11%周三19:00 重置");
             Check(sd != null && sd.Item1 == "sd" && sd.Item2 == 11, "周按钮解析错误");
             Check(UsageInterface.ButtonMetric("Usage: 7.5% of the 5-hour limit Resets 3pm").Item2 == 7.5, "英文五小时按钮解析错误");
+            Check(UsageInterface.ButtonMetric("Usage: Weekly · All models: 12% Resets Wed 3pm").Item1 == "sd" && UsageInterface.ButtonMetric("用量：每周\u00a0·\u00a0所有模型：12%").Item2 == 12, "英文周值与不换行空格应被识别");
+            Check(UsageInterface.ButtonMetric("Usage: Weekly · Opus: 12%") == null, "英文模型专属周限额不得混入");
             Check(UsageInterface.ButtonMetric("用量：5 小时限额的 101%") == null && UsageInterface.ButtonMetric("上下文 52%") == null && UsageInterface.ButtonMetric("用量：每周 · Opus：5%") == null && UsageInterface.ButtonMetric(null) == null, "无效百分比、上下文与模型专属周限额必须排除");
             Check(UsageInterface.CodeUrl("https://claude.ai/epitaxy") && UsageInterface.CodeUrl("https://claude.ai/epitaxy/local_x") &&
                 !UsageInterface.CodeUrl("https://claude.ai/epitaxyx") && !UsageInterface.CodeUrl("https://claude.ai/epitaxy/") && !UsageInterface.CodeUrl("https://evil.test/epitaxy") &&
@@ -431,6 +475,7 @@ namespace ClaudeLauncher {
             var shell = new UsageNode { Type = "Pane", Children = { new UsageNode { Type = "Document" }, group(new[] { page(code, new[] { group(new[] { button("用量：每周 · 所有模型：11%周三19:00 重置") }) }) }) } };
             UsageRecord read = UsageInterface.ReadSynthetic(shell, 5);
             Check(read.Status == UsageInterface.Observed && read.Weekly.Percent == 11 && read.FiveHour == null, "合成树应读到周值");
+            Check(read.Detail.Contains("reason=panel_not_found") && !read.Detail.Contains("11%") && !read.Detail.Contains("local_"), "缺面板诊断只含原因和计数");
             Check(UsageInterface.ReadSynthetic(page("https://evil.test/epitaxy/x", new[] { button("用量：5 小时限额的 52%") }), 5).FiveHour == null, "非官方页面必须拒绝");
             Check(UsageInterface.ReadSynthetic(group(new[] { button("用量：5 小时限额的 52%") }), 5).Status == "未观察到 Code 用量页面", "Code 页面以外的按钮不得采用");
             Check(UsageInterface.ReadSynthetic(page(code, new[] { new UsageNode { Type = "Text", Name = "用量：5 小时限额的 52%" }, new UsageNode { Type = "Button", Name = "用量：5 小时限额的 52%" } }), 5).Status == "未观察到 Code 用量控件", "正文或不可展开按钮不得提供额度");
@@ -445,12 +490,18 @@ namespace ClaudeLauncher {
             UsageNode weekButton = button("用量：每周 · 所有模型：11%周二19:00 重置");
             read = UsageInterface.ReadSynthetic(page(code, new[] { group(new[] { weekButton, popup("https://claude.ai/settings/usage", limits) }) }), 5);
             Check(read.Status == UsageInterface.Observed && read.FiveHour.Percent == 71 && read.FiveHour.Reset == "15:20 重置" && read.Weekly.Percent == 11 && read.Weekly.Reset == "周二19:00 重置", "面板应读到五小时与每周");
+            Check(read.Detail.Contains("reason=complete"), "完整面板应报告成功原因");
+            var englishPanel = UsageInterface.ReadSynthetic(page(code, new[] { button("Usage: Weekly · All models: 11%"), popup("https://claude.ai/settings/usage", new[] { bar("5-hour limit", 71), bar("Weekly\u00a0· All models", 11) }) }), 5);
+            Check(englishPanel.FiveHour.Percent == 71 && englishPanel.Weekly.Percent == 11, "英文面板大小写与不换行空格兼容");
+            var missingPanelMetric = UsageInterface.ReadSynthetic(page(code, new[] { weekButton, popup("https://claude.ai/settings/usage", new[] { bar("5 小时限额", 71) }) }), 5);
+            Check(missingPanelMetric.Detail.Contains("reason=panel_missing_button_metric"), "面板缺少按钮指标应单独诊断");
             Check(UsageInterface.ReadSynthetic(page(code, new[] { button("用量：每周 · 所有模型：12%周二19:00 重置"), popup("https://claude.ai/settings/usage", limits) }), 5).Status == "界面数据待核对", "面板与按钮不一致必须拒绝");
             Check(UsageInterface.ReadSynthetic(page(code, new[] { weekButton, popup("https://evil.test/settings/usage", limits) }), 5).FiveHour == null, "没有官方用量链接的弹窗不得读取");
             Check(UsageInterface.ReadSynthetic(page(code, new[] { weekButton, popup("https://claude.ai/settings/usage", limits.Concat(new[] { bar("5 小时限额", 70) }).ToArray()) }), 5).Status == "界面数据待核对", "重复指标必须拒绝");
             Check(UsageInterface.ReadSynthetic(page(code, new[] { weekButton, popup("https://claude.ai/settings/usage", limits), popup("https://claude.ai/settings/usage", limits) }), 5).Status == "界面数据待核对", "多个面板必须拒绝");
             read = UsageInterface.ReadSynthetic(page(code, new[] { weekButton, popup("https://claude.ai/settings/usage", new[] { bar("每周 · Opus", 40), bar("每周 · 所有模型", 11), bar("上下文", 52) }) }), 5);
             Check(read.Status == UsageInterface.Observed && read.Weekly.Percent == 11 && read.FiveHour == null, "模型专属周限额与上下文不得采用");
+            Check(read.Detail.Contains("reason=panel_incomplete") && read.Detail.Contains("unknownBars=2"), "缺指标与无面板必须区分，不输出未知控件文字");
             Check(UsageInterface.ReadSynthetic(page(code, new[] { popup("https://claude.ai/settings/usage", limits) }), 5).Status == "未观察到 Code 用量控件", "没有用量按钮时不采用面板");
             Check(UsageInterface.ReadSynthetic(page(code, new[] { weekButton, popup("https://claude.ai/settings/usage", new[] { bar("5 小时限额", 101), bar("每周 · 所有模型", 11) }) }), 5).Status == "界面数据待核对", "越界进度值必须拒绝");
             var watch = new PopupWatch();
@@ -472,6 +523,10 @@ namespace ClaudeLauncher {
             Check(expired.FiveHour.Percent == 0 && expired.FiveHour.Observed == t1.AddHours(5), "同进程超过 5 小时的五小时值按 0%");
             Check(UsageInterface.Merge(first, new UsageRecord { Status = UsageInterface.Observed }, "2|11|5|1|x", t2).FiveHour == null && UsageInterface.Merge(null, first, "2|10|5|1|x", t2).Weekly == null, "没有周值时不估算五小时，也不编造周值");
             Check(UsageInterface.Merge(second, new UsageRecord { Status = "界面读取未完成" }, "2|10|5|1|x", t2) == second && UsageInterface.Merge(second, new UsageRecord { Status = "多个用量界面，待核对" }, "2|10|5|1|x", t2).Status != UsageInterface.Observed, "暂不可读保留旧值，不确定结果不沿用");
+            var restarted = UsageInterface.Merge(second, new UsageRecord { Status = UsageInterface.Observed, FiveHour = new UsageMetric { Percent = 45 } }, "2|11|5|1|x", t2);
+            Check(restarted.FiveHour.Percent == 45 && restarted.Weekly == null, "重启前的周值不得充当当前额度");
+            var estimateTrend = new List<TrendPoint>(); UsageTrend.Observe(estimateTrend, 2, none, t1.ToUniversalTime());
+            Check(estimateTrend.Count == 1 && estimateTrend[0].Five == null && estimateTrend[0].Week == 9, "估算零值不得作为实测写入趋势");
             Check(UsageInterface.TimeLabel(second.FiveHour, t2) == "09:00:00" && UsageInterface.TimeLabel(second.FiveHour, t1.AddDays(1)) == "10-29 09:00" && UsageInterface.TimeLabel(null, t2) == "尚未观察到", "观察时间格式错误");
             string usageFile = Path.Combine(root, "settings", "usage-observations.json");
             Check(UsageInterface.Load(usageFile, t2).Count == 0, "缺少观察记录应为空");

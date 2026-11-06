@@ -303,7 +303,7 @@ public static class LauncherTests {
         var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
         var page = ui.Snapshot(0, state);
         Func<IEnumerable<string>> texts = () => Children(page).OfType<TextBlock>().Select(t => t.Text).ToList();
-        Check(!texts().Contains("未接入") && !texts().Contains("尚未观察到"), "Missing usage must stay silent");
+        Check(texts().Contains("—") && texts().Contains("待读取"), "Missing usage has an explicit placeholder");
         DateTime at = DateTime.Now.AddMinutes(-1);
         ui.SetUsage(2, new UsageRecord { Status = UsageInterface.Observed, Weekly = new UsageMetric { Percent = 11, Reset = "周三19:00 重置", Observed = at } });
         Check(texts().Contains("11%") && texts().Contains("5-hour") && texts().Contains("weekly") && texts().Any(t => System.Text.RegularExpressions.Regex.IsMatch(t, @"^\d+(?:d \d+h|h(?: \d+m)?|m)$")), "Quota titles and countdown remain English in the Chinese interface");
@@ -322,10 +322,14 @@ public static class LauncherTests {
         }
         Check(illustration.Opacity == 1, "Observed usage preserves artwork prominence");
         ui.SetUsage(2, new UsageRecord { Status = "未观察到 Code 用量" });
-        Check(illustration.Opacity == 1 && values.All(v => v.Text == ""), "Missing metrics preserve full-card artwork");
+        Check(illustration.Opacity == 1 && values.All(v => v.Text == "—") && quotaAreas.All(q => q.Visibility == Visibility.Visible), "Missing metrics preserve artwork and show both placeholders");
         ui.SetUsage(2, new UsageRecord { Status = UsageInterface.Observed, Weekly = new UsageMetric { Percent = 11, Reset = "周三19:00 重置", Observed = at } });
         Check(illustration.Opacity == 1, "Receiving usage does not fade the full card");
-        Check(values[0].Text == "" && (values[1].ToolTip as string).Contains("周三19:00 重置") && (values[1].ToolTip as string).Contains("组织"), "Tooltip must carry reset text and the organization limit");
+        Check(values[0].Text == "—" && (values[0].ToolTip as string).Contains("手动展开") && (values[1].ToolTip as string).Contains("周三19:00 重置") && (values[1].ToolTip as string).Contains("组织"), "Tooltip explains missing data, reset text and organization limit");
+        ui.SetTrend(new[] { new TrendPoint { Account = 2, At = DateTime.UtcNow.AddMinutes(-30), Five = 35 } });
+        Check(values[0].Text == "—" && (values[0].ToolTip as string).Contains("历史记录（非当前额度）：35%"), "History stays separate from the current missing metric");
+        ui.SetUsage(2, new UsageRecord { Status = UsageInterface.Observed, FiveHour = new UsageMetric { Percent = 0, Reset = UsageInterface.FiveHourEstimate, Observed = at } });
+        Check(values[0].Text == "≈0%" && texts().Contains("估算"), "Estimated zero must be visibly distinguished");
         Check(UsageInterface.QuotaColor(59.9) == "#3C8A68" && UsageInterface.QuotaColor(60) == "#B88619" && UsageInterface.QuotaColor(80) == "#B88619" && UsageInterface.QuotaColor(80.1) == "#C64D40", "Quota color boundaries");
         var observed = new DateTime(2026, 11, 4, 18, 0, 0);
         var metric = new UsageMetric { Observed = observed, Reset = "周三19:00 重置" };
@@ -352,6 +356,7 @@ public static class LauncherTests {
         typeof(LauncherUI).GetMethod("SaveSettings", flags).Invoke(ui, null);
         page = ui.Snapshot(0, state);
         Check(!File.Exists(usageFile) && !texts().Contains("11%") && !texts().Contains("本地用量显示已关闭"), "Turning usage off must clear values and delete observations silently");
+        Check(quotaAreas.All(q => q.Visibility == Visibility.Collapsed), "Turning usage off hides placeholders too");
     }
     static void TestLogsPage(LauncherUI ui, string settingsFile, List<Instance> state) {
         var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;

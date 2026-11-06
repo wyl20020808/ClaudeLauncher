@@ -73,6 +73,9 @@
 "搜索账号" = "Search accounts";
 "全部状态" = "All statuses";
 "未运行" = "Stopped";
+"待读取" = "Pending";
+"待展开" = "Open usage";
+"估算" = "Estimated";
 "处理中" = "Busy";
 "异常" = "Error";
 "账号状态" = "Account status";

@@ -1,10 +1,37 @@
 # 项目状态
 
-## macOS 01 继承 CLAUDE_CONFIG_DIR 修复（2026-11-05，未提交、未发布）
+## macOS 存储校验检查点硬链接误报（2026-11-06，已推送 dev，未发布）
+
+- 现象：本机启动账号 02 弹“存储文件有硬链接：…/Claude-Second/ClaudeCodeConfig/file-history/<会话>/<哈希>@v3”。02 的 `file-history` 有 68 个文件各有两个名字，都在本账号 `file-history` 内。与 Windows 1.9.1 同一原因。
+- 修复（`39b19cd`）：`FileHistoryLinkCounts` 统计本账号 `ClaudeCodeConfig/file-history` 下各（设备，inode）出现次数，链接数等于次数才放行。比 Windows 严：只放行 `file-history` 内部的硬链接（macOS 没有列出全部名字的 API，只能在已知目录里计数）。自检新增放行／账号外拒绝用例，`--self-test` 通过。真实 02 核对通过；GUI 内真实启动未执行。
+
+## macOS 01 继承 CLAUDE_CONFIG_DIR 修复（2026-11-05，已推送 dev，未发布）
 
 - 现象：账号 01 的几个 Code 会话显示“在磁盘上未找到会话”。原因：09:44 在 02 的 Code 会话里用测试程序冷启动 01，02 终端的 `CLAUDE_CONFIG_DIR` 被继承，01 实例（09:44～18:36）把会话记录写进了 `Claude-Second/ClaudeCodeConfig/projects`。正常重开 01 后，在 `~/.claude` 里找不到这些记录。记录已复制回 `~/.claude/projects`，原件保留。
 - 实测：NSWorkspace 会把调用者的环境合并给新进程，`environment` 只能覆盖、不能删除；调用前先 `unsetenv` 才能挡住。修复：启动前从启动器自身环境 `unsetenv("CLAUDE_CONFIG_DIR")`，02～10 仍由 `environment` 显式设置。SPEC 里原来写的“macOS 不继承启动器环境”已更正。Windows 版本来就会移除，不受影响。
 - 构建与自检通过。真实启动 01 的 GUI 验证：未执行。另外，以前那个 10-26 的 `Claude-Second` 旧痕迹（见下文）可能也是同一原因，未确认。
+
+## Windows 1.9.1：同步会话硬链接误报（2026-11-06）
+
+- 现场：客户机同步会话写入 0 条，提示“存储项是硬链接，已停止：…\Claude-Second\ClaudeCodeConfig\file-history\<会话 ID>\<哈希>@v3”。同步前的完整存储校验（`LauncherUI.cs` 写入前 `ValidateStorage`）拒绝一切硬链接。本机核实：`~/.claude/file-history` 695 个文件中 178 个有两个名字，分别在两个会话 ID 目录下，没有一个在 `file-history` 外，是 Claude Code 续接／分叉会话时硬链接备份。
+- 修复（Windows）：`Storage.LinksWithin` 用 `FindFirstFileNameW` 列出全部名字，都在同一账号目录内才放行；规则见 SPEC「存储校验」硬链接例外。自检新增：账号内硬链接放行（含长路径）、跨账号拒绝、账号内外混合拒绝；原有指向账号外的硬链接拒绝用例保留。`build.ps1` 通过：LauncherTests 369、SyncTests 162、SessionSyncTests 369、TutorialTests 80、自检 264。
+- 发布：已发布为 `windows-v1.9.1`（Latest），目标 `44fdde6`（dev 与 main 同一提交，快进推送）。`build.ps1`、`test-install.ps1`（3 个场景）、`publish-release.ps1 -DryRun` 通过；正式发布退出 2（未回滚，自建更新服务返回 502，与前几版相同），草稿附件经 API 逐字节核对通过，GitHub latest/download 两份清单、Setup、DMG 复核 OK。附件 `ClaudeLauncherSetup-1.9.1.exe` 8399029 字节，SHA-256 `407c695a0f490e9971052d6400efd4248a8f7299b4dc58c02f0274b0ccaebe13`；原样带入 macOS 1.8.2 DMG 与 `latest-macos.json`，未重签。
+- macOS：已于 2026-11-06 修复（见上方“macOS 存储校验检查点硬链接误报”）。
+- 未验证：客户机真实账号同步。
+
+## Windows 1.9.0：界面改版与用量读取修复（2026-11-06）
+
+- 发布：用户要求把 1.8.9 之后本地的改动发布为新版本（2026-11-06）。内容为下方“Windows 用量捕获修复”和“Windows → macOS 交接”所列 1.8.9 之后的界面改动（`96a152e`、`7e940d2`），按十进制进位定为 1.9.0，发布说明见 [RELEASE-windows-1.9.0](RELEASE-windows-1.9.0.md)。已发布为 `windows-v1.9.0`（Latest），目标 `9488217`（dev 与 main 同一提交，快进推送）。先跑 `build.ps1`（LauncherTests 369、SyncTests 162、SessionSyncTests 369、TutorialTests 80、自检 257）、`test-install.ps1`（3 个场景）、`publish-release.ps1 -DryRun`，都通过；正式发布退出 2（未回滚，自建更新服务返回 502，与前几版相同）：草稿附件经 API 逐字节核对通过；GitHub latest/download 的两份清单、Setup、DMG 复核均 OK。附件 `ClaudeLauncherSetup-1.9.0.exe` 8398463 字节（高清卡片图使安装包由约 3.4 MB 增至 8.4 MB），SHA-256 `51489a0138e789afd6d67a1f0a47cae577352ac014ae5349e082e4815197ade0`；原样带入 macOS 1.8.2（`ClaudeLauncher-1.8.2.dmg` 8946737 字节，SHA-256 `f32b91c8…0c503`）和 `latest-macos.json`，未重签。
+- 未验证：沿用下方各节的未验证项——安装后真实窗口的点击、悬停、拖动和高 DPI；新构建持续读取真实用量；英文界面；客户机。
+
+## Windows 用量捕获修复（2026-11-05，本地提交 dev，未发布）
+
+- 现场证据：运行中的本地 1.8.9.0 在账号 02 两次展开时共读了 6 次，均只有五小时值；此前两项成功，Claude 重启后旧周值因身份变化被丢弃。用户保持弹窗展开后旧版也读到两项，因此没有证据认定当前官方面板格式已全面失效。
+- 修复：展开后立即读取，缺项时再延迟 200、500、1000、2000 ms，最多 5 次；每个 PID 独立结束，同 PID 合并；排队必须等待真实读取完成，不再消耗重试次数，清空数据会取消待执行读取。补英文周额度及指标空白／大小写兼容，保留官方页面、面板链接、重复指标和冲突拒绝规则；最小化窗口不读取。
+- 可观察性：日志与只读检查增加原因及结构计数，不输出控件文字、百分比、页面或凭据。缺失圆环显示占位及状态；历史趋势只在悬停中标为“非当前额度”，不跨进程恢复当前值。估算零值显示 `≈0%` 与“估算”，不进入新趋势和提醒；既有历史数据不改写。
+- 验证：隔离构建 `build/usage-fix/ClaudeLauncher.exe`；LauncherTests 369、SyncTests 162、SessionSyncTests 369、TutorialTests 80、自检 257 通过。覆盖两个账号同时展开、同 PID 合并、等待超过旧重试窗口后仍重试、清空取消、解析边界和历史显示。符号链接创建不可用，原有复制回退测试通过；已有 CS0649／CS0219 警告保留。
+- 真实只读验收：用户手动保持官方面板展开，修复构建在 Claude 4.16336.0 账号 02 读到两项，648 ms，`reason=complete`，1 个按钮、1 个核实面板；未点击或激活官方界面、未联网、未读取凭据。合成缺失／单项／估算三种状态离屏预览通过。新构建的持续真实事件监听、真实英文界面及交互尚未验收；当前运行中的旧启动器未替换。
+- 构建脚本新增 `-OutputDirectory`，用于避开正在运行的开发版；使用说明及 SPEC 同步。按用户要求提交到本地 dev，保留无关的侧栏调查工作；未合并、推送、签名或发布。
 
 ## Windows → macOS 交接（2026-11-05）
 

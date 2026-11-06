@@ -68,6 +68,73 @@
 
 结论：后台执行的内部函数确实存在，当前缺口是从启动器进入官方进程的可靠、可用入口。已检查的 SDK、内部 IPC 和链接入口均未打通这一步；不能把函数级隔离测试当成可交付的后台功能。未实施进程注入、客户端改写或调试入口改动。原有预填流程暂时保留，新的后台自动分组尚未实现。
 
+## 2026-11-05 官方 mod 入口实测
+
+缺失的外部入口改由 Claude Code 官方插件钩子接口补上。Desktop 的每个 Code 会话都由本机 CLI（本机为 2.1.317）承载，CLI 的 mod 接口提供 `$.mcp.call(server, tool, args)`，用引擎已有的连接调用会话已连接的 MCP 服务，`ccd_sidebar` 就在其中。调用链为：本机请求文件 → mod 计时器 → `$.mcp.call("ccd_sidebar", …)` → 会话控制流 `mcp_message` → `InternalMcpServerManager` 代理 → `q_` → `Be` → renderer `dispatchSidebarCommand` → 官方保存／同步。全程不发起模型回合、不操作窗口、不读凭据、不改客户端文件。
+
+探针为开发用 mod `sidebar-bridge-probe`，只放在账号 02 本会话的 dev-mods 目录，未安装到用户级配置。它每 1.5 秒检查收件目录的 `request.json`，把结果写成 `response-<id>.json`；写操作只允许 `启动器后台验证-` 前缀，删除只允许该前缀的空分组。首次启用提示被拒绝后，用户正常退出并重启账号 02，mod 随会话启动加载（`surface=null`、`isInteractive=false`，即 SDK 宿主会话）。
+
+真实结果（账号 02，Claude 4.16336.0.0，CLI 2.1.317）：
+
+1. 由外部 Node 脚本模拟启动器写入请求。`list_groups` 返回真实分组“测试2”“测试1”，工具调用耗时 22 ms，含轮询共约 0.6 秒。
+2. `create_group` 建立 `启动器后台验证-20261105`（`cg-4a21e0f6-3d63-453a-ae57-03f93c2afebf`），再次 `list_groups` 可见该组，`session_count=0`。工具调用 22 ms，含轮询约 1.4 秒。
+3. 轮询在模型回合进行中照常运行。请求文件由脚本写入，模型没有调用 `ccd_sidebar` 工具。
+
+### 重启后“看不到”的原因
+
+用户确认建组后侧栏可见，重启账号 02 后看不到。复查结果：
+
+- 重启后 mod 于 13:05 重新加载，后台 `list_groups` 仍返回 `启动器后台验证-20261105`；官方 `list_sections` 也列出该组为 `kind=manual`、`shown=true`、`collapsed=false`、`session_count=0`。分组数据在重启后保留。
+- `ion-dist.asar/assets/v1/shared-92-BOgyxePb.js`：Sessions 区块默认 `show.emptyGroups=false`。`addCustomGroup` 新建分组时同时写入 `groupsKeptWhileEmpty`，所以刚建的空组在当次运行中可见。该列表属于运行期状态，重启后为空，空组随即按默认规则隐藏。
+- `shared-22-BACJUrcb.js` 的 `YP` 把 `showEmptyGroups` 与 `groupsKeptWhileEmpty` 交给侧栏渲染，与上述行为一致。界面建组同样走 `addCustomGroup`，此前界面实验重启后可见，是因为组内已有会话。
+
+结论：后台建组已保存，重启后只是空组不显示，并非被同步覆盖。实际接入时建组后会立即移入会话，不受此规则影响；仍需实测“建组＋移入＋重启”。
+
+### 移动会话被权限层拒绝
+
+探针 0.2.0 加入只移动本会话（`self`）的 `move_sessions`。启用热重载后加载成功（13:15:41），后台请求把本会话移入测试组被拒绝：`$.mcp.call(ccd_sidebar, move_sessions) refused: The server-side auto mode classifier gave no verdict ... the request that produced this action did not ask for one`。随后 `list_groups` 显示测试组仍为 0 个会话，没有发生改动。
+
+可见 `$.mcp.call` 仍经过会话的权限判定。本会话为 auto 模式，分类器需要模型请求作上下文，插件调用没有，因此无判定即拒绝。代码依据（`app.asar/.vite/build/index.chunk-AEctd_n-.js` 与 `index.chunk-CdwXqeBD.js`）：
+
+- `CdwXqeBD` 把侧栏工具分成几类：`list_groups`、`create_group`、`set_view`、`list_sections`、`create_section` 为免审批类（`e_`），所以后台建组能通过；`move_sessions`、`set_pinned`、`set_unread`、`mark_completed`、重命名为需审批类（`r_`）；删除为单独一类（`n_`）。
+- Desktop 的 PreToolUse 钩子：移动的若只有本会话，不作决定，交给会话权限模式；移动其他会话时，default 模式强制弹出确认卡片，auto 模式交给分类器，bypass 模式放行。
+- Desktop 的 canUseTool：default 模式下，侧栏已挂载且只移动本会话时直接允许。
+
+由此推断各模式下的后台移动结果（仅 auto 模式已实测）：
+
+| 会话权限模式 | 移动本会话 | 移动其他会话 |
+| --- | --- | --- |
+| auto | 拒绝（实测） | 拒绝（无分类器判定） |
+| default | 预计允许 | 弹出确认卡片，需界面操作 |
+| bypassPermissions | 预计允许 | 预计允许 |
+
+经用户同意，探针 0.3.0／0.3.1 试过插件自身 `tool.check` 钩子放行，结果无效：
+
+- 0.3.0 加入只放行本插件“移动本会话到测试组／未分组”的 `tool.check` 钩子，后台移动仍得到同一条分类器拒绝。
+- 0.3.1 让钩子每次被调用都写日志，并在移动前用 `$.tool.check` 查询权限链。日志文件一个都没生成；查询结果为 `{"decision":"ask","reason":"Claude requested permissions to use mcp__ccd_sidebar__move_sessions, but you haven't granted it yet."}`。
+- 结论：引擎对插件自身发起的调用会跳过该插件自己的权限钩子，插件不能自行批准。测试组仍为 0 个会话，没有发生改动。
+
+用另一个插件代为批准属于绕开“不能自批”的设计，不采用。剩下的正规路径：
+
+1. 在账号配置 `settings.json` 的 `permissions.allow` 加入 `mcp__ccd_sidebar__move_sessions`，会话保持 auto 模式。按代码推断，移动本会话和其他会话都会直接放行（未实测）；代价是该账号里模型的移动调用也不再审批。账号 02 当前没有 `settings.json`；启动器的 `ConfigSync` 会同步该文件，需注意不要扩散到其他账号。
+2. 承载会话改为 default 模式。Desktop 对“只移动本会话”直接允许，移动其他会话会弹卡片，不满足后台要求。
+3. bypassPermissions 模式：范围最大，不建议。
+
+尚未验证：建组＋移入后重启、批量操作、无 Code 会话运行时的行为、多会话同时加载时的去重。本轮未抓包，不报告请求次数。
+
+接入产品前的约束：
+
+- 需要该账号有一个 Code 会话的 CLI 正在运行且加载了插件；启动器能否不发消息就让 Desktop 拉起会话进程尚未确认。
+- 插件需装入每个账号的 Claude Code 配置（用户级插件或 `CLAUDE_CODE_PLUGIN_DIRS`），属持久配置改动，需用户当次授权。
+- `$.mcp.call` 不经过权限提示，插件调用本身即授权，`move_sessions` 在默认模式下的用户确认也会被跳过。收件目录必须仅限当前用户写入，请求需严格校验，并按目标会话 ID 或锁避免多会话重复执行。
+- mod 接口属于 CLI 版本特性，CLI 自动升级可能改变行为，需按版本回归。
+
+### 结论与清理（2026-11-05）
+
+用户决定不继续后台方案，保留原有预填流程：由用户发送预填指令，模型通过官方 `ccd_sidebar` 工具建组和移动，权限确认走官方流程。理由：后台方案需要给每个账号安装插件、保持 Code 会话运行，移动会话还要放宽账号权限规则，并且依赖 CLI 版本，维护成本高于一次模型对话。
+
+清理：确认空组 `启动器后台验证-20261105`（`cg-4a21e0f6-3d63-453a-ae57-03f93c2afebf`）仍为 0 个会话后，经用户同意删除，`list_groups` 复核只剩“测试1”“测试2”。探针 mod 及其收件目录已移除；账号 02 未新建 `settings.json`，也没有新增权限规则。启动器产品代码未改动。
+
 ## 复现
 
 在已安装相同版本的 Windows 开发机执行 `rtk proxy node scripts/check-sidebar-direct-research.cjs`。只需本机 Node，无安装或下载步骤。程序包升级导致哈希变化时，脚本直接拒绝执行，需先重新审查。
