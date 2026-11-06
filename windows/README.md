@@ -1,3 +1,7 @@
+## Windows 1.9.1（2026-11-06）
+
+修复同步会话和启动时误报“存储项是硬链接”：Claude Code 在 `file-history` 里会在会话之间硬链接备份，现在只要硬链接都在同一账号目录内就放行，与账号外或其他账号共用的仍拒绝。见 [发布说明](../docs/RELEASE-windows-1.9.1.md)。
+
 ## Windows 1.9.0（2026-11-06）
 
 界面改版：整张卡片点击启动、名字旁的额度圆环和倒计时、高清卡片背景、用量趋势页、标题栏跟随主题；修复用量读取缺项（立即读取并短时补读，缺失项显示占位和原因）。真实窗口交互未实测，见 [STATUS](../docs/STATUS.md) 与 [发布说明](../docs/RELEASE-windows-1.9.0.md)。
@@ -77,7 +81,7 @@ artifacts\bin\ClaudeLauncher.exe --self-test | Write-Output
 - 账号映射，Code 配置目录映射唯一；
 - 参数解析：`=` 和空格两种形式；排除 Helper/GPU/renderer；按路径排除 Claude Code CLI；拒绝重复、相对路径和缺值；
 - 01 不传参数，也不继承 `CLAUDE_CONFIG_DIR`；02 正确设置 `CLAUDE_CONFIG_DIR`；
-- 存储校验：账号目录本身、顶层存储项、存储项内部深层的硬链接或 junction（含 `ClaudeCodeConfig` 内部）都拒绝；非递归复核只看顶层；
+- 存储校验：账号目录本身、顶层存储项、存储项内部深层的 junction（含 `ClaudeCodeConfig` 内部）都拒绝；硬链接只放行所有名字都在同一账号目录内的（如 file-history），与账号外、其他账号共用或混合的拒绝；非递归复核只看顶层；
 - 同账号主进程唯一性；托盘重启动使用该 PID 自身的程序；
 - 只显示已有账号、新建取最小未用编号；
 - 保守 Code 状态（默认 / 待启动 / 未确认 / 已指定，含 PID 变化、早于请求、重复主进程）；
@@ -107,7 +111,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup.ps1
 - 先卸载再安装（SPEC）：用固定 AppId 查当前用户的卸载项；已安装时提示“检测到已安装 x.y.z，将先卸载再安装新版”。随后按 PID 核对、对旧安装目录中运行的启动器窗口发送正常关闭（WM_CLOSE，不结束进程，不涉及 Claude），等待退出；再静默运行旧版卸载程序，等卸载项和旧卸载程序都消失后才安装新版。启动器无法正常关闭（如删除未完成）或旧版卸载失败、超时，都中止安装并提示原因。
 - 卸载只删除安装的 `ClaudeLauncher.exe`、卸载程序以及自建更新在安装目录内留下的 `.previous-*`、`.new-*`、`.failed-*` 文件。**不删除任何账号数据目录**（`%APPDATA%\Claude-*`、`%LOCALAPPDATA%\Claude-Data`、商店版 `Packages\Claude_*`），也不删除启动器日志、登录保护和删除状态目录 `%LOCALAPPDATA%\Claude-MultiLauncher`。
 - 升级覆盖安装时，Inno Setup 只会请求关闭占用本程序文件的进程（启动器本身），不涉及 Claude。
-- 版本号 1.9.0（程序集 1.9.0.0，见 `src/Updates.cs`）；与 macOS 各自递增，不要求一致。
+- 版本号 1.9.1（程序集 1.9.1.0，见 `src/Updates.cs`）；与 macOS 各自递增，不要求一致。
 - 安装向导为简体中文：`installer/ChineseSimplified.isl` 取自 Inno Setup 官方源码 `Files/Languages/ChineseSimplified.isl`（6.5.0+；6.7.3 安装包未自带）。
 - **代码签名：未签名。** 本机没有代码签名证书，安装程序和 `ClaudeLauncher.exe` 都没有 Authenticode 签名。客户首次运行会看到 SmartScreen“Windows 已保护你的电脑”，需点“更多信息 → 仍要运行”；部分杀毒软件可能更谨慎。需要正式证书（OV/EV）后在打包时对 exe 和 setup.exe 签名，此项待用户决定。
 - 应用内更新运行 Setup 的参数 `/SILENT /SUPPRESSMSGBOXES /NORESTART /RELAUNCH=1`：只显示中文进度窗口（“正在卸载旧版… / 正在安装”），不显示向导页和确认框；`/RELAUNCH=1` 仅在静默模式下让 Setup 装好后重新打开启动器。1.7.1 及更早版本用 `/VERYSILENT`，不显示任何窗口。

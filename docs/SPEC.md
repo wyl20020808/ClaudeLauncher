@@ -173,10 +173,12 @@ macOS（`src/main.m`）和 Windows（`windows/`）各自原生实现，共同遵
 
 ## 存储校验
 
-只检查元数据，从不读取内容。目录及各级上级不得为链接或非目录；以下存储项不得为链接、非本人所有、普通文件硬链接：
+只检查元数据，从不读取内容。目录及各级上级不得为链接或非目录；以下存储项不得为链接、非本人所有、与账号目录外共用的普通文件硬链接：
 `Cookies`、`Cookies-journal`、`Network`、`Local Storage`、`Session Storage`、`IndexedDB`、`Partitions`、`Local State`、`Preferences`、`config.json`、`Cache`、`Code Cache`、`Service Worker`、`ClaudeCodeConfig`。
 
 配置同步链接例外（2026-10-30，修复链接模式导致 02～10 无法启动）：`ClaudeCodeConfig` 内只有配置同步可放置的条目（顶层 `settings.json`、顶层 `*.md`，`skills`、`agents`、`commands`、`output-styles` 的直接子项，不含点开头的名称）可以是符号链接。链接目标解析后须由当前用户所有（目标不存在时跳过所有者判断），不得是 `~/.claude.json`、启动器数据目录，也不得位于账号数据目录或 `~/.claude` 内的白名单条目之外，不得是这些目录的上级。`ClaudeCodeConfig` 或分类目录本身是链接、其他位置的链接仍判为未通过。只看链接元数据，不打开目标内容。[Windows] 目标判定已按本段实现（`ConfigSync.TargetAllowed`）。差异：Windows 还检查目标内容树（硬链接、所有者、大小上限），目标不存在时判为未通过；只解析一层链接，下一层由内容树检查拒绝身份或凭据文件名。
+
+硬链接例外（2026-11-06，修复同步会话误报）：硬链接的所有名字都在同一账号目录内时放行。Claude Code 的 `file-history` 会在会话续接／分叉时把检查点备份硬链接到新会话目录（本机实测 695 个文件中 178 个，全部在同一 `file-history` 内）。任一名字在账号目录外（含其他账号目录）仍判为未通过。[Windows] 已实现：用 `FindFirstFileNameW` 列出全部名字，只读目录项。[macOS] 尚未实现，仍拒绝所有硬链接。
 
 未通过时的处理（2026-10-30 用户决定：本地风险警告，不阻止启动）：
 
@@ -185,7 +187,7 @@ macOS（`src/main.m`）和 Windows（`windows/`）各自原生实现，共同遵
 - 网络环境检测不受本段影响，见「启动与激活」。
 - [Windows] 已实现。“本次启动”含托盘实例重新打开时的复核；Windows 没有“登记项目到账号”操作。
 
-Windows 对应：重解析点（符号链接、junction）等同链接；硬链接数通过文件信息查询。所有者按 ACL 所有者 SID 判断：接受当前用户、启动器自身令牌的默认所有者，以及本机 Administrators 组（S-1-5-32-544）；其他所有者（SYSTEM、其他用户等）拒绝。接受 Administrators 组是因为提权或关闭 UAC 时 Claude 与启动器新建的目录归该组，之后改为不提权运行时令牌默认所有者变回本人，旧目录仍须能通过（2026-11-04 客户机 `Claude-Second\Network` 实例）；该组本就能完全控制本人目录，不扩大信任。
+Windows 对应：重解析点（符号链接、junction）等同链接；硬链接数通过文件信息查询，链接数大于 1 时再列出全部名字核对是否都在账号目录内。所有者按 ACL 所有者 SID 判断：接受当前用户、启动器自身令牌的默认所有者，以及本机 Administrators 组（S-1-5-32-544）；其他所有者（SYSTEM、其他用户等）拒绝。接受 Administrators 组是因为提权或关闭 UAC 时 Claude 与启动器新建的目录归该组，之后改为不提权运行时令牌默认所有者变回本人，旧目录仍须能通过（2026-11-04 客户机 `Claude-Second\Network` 实例）；该组本就能完全控制本人目录，不扩大信任。
 
 ## 项目清单
 

@@ -35,6 +35,28 @@ namespace ClaudeLauncher {
         public static string Display(string path) {
             return path.StartsWith(@"\\?\") ? path.Substring(4) : path;
         }
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        static extern IntPtr FindFirstFileNameW(string name, uint flags, ref uint length, System.Text.StringBuilder link);
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        static extern bool FindNextFileNameW(IntPtr find, ref uint length, System.Text.StringBuilder link);
+        [DllImport("kernel32.dll")] static extern bool FindClose(IntPtr find);
+        // 硬链接的全部名字（卷内路径，不含盘符，如 \Users\me\x）；只读目录项，不打开内容。
+        public static List<string> LinkNames(string path) {
+            var names = new List<string>(); var buffer = new System.Text.StringBuilder(32768); uint length = 32768;
+            IntPtr find = FindFirstFileNameW(Extended(path), 0, ref length, buffer);
+            if (find == new IntPtr(-1)) throw new IOException("无法检查存储项：" + Display(path), Marshal.GetHRForLastWin32Error());
+            try {
+                do { names.Add(buffer.ToString()); buffer.Length = 0; length = 32768; } while (FindNextFileNameW(find, ref length, buffer));
+                if (Marshal.GetLastWin32Error() != 38) throw new IOException("无法检查存储项：" + Display(path)); // 38 = ERROR_HANDLE_EOF
+            } finally { FindClose(find); }
+            return names;
+        }
+        // 硬链接的所有名字都在同一账号目录内才放行：Claude Code 的 file-history 会在会话之间硬链接检查点备份（2026-11-06 实测）。
+        // 与账号目录外（含其他账号）共用的硬链接仍拒绝。
+        public static bool LinksWithin(string path, string folder) {
+            string full = Path.GetFullPath(folder).TrimEnd('\\'), prefix = full.Substring(Path.GetPathRoot(full).Length - 1) + "\\";
+            return LinkNames(path).All(name => name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase));
+        }
         public static int LinkCount(string path) {
             // FILE_READ_ATTRIBUTES，共享全部；BACKUP_SEMANTICS | OPEN_REPARSE_POINT 不跟随链接。
             using (SafeFileHandle handle = CreateFile(Extended(path), 0x80, 7, IntPtr.Zero, 3, 0x02000000 | 0x00200000, IntPtr.Zero)) {
@@ -76,11 +98,11 @@ namespace ClaudeLauncher {
                     if ((attributes.Value & FileAttributes.ReparsePoint) != 0) throw new IOException("账号目录路径含链接或重定向，已停止：" + entry);
                 }
                 if (Attributes(folder) == null) continue;
-                foreach (string name in Items) Check(Path.Combine(folder, name), recursive);
+                foreach (string name in Items) Check(Path.Combine(folder, name), recursive, folder);
             }
         }
         // 逐项检查存储项及其内部：不跟随链接，检查期间消失的条目跳过，其余异常一律停止。
-        static void Check(string root, bool recursive) {
+        static void Check(string root, bool recursive, string folder) {
             var pending = new Stack<string>(); pending.Push(Extended(root));
             while (pending.Count > 0) {
                 string path = pending.Pop(), shown = Display(path);
@@ -98,7 +120,7 @@ namespace ClaudeLauncher {
                 } catch (FileNotFoundException) { continue; } catch (DirectoryNotFoundException) { continue; }
                 catch (UnauthorizedAccessException) { throw new IOException("无法读取存储项所有者，已停止：" + shown); }
                 if (!OwnedByMe(owner)) throw new IOException("存储项不属于当前用户，已停止：" + shown);
-                if (!directory && LinkCount(path) > 1) throw new IOException("存储项是硬链接，已停止：" + shown);
+                if (!directory && LinkCount(path) > 1 && !LinksWithin(path, folder)) throw new IOException("存储项与账号目录外的文件共用硬链接，已停止：" + shown);
                 if (!directory || !recursive) continue;
                 try { foreach (string entry in Directory.EnumerateFileSystemEntries(path)) pending.Push(entry); }
                 catch (DirectoryNotFoundException) { }
@@ -256,6 +278,26 @@ namespace ClaudeLauncher {
                 Check(CreateHardLink(longFile, outside, IntPtr.Zero), "无法创建长路径硬链接夹具");
                 Rejects(() => Storage.Validate(2, roaming, local), "长路径下的硬链接必须拒绝");
                 File.Delete(longFile);
+                Storage.Validate(2, roaming, local);
+                // 账号目录内部的硬链接放行（Claude Code file-history 在会话间硬链接备份）；跨账号仍拒绝
+                string history = Path.Combine(Core.CodeConfig(folder), "file-history");
+                Directory.CreateDirectory(Path.Combine(history, "a")); Directory.CreateDirectory(Path.Combine(history, "b"));
+                File.WriteAllText(Path.Combine(history, @"a\x@v3"), "x");
+                Check(CreateHardLink(Path.Combine(history, @"b\x@v3"), Path.Combine(history, @"a\x@v3"), IntPtr.Zero), "无法创建账号内硬链接夹具");
+                Check(Storage.LinkNames(Path.Combine(history, @"a\x@v3")).Count == 2, "硬链接名字数量错误");
+                Storage.Validate(2, roaming, local);
+                Check(CreateHardLink(Storage.Extended(longFile), Path.Combine(history, @"a\x@v3"), IntPtr.Zero), "无法创建长路径账号内硬链接夹具");
+                Storage.Validate(2, roaming, local);
+                File.Delete(longFile);
+                Directory.CreateDirectory(folders[2]);
+                Check(CreateHardLink(Path.Combine(folders[2], "shared"), Path.Combine(history, @"a\x@v3"), IntPtr.Zero), "无法创建跨账号硬链接夹具");
+                Rejects(() => Storage.Validate(2, roaming, local), "与其他账号共用的硬链接必须拒绝");
+                File.Delete(Path.Combine(folders[2], "shared"));
+                Directory.CreateDirectory(Path.Combine(folder, "Network"));
+                Check(CreateHardLink(Path.Combine(folder, @"Network\x"), outside, IntPtr.Zero) && CreateHardLink(Path.Combine(folder, "Preferences"), outside, IntPtr.Zero), "无法创建账号内外混合硬链接夹具");
+                Rejects(() => Storage.Validate(2, roaming, local), "账号内外混合的硬链接必须拒绝");
+                File.Delete(Path.Combine(folder, @"Network\x")); File.Delete(Path.Combine(folder, "Preferences"));
+                Directory.Delete(history, true); Directory.Delete(folders[2]);
                 Storage.Validate(2, roaming, local);
                 Junction(folders[2], target);
                 Rejects(() => Storage.Validate(3, roaming, local), "链接账号目录必须拒绝");
