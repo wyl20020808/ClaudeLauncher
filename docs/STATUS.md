@@ -2,7 +2,7 @@
 
 ## Windows 1.9.0：界面改版与用量读取修复（2026-11-06）
 
-- 发布：用户要求把 1.8.9 之后本地的改动发布为新版本（2026-11-06）。内容为下方“Windows 用量捕获修复”和“Windows → macOS 交接”所列 1.8.9 之后的界面改动（`96a152e`、`7e940d2`），按十进制进位定为 1.9.0，发布说明见 [RELEASE-windows-1.9.0](RELEASE-windows-1.9.0.md)。发布结果见下一条记录。
+- 发布：用户要求把 1.8.9 之后本地的改动发布为新版本（2026-11-06）。内容为下方“Windows 用量捕获修复”和“Windows → macOS 交接”所列 1.8.9 之后的界面改动（`96a152e`、`7e940d2`），按十进制进位定为 1.9.0，发布说明见 [RELEASE-windows-1.9.0](RELEASE-windows-1.9.0.md)。已发布为 `windows-v1.9.0`（Latest），目标 `9488217`（dev 与 main 同一提交，快进推送）。先跑 `build.ps1`（LauncherTests 369、SyncTests 162、SessionSyncTests 369、TutorialTests 80、自检 257）、`test-install.ps1`（3 个场景）、`publish-release.ps1 -DryRun`，都通过；正式发布退出 2（未回滚，自建更新服务返回 502，与前几版相同）：草稿附件经 API 逐字节核对通过；GitHub latest/download 的两份清单、Setup、DMG 复核均 OK。附件 `ClaudeLauncherSetup-1.9.0.exe` 8398463 字节（高清卡片图使安装包由约 3.4 MB 增至 8.4 MB），SHA-256 `51489a0138e789afd6d67a1f0a47cae577352ac014ae5349e082e4815197ade0`；原样带入 macOS 1.8.2（`ClaudeLauncher-1.8.2.dmg` 8946737 字节，SHA-256 `f32b91c8…0c503`）和 `latest-macos.json`，未重签。
 - 未验证：沿用下方各节的未验证项——安装后真实窗口的点击、悬停、拖动和高 DPI；新构建持续读取真实用量；英文界面；客户机。
 
 ## Windows 用量捕获修复（2026-11-05，本地提交 dev，未发布）
