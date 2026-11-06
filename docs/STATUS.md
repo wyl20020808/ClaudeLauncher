@@ -1,6 +1,8 @@
 # 项目状态
 
-## macOS 1.8.3：存储校验硬链接误报、01 配置目录（2026-11-06）
+## macOS 1.8.3：存储校验硬链接误报、01 配置目录（2026-11-06，已发布）
+
+- 发布（用户 2026-11-06 要求）：`macos-v1.8.3`（目标 dev `bf41fec`，未合并 main），固定证书构建，`scripts/publish-macos.sh --dry-run` 通过后正式运行，草稿 API 核对、转 Latest、latest/download 复核全部通过。DMG `ClaudeLauncher-1.8.3.dmg`，8959147 字节，SHA-256 `972b559ce8e817a41d3f8e954d877a4aec80ae57b33874385523891e61b66841`。Windows 文件沿用 `ClaudeLauncherSetup-1.9.1.exe`，未重签。
 
 - 范围见 [RELEASE-macos-1.8.3](RELEASE-macos-1.8.3.md)：`39b19cd`（file-history 检查点硬链接放行）、`ea94488`（启动 01 前清除 `CLAUDE_CONFIG_DIR`）。`build.sh` 版本 1.8.3（build 34）。
 - 验证：`build.sh` 自检全部通过；真实账号 02 的硬链接核对通过。未验证：安装后真实启动 02、从 02 的 Code 终端启动 01。
