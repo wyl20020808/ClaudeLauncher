@@ -21,7 +21,7 @@
   - 安装后的真实窗口：点击 i 图标弹出说明、项目页按钮点击、英文界面实际宽度、高 DPI。
   - 真实账号：用量提醒触发、冷启动“打开并建分组”后剪贴板内容和粘贴、同名分组复用由官方 Claude 执行的效果（指令文字与 macOS 相同，macOS 已用真实账号测过冷启动丢 `q`）。
   - macOS 只改了 `SessionSync.m` 的注释和 `english.strings`（删除未用词条），未在 macOS 上构建。
-- 发布：用户 2026-11-06 要求推送并发布，版本 1.9.2，发布说明见 [RELEASE-windows-1.9.2](RELEASE-windows-1.9.2.md)。
+- 发布：用户 2026-11-06 要求推送并发布。已发布为 `windows-v1.9.2`（Latest），目标 `9602b56`（dev 与 main 同一提交，快进推送），发布说明见 [RELEASE-windows-1.9.2](RELEASE-windows-1.9.2.md)。发布时本机工作区有另一会话未提交的“去掉【分组名】前缀”改动，为不混入，在干净的临时 worktree 里把两个提交接到远端 dev（`bfc580e`）之后构建和发布，STATUS 顶部冲突手工合并。`test-install.ps1`（3 个场景）、`publish-release.ps1 -DryRun` 通过；正式发布退出 2（未回滚，自建更新服务返回 502，与前几版相同），草稿附件经 API 逐字节核对通过，GitHub latest/download 两份清单、Setup、DMG 复核 OK。附件 `ClaudeLauncherSetup-1.9.2.exe` 8324312 字节，SHA-256 `cd0dbedfbb6154cf9a977d192cfc5c5906e5d0dbb1d6557f9117ce72691d170b`；原样带入 macOS 1.8.3 DMG（8959147 字节）与 `latest-macos.json`，未重签。
 
 ## macOS 1.8.3：存储校验硬链接误报、01 配置目录（2026-11-06，已发布）
 
