@@ -4,6 +4,7 @@
 
 - 现场：客户机同步会话写入 0 条，提示“存储项是硬链接，已停止：…\Claude-Second\ClaudeCodeConfig\file-history\<会话 ID>\<哈希>@v3”。同步前的完整存储校验（`LauncherUI.cs` 写入前 `ValidateStorage`）拒绝一切硬链接。本机核实：`~/.claude/file-history` 695 个文件中 178 个有两个名字，分别在两个会话 ID 目录下，没有一个在 `file-history` 外，是 Claude Code 续接／分叉会话时硬链接备份。
 - 修复（Windows）：`Storage.LinksWithin` 用 `FindFirstFileNameW` 列出全部名字，都在同一账号目录内才放行；规则见 SPEC「存储校验」硬链接例外。自检新增：账号内硬链接放行（含长路径）、跨账号拒绝、账号内外混合拒绝；原有指向账号外的硬链接拒绝用例保留。`build.ps1` 通过：LauncherTests 369、SyncTests 162、SessionSyncTests 369、TutorialTests 80、自检 264。
+- 发布：已发布为 `windows-v1.9.1`（Latest），目标 `44fdde6`（dev 与 main 同一提交，快进推送）。`build.ps1`、`test-install.ps1`（3 个场景）、`publish-release.ps1 -DryRun` 通过；正式发布退出 2（未回滚，自建更新服务返回 502，与前几版相同），草稿附件经 API 逐字节核对通过，GitHub latest/download 两份清单、Setup、DMG 复核 OK。附件 `ClaudeLauncherSetup-1.9.1.exe` 8399029 字节，SHA-256 `407c695a0f490e9971052d6400efd4248a8f7299b4dc58c02f0274b0ccaebe13`；原样带入 macOS 1.8.2 DMG 与 `latest-macos.json`，未重签。
 - macOS：同一规则尚未改，仍拒绝所有硬链接（`src/main.m` `CheckStorageNode`）。
 - 未验证：客户机真实账号同步。
 
