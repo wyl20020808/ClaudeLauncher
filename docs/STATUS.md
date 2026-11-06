@@ -1,5 +1,10 @@
 # 项目状态
 
+## macOS 1.8.3：存储校验硬链接误报、01 配置目录（2026-11-06）
+
+- 范围见 [RELEASE-macos-1.8.3](RELEASE-macos-1.8.3.md)：`39b19cd`（file-history 检查点硬链接放行）、`ea94488`（启动 01 前清除 `CLAUDE_CONFIG_DIR`）。`build.sh` 版本 1.8.3（build 34）。
+- 验证：`build.sh` 自检全部通过；真实账号 02 的硬链接核对通过。未验证：安装后真实启动 02、从 02 的 Code 终端启动 01。
+
 ## macOS 存储校验检查点硬链接误报（2026-11-06，已推送 dev，未发布）
 
 - 现象：本机启动账号 02 弹“存储文件有硬链接：…/Claude-Second/ClaudeCodeConfig/file-history/<会话>/<哈希>@v3”。02 的 `file-history` 有 68 个文件各有两个名字，都在本账号 `file-history` 内。与 Windows 1.9.1 同一原因。
