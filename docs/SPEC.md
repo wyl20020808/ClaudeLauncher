@@ -1,6 +1,6 @@
 # 跨平台行为规格
 
-## [Windows] 1.9.2 跟上 macOS 1.8.1～1.8.3 的改动（2026-11-06，dev，未发布）
+## [Windows] 1.9.2 跟上 macOS 1.8.1～1.8.3 的改动（2026-11-06）
 
 本节优先于下方 Windows 旧描述。对照 `docs/HANDOFF-windows-1.9.2.md`，以 macOS 源码为准。
 
