@@ -1,5 +1,28 @@
 # 项目状态
 
+## Windows 跟上 macOS 1.8.1～1.8.3（2026-11-06，本地提交 dev，未发布、未推送）
+
+- 范围：[HANDOFF-windows-1.9.2](HANDOFF-windows-1.9.2.md) 的 5 项，逐项先用代码核对（交接里的行号与现状一致）。规格见 SPEC 顶部「[Windows] 1.9.2」一节。
+  1. 用量提醒只提示：文本与 macOS 相同（“账号 NN 五小时已用 X%（提醒阈值 Y%）。”），去掉卡片“切换到账号”按钮；`RecommendedAccount` 只留给交接默认选择。
+  2. 趋势图断线：`UsageTrend.Runs` 按回落或超过额度窗口（5 小时／7 天）分段，图表改用它。
+  3. 页面精简：去副标题、设置说明与提示框、项目页提示框和底部说明，日志页只显示条数；项目页四个按钮放到标题行（宽度按译后文字计算），说明改为按钮内的 i 图标；日志、设置、趋势页内容从 y=124 开始。
+  4. 同名分组复用：`SidebarGroups.InstructionHead` 第 2 条换成 macOS 原文；`english.strings` 删除旧的“多个就跳过”词条，两端共用新词条。
+  5. 预填时同时复制：在预填链接交给目标账号时（`Launch`／托盘转交的 `Activate`）把指令写入剪贴板（`ClipboardWriter` 可注入），完成窗口加提示；复制失败只记诊断日志。
+- 交接里漏掉、一并处理的：
+  - 教程配图：macOS 1.8.2（`6c769f1`）更新了项目页和趋势页的教程图，Windows 的 `assets/tutorial/guide-projects.*.jpg`、`guide-trend.*.jpg` 还是旧布局。已用 `UiPreview.exe --guide` 从演示数据重新生成（实例页配图未变，未替换）。
+  - 趋势页错位：Windows 趋势页内容比窗口矮时被 ScrollViewer 居中，标题和建议条比其他页低约 35 px、右移 10 px，标题也是 24 号。改为靠左上、32 号标题，与其他页对齐。
+  - 英文占位符：Windows 的翻译匹配不认 `%.0f` 和 `%%`（且转义后才替换占位符，`%.0f` 的点被转义），所以用量提醒等带百分号的文本没有英文。已修，提醒的英文有测试。
+  - 删除了只被已删说明文字使用、两端都不再引用的 45 条英文词条（macOS 1.8.2 删掉的说明也在内）。
+  - SPEC 里过时的“界面语言 Windows 待实现”（两处）改为已实现；设置页布局描述同步。
+- 新发现的问题（顺带修复，请留意）：本机这次的 `build.ps1` 在原 dev（`bf41fec`，未改动）上也失败于 SessionSyncTests “a link inside the project resolves outside”。原因：当前终端从 Claude 桌面版启动，继承了进程缓解策略 `EnforceRedirectionTrust`（实测 flags=0x1），系统拒绝穿过用户建的目录链接（`CreateFile` 返回 448）；`SessionSync.Real` 打不开就退回上级目录按字面判断，于是把项目内指向项目外的链接算成项目内。已改为：存在却解析不了（错误码不是 2／3）时返回 null，按项目外处理；`Within(null)` 返回 null。从资源管理器启动的启动器通常没有这个策略，行为不变。
+- 验证（本机，本终端带上述策略）：`build.ps1` 通过——LauncherTests 452、SyncTests 175、SessionSyncTests 371、TutorialTests 80、自检 264；`-Preview` 离屏渲染四个页面，人工看过中文项目、趋势、日志、设置（常规）页和英文项目页截图。新增测试：提醒文本不含切换、不推荐低用量账号、卡片无切换按钮、提醒英文；`Runs` 分段（5 小时线超过 5 小时的空档断开、回落断开、周线 13 小时空档不断、超过 7 天断开、起点前的点跳过）与图上折线条数；指令含“不要再建同名分组”“排在最前的那个”、不含“有多个就跳过”及英文对应；完成窗口含剪贴板提示、预填启动时复制、复制失败仍启动、普通启动不复制；项目页四个按钮同一行且相邻、i 图标在按钮内、各页不再出现已删说明、数据目录路径保留、趋势页靠上对齐到 y=124。
+- 未验证：
+  - SessionSyncTests 的“同一目录经两条路径出现算一个”（junction 去重）在本终端被策略阻断，输出 SKIP 未运行；需要在普通终端（不从 Claude 桌面版启动）跑一次 `build.ps1` 确认。尝试用 WMI 脱离父进程运行被权限拒绝，未再尝试。
+  - 安装后的真实窗口：点击 i 图标弹出说明、项目页按钮点击、英文界面实际宽度、高 DPI。
+  - 真实账号：用量提醒触发、冷启动“打开并建分组”后剪贴板内容和粘贴、同名分组复用由官方 Claude 执行的效果（指令文字与 macOS 相同，macOS 已用真实账号测过冷启动丢 `q`）。
+  - macOS 只改了 `SessionSync.m` 的注释和 `english.strings`（删除未用词条），未在 macOS 上构建。
+- 未做：版本号仍为 1.9.1，未写 RELEASE 说明，未发布、未推送。
+
 ## macOS 1.8.3：存储校验硬链接误报、01 配置目录（2026-11-06，已发布）
 
 - 发布（用户 2026-11-06 要求）：`macos-v1.8.3`（目标 dev `bf41fec`，未合并 main），固定证书构建，`scripts/publish-macos.sh --dry-run` 通过后正式运行，草稿 API 核对、转 Latest、latest/download 复核全部通过。DMG `ClaudeLauncher-1.8.3.dmg`，8959147 字节，SHA-256 `972b559ce8e817a41d3f8e954d877a4aec80ae57b33874385523891e61b66841`。Windows 文件沿用 `ClaudeLauncherSetup-1.9.1.exe`，未重签。

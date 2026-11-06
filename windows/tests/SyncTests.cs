@@ -54,6 +54,23 @@ internal static class SyncTests {
         risks.Clear();riskAnswer=0;
         Pump((Task)open.Invoke(ui,new object[]{9,0,true,null}));
         Check(risks.Count==1&&launches.Count==0,"failure at the recheck also warns");
+        ui.ValidateStorage=n=>Task.FromResult(0); launches.Clear();
+        var copied=new List<string>(); ui.ClipboardWriter=text=>copied.Add(text);
+        var linked=new List<string>(); ui.LinkLaunchProvider=(n,path,accepted,link)=>{ linked.Add(link);return 4243; };
+        var promptField=typeof(LauncherUI).GetField("linkPrompt",flags); const string prefill="claude://code/new?q=x";
+        promptField.SetValue(ui,"分组指令");
+        Pump((Task)open.Invoke(ui,new object[]{9,0,true,prefill}));
+        Check(linked.SequenceEqual(new[]{prefill})&&copied.SequenceEqual(new[]{"分组指令"}),"prefilled launch also copies the instruction");
+        ((Dictionary<int,DateTime>)typeof(LauncherUI).GetField("pending",flags).GetValue(ui)).Remove(9);
+        ui.ClipboardWriter=text=>{ throw new InvalidOperationException("clipboard busy"); };
+        Pump((Task)open.Invoke(ui,new object[]{9,0,true,prefill}));
+        Check(linked.Count==2,"clipboard failure does not stop the launch");
+        ((Dictionary<int,DateTime>)typeof(LauncherUI).GetField("pending",flags).GetValue(ui)).Remove(9);
+        copied.Clear(); ui.ClipboardWriter=text=>copied.Add(text);
+        Pump((Task)open.Invoke(ui,new object[]{9,0,true,null}));
+        Check(copied.Count==0&&launches.Count==1,"a plain launch copies nothing");
+        ((Dictionary<int,DateTime>)typeof(LauncherUI).GetField("pending",flags).GetValue(ui)).Remove(9);
+        promptField.SetValue(ui,null);
         string fake=Path.Combine(root,"recheck"),roaming=Path.Combine(fake,"Roaming"),local=Path.Combine(fake,"Local"),profile=Path.Combine(roaming,"Claude-Profile-09"),outside=Path.Combine(fake,"outside");
         Directory.CreateDirectory(profile);Directory.CreateDirectory(outside);Directory.CreateDirectory(local);
         typeof(SelfTest).GetMethod("Junction",BindingFlags.NonPublic|BindingFlags.Static).Invoke(null,new object[]{Path.Combine(profile,"Cache"),outside});
@@ -87,10 +104,15 @@ internal static class SyncTests {
         Func<IEnumerable<string>> texts=()=>LauncherTests.Children(section).OfType<System.Windows.Controls.TextBlock>().Select(t=>t.Text);
         Check(texts().Any(t=>t.StartsWith("还没有观察记录")),"empty trend state");
         double empty=content.Height;
+        var banner=section.Children.OfType<System.Windows.Controls.Border>().First(b=>b.Height==52);
+        Check(content.VerticalAlignment==System.Windows.VerticalAlignment.Top&&content.HorizontalAlignment==System.Windows.HorizontalAlignment.Left&&System.Windows.Controls.Canvas.GetTop(section)+System.Windows.Controls.Canvas.GetTop(banner)==124,"trend page starts at the same height as the other pages");
         DateTime now=DateTime.UtcNow;
         ui.SetTrend(new[]{new TrendPoint{Account=1,At=now.AddHours(-3),Five=10,Week=20},new TrendPoint{Account=1,At=now.AddHours(-2),Five=30,Week=25},new TrendPoint{Account=1,At=now.AddHours(-1),Five=5,Week=30}});
         Check(texts().Any(t=>t=="建议下一个使用：账号 01")&&texts().Any(t=>t=="30%"),"suggestion and latest values shown");
         Check(texts().Any(t=>t.StartsWith("按当前速度")),"forecast shown");
+        Check(LauncherTests.Children(section).OfType<System.Windows.Shapes.Polyline>().Count()==2,"one five-hour run before the drop and one weekly run");
+        ui.SetTrend(new[]{new TrendPoint{Account=1,At=now.AddHours(-20),Five=10,Week=20},new TrendPoint{Account=1,At=now.AddHours(-19),Five=20,Week=21},new TrendPoint{Account=1,At=now.AddHours(-3),Five=30,Week=22},new TrendPoint{Account=1,At=now.AddHours(-2),Five=40,Week=23}});
+        Check(LauncherTests.Children(section).OfType<System.Windows.Shapes.Polyline>().Count()==3,"a 16-hour gap splits the five-hour line, not the weekly line");
         Check(LauncherTests.Children(section).OfType<System.Windows.Controls.Button>().Any(b=>((string)b.Content).EndsWith("账号 01")),"suggestion can open the account");
         Check(content.Height>empty-1 && content.Height == System.Windows.Controls.Canvas.GetTop(section) + section.Height,"trend page fits its charts without an empty account table");
         typeof(LauncherUI).GetField("settings",flags).SetValue(ui,new LauncherSettings{ShowUsage=false});
@@ -146,6 +168,14 @@ internal static class SyncTests {
             points.Add(new TrendPoint { Account=1,At=now.AddMinutes(1),Week=5 }); Check(!UsageTrend.HoursLeft(points,true,now.AddMinutes(1)).HasValue,"rate reset boundary");
             points.Add(new TrendPoint { Account=11,At=now,Week=20 }); points.Add(new TrendPoint { Account=2,At=now.AddDays(-9),Week=20 }); Check(UsageTrend.Clean(points,now).Count==2,"trend retention and validation");
             points.Add(new TrendPoint { Account=2,At=now,Week=1 }); Check(UsageTrend.Recommend(points,new[]{1,2})==2,"next account recommendation");
+            // 折线分段：回落断开；间隔超过额度窗口（5 小时 / 7 天）也断开，正好等于窗口不断。
+            var gapped=new[]{ new TrendPoint{Account=1,At=now.AddHours(-30),Five=10,Week=10}, new TrendPoint{Account=1,At=now.AddHours(-29),Five=20,Week=11},
+                new TrendPoint{Account=1,At=now.AddHours(-23),Five=30,Week=12}, new TrendPoint{Account=1,At=now.AddHours(-18),Five=40,Week=13}, new TrendPoint{Account=1,At=now.AddHours(-17),Five=5,Week=14} };
+            var fiveRuns=UsageTrend.Runs(gapped,false,now.AddDays(-7));
+            Check(fiveRuns.Select(r=>r.Count).SequenceEqual(new[]{2,2,1}),"five-hour line breaks on a gap over 5 hours and on a drop: "+String.Join(",",fiveRuns.Select(r=>r.Count)));
+            Check(UsageTrend.Runs(gapped,true,now.AddDays(-7)).Count==1,"weekly line keeps a 13-hour gap");
+            Check(UsageTrend.Runs(new[]{ new TrendPoint{Account=1,At=now.AddDays(-7.5),Week=10}, new TrendPoint{Account=1,At=now.AddMinutes(-1),Week=20} },true,now.AddDays(-8)).Count==2,"weekly line breaks on a gap over 7 days");
+            Check(UsageTrend.Runs(gapped,false,now.AddHours(-20)).Select(r=>r.Count).SequenceEqual(new[]{1,1}),"points before the axis start are skipped");
             Appearance.Language=1;Check(Appearance.Text("实例管理")!="实例管理","shared English dictionary");Check(Appearance.Text("unknown fallback")=="unknown fallback","missing English fallback");Appearance.Language=0;
             Appearance.Theme=1;var brush=Appearance.Brush("#FAF6F0");var light=brush.Color;Appearance.Theme=2;Appearance.Refresh();Check(brush.Color!=light,"live dark palette");Appearance.Theme=1;Appearance.Refresh();
             File.Delete(list);
@@ -192,7 +222,7 @@ internal static class SyncTests {
             string pageRoot=Path.Combine(root,"project-page"),pageProject=Path.Combine(pageRoot,"页面项目");Directory.CreateDirectory(pageProject);
             Projects.Save(Path.Combine(pageRoot,"projects.json"),new[]{new LauncherUI.LocalProject{Path=pageProject,Name="页面项目",LastAccount=2},new LauncherUI.LocalProject{Path=Path.Combine(pageRoot,"missing"),Name="失效项目",Group="工作"}});
             var pageUi=new LauncherUI(new LauncherSettings(),Path.Combine(pageRoot,"settings.json"));var pageAll=LauncherTests.Children(pageUi.Snapshot(4,new List<Instance>())).ToList();var pageTexts=pageAll.OfType<System.Windows.Controls.TextBlock>().Select(t=>t.Text).ToList();
-            foreach(string text in new[]{"名称","分组","路径","状态","上次账号","操作","页面项目","失效项目","未分组","工作","正常","不可用","账号 02","未使用","共 2 个项目 · 上次账号仅用于默认选择，不绑定项目"}) Check(pageTexts.Contains(text),"project page shows "+text);
+            foreach(string text in new[]{"名称","分组","路径","状态","上次账号","操作","页面项目","失效项目","未分组","工作","正常","不可用","账号 02","未使用","共 2 个项目"}) Check(pageTexts.Contains(text),"project page shows "+text);
             var openButtons=pageAll.OfType<System.Windows.Controls.Button>().Where(item=>"打开".Equals(item.Content)&&System.Windows.Automation.AutomationProperties.GetName(item).StartsWith("选择账号打开项目：")).ToList();
             Check(openButtons.Count==2&&openButtons.Count(item=>item.IsEnabled)==1,"only a usable project can be opened");
             // 手动展开用量弹窗：面板晚到时重读，读到两项即停；取整差异不算矛盾；漏掉关闭通知后仍能再次触发。
