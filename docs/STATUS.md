@@ -1,6 +1,19 @@
 # 项目状态
 
-## 建分组后去掉标题前缀（两端，未发布，2026-11-06）
+## Windows 1.9.3：子代理任务输出硬链接及隔离收紧（2026-11-07；2026-11-08 发布）
+
+- 现象：打开账号 02 弹“账号存储隔离检查未通过：存储项与账号目录外的文件共用硬链接，已停止：…\Claude-Second\ClaudeCodeConfig\projects\D--shijing-wanxiang\<会话 ID>\subagents\agent-afa6c355ac2b14d0b.jsonl”。1.9.1 只放行“全部名字在账号目录内”的硬链接（file-history），这是另一种来源。
+- 原因（此前本机核实，只看元数据）：按文件 ID 查到该文件另一个名字是 `%TEMP%\claude\a20177659752a04a\<同一会话 ID>\tasks\afa6c355ac2b14d0b.output`。Claude Code 把子代理记录硬链接成后台任务输出。`.claude` 与 `Claude-Second` 两处共 12 个硬链接的 `agent-*.jsonl`，对应 12 个 `.output`，全部是“同会话 ID、同代理 ID、`tasks` 下”的形状，没有其他去向；该记录不是本次对新规则的真实账号验收。
+- 修复：保留方案 A 的输出路径与会话／代理 ID 匹配，同时收紧 `Storage.LinksWithin` 的全部账号内名字：仅允许 `file-history` 和明确形状的项目会话／子代理记录。原先“全部在账号内即放行”也收紧，防止配置、身份数据或缓存借用会话豁免；任何敏感或其他位置名字混入都整体拒绝。
+- 临时路径及稳定性：比较前规范化绝对路径、展开短名；逐级检查所有别名的目录链、重解析点、所有者及文件身份。临时／账号根目录内仍须本人所有，系统祖先额外允许 SYSTEM／TrustedInstaller。枚举数量须与链接数一致；枚举前后核对文件身份和链接数，异常最多完整检查两次，不能确认就报错。只读元数据、全共享句柄，不锁定或修复官方数据。
+- 同步边界：`LocalFiles.cs`、`SessionSync.cs` 和启动／同步调用流程未改；来源读取与目标替换仍要求单链接，启动警告的“仍然继续”不传递给同步。
+- 验证：2026-11-08 完整 `powershell -NoProfile -ExecutionPolicy Bypass -File windows/scripts/build.ps1` 通过：LauncherTests 452、SyncTests 175、SessionSyncTests 373、TutorialTests 80、自检 326（修改前 281）。保留原 9 类任务输出用例，新增敏感名字＋合法子代理名＋合法输出、纯内部敏感共享、项目未知位置、合法内部关联及长路径、路径规范化、临时上级／内部重解析点、持续链接数变化、重试后稳定、原路径被替换、扫描错误及同步单链接防线。首轮沙箱临时文件移动权限失败，改为沙箱外运行；修正新增长路径夹具的清理后通过。现有 CS0649／CS0219 警告仍在；符号链接创建不可用，相关配置同步测试走拷贝回退，目录 junction 测试已执行。日志：`build/hardlink-isolation-build.log`。
+- 未验证：本次未访问真实账号文件、未打开会话或登录数据、未启动 Claude，真实 `Claude-Second` 新规则和 GUI 均未验证。此前终端有 Claude MSIX AppData 虚拟化、真实文件 `FindFirstFileNameW` 返回 50 的限制，本次不把历史元数据观察或合成测试当作真实账号通过。不同用户所有者 ACL 场景未做实机验收。
+- 复核（2026-11-08，另一会话，只读元数据）：重跑 `build.ps1` 结果相同（自检 326）。按路径统计真实 `Claude-Second` 各存储项内链接数大于 1 的文件共 12 个，全部是 `projects\…\subagents\agent-*.jsonl`，均在新规则允许的账号内位置，没有会被收紧误伤的；`file-history` 当前没有多链接文件。真实目录链所有者：`C:\` TrustedInstaller、`C:\Users` SYSTEM、`C:\Users\WYL20` 与 `AppData` Administrators、`Local`／`Temp`／`Temp\claude\<目录>`／`Roaming`／`Claude-Second` 本人，均在允许范围。仍未用新程序对真实账号跑一次完整校验（本终端 `FindFirstFileNameW` 受 MSIX 虚拟化限制）。
+- macOS：代码未改；SPEC 写明待实现方案，在允许位置内按 `(st_dev, st_ino)` 计数，等于稳定的 `st_nlink` 才放行，不能遍历完整或发生变化时拒绝。本次未编译、未实测 macOS。
+- 发布：用户 2026-11-08 要求提交并发布 Windows 版，版本 1.9.3（含下一节“建分组去前缀”），SPEC 顶部加「[Windows] 1.9.3」一节，发布说明见 [RELEASE-windows-1.9.3](RELEASE-windows-1.9.3.md)。本地 dev 曾与远端分叉（1.9.2 发布时远端重整过提交），已把未发布的去前缀提交接到 `origin/dev` 之后，原本地分支备份为 `backup/dev-before-1.9.3`。改版本号后完整 `build.ps1` 第一次在 SyncTests 的 5 秒异步回调等待超时（“1.7.17: asynchronous callback completed”，与本次改动无关的计时项），原样重跑通过：LauncherTests 452、SyncTests 175、SessionSyncTests 373、TutorialTests 80、自检 326。
+
+## 建分组后去掉标题前缀（两端，2026-11-06；Windows 随 1.9.3 发布，macOS 未发布）
 
 - 用户要求：分完组后副本标题里的「【分组名】」前缀多余，要去掉。采用方案：只改预填指令，让目标账号的 Claude 建好分组后用官方改会话标题工具去掉前缀；启动器仍只预填、不代发，不新增写官方数据的入口。
 - 改动：`SidebarGroups.InstructionHead`（Windows）、`SessionSync.m` 的 `InstructionHead`（macOS）、`english.strings` 同一条，三处文字相同。新第 5 条：只改清单里已在对应分组、标题正好以「【分组名】」开头的会话，去掉这一段、其余原样，去掉后为空不改，改标题工具不可用就跳过并汇报；第 6 条“除第 5 条外不删改”；第 1 条允许查找加载这两类官方工具；汇报加“去掉了几条前缀”。AGENTS「分组预填例外」、SPEC「原生分组」、Windows 用户指南同步。两端测试各加一条断言。

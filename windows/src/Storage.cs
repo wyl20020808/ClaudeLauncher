@@ -51,11 +51,110 @@ namespace ClaudeLauncher {
             } finally { FindClose(find); }
             return names;
         }
-        // 硬链接的所有名字都在同一账号目录内才放行：Claude Code 的 file-history 会在会话之间硬链接检查点备份（2026-11-06 实测）。
-        // 与账号目录外（含其他账号）共用的硬链接仍拒绝。
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        static extern uint GetLongPathNameW(string shortPath, System.Text.StringBuilder longPath, uint length);
+        // 只在确有外部别名时检查此目录；自检使用自己的临时目录。
+        public static string TaskTemp = Path.Combine(Path.GetTempPath(), "claude");
+        static string LongPath(string path) {
+            string full = Path.GetFullPath(Display(path));
+            if (Path.GetPathRoot(full).Length != 3 || full[1] != ':') throw new IOException("无法确认存储项所在的本地卷。");
+            var buffer = new System.Text.StringBuilder(32768);
+            uint length = GetLongPathNameW(Extended(full), buffer, (uint)buffer.Capacity);
+            if (length == 0 || length >= buffer.Capacity) throw new IOException("无法规范化存储路径：" + Display(path));
+            return Display(buffer.ToString()).TrimEnd('\\');
+        }
+        static string VolumeRelative(string full) { return full.Substring(Path.GetPathRoot(full).Length - 1); }
+        const string SessionId = @"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}";
+        static readonly System.Text.RegularExpressions.Regex SessionName = new System.Text.RegularExpressions.Regex(
+            @"\AClaudeCodeConfig\\projects\\[^\\]+\\" + SessionId + @"\.jsonl\z", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        // 账号内子代理记录：ClaudeCodeConfig\projects\<项目>\<会话 ID>\subagents\agent-<代理 ID>.jsonl
+        static readonly System.Text.RegularExpressions.Regex SubagentName = new System.Text.RegularExpressions.Regex(
+            @"\AClaudeCodeConfig\\projects\\[^\\]+\\(" + SessionId + @")\\subagents\\agent-([0-9A-Za-z]+)\.jsonl\z", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        static bool DataName(string name) {
+            return name.StartsWith(@"ClaudeCodeConfig\file-history\", StringComparison.OrdinalIgnoreCase) || SessionName.IsMatch(name) || SubagentName.IsMatch(name);
+        }
+        static bool Inside(string path, string root) { return path.Equals(root, StringComparison.OrdinalIgnoreCase) || path.StartsWith(root + "\\", StringComparison.OrdinalIgnoreCase); }
+        [DllImport("advapi32.dll")] static extern uint GetSecurityInfo(SafeFileHandle handle, int type, uint information, out IntPtr owner, out IntPtr group, out IntPtr dacl, out IntPtr sacl, out IntPtr descriptor);
+        [DllImport("kernel32.dll")] static extern IntPtr LocalFree(IntPtr memory);
+        static SafeFileHandle OpenMetadata(string path) {
+            return CreateFile(Extended(path), 0x20080, 7, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero); // READ_CONTROL | FILE_READ_ATTRIBUTES，全共享、不跟随链接。
+        }
+        static FileInfoByHandle Metadata(SafeFileHandle handle, string path, bool directory, bool systemAncestor = false) {
+            FileInfoByHandle info;
+            if (handle.IsInvalid || !GetFileInformationByHandle(handle, out info)) throw new IOException("无法读取存储项元数据：" + Display(path));
+            if ((info.Attributes & (0x400 | 0x40)) != 0 || ((info.Attributes & 0x10) != 0) != directory) throw new IOException("存储路径含链接、重定向或类型异常：" + Display(path));
+            IntPtr owner, group, dacl, sacl, descriptor;
+            uint error = GetSecurityInfo(handle, 1, 1, out owner, out group, out dacl, out sacl, out descriptor);
+            try {
+                if (error != 0 || owner == IntPtr.Zero) throw new IOException("无法读取存储项所有者：" + Display(path));
+                var sid = new SecurityIdentifier(owner);
+                // 仅允许临时／账号根目录上方的系统祖先归 SYSTEM 或 TrustedInstaller；数据目录本身仍须本人所有。
+                bool system = systemAncestor && (sid.Value == "S-1-5-18" || sid.Value == "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464");
+                if (!OwnedByMe(sid) && !system) throw new IOException("存储项不属于当前用户：" + Display(path));
+            } finally { if (descriptor != IntPtr.Zero) LocalFree(descriptor); }
+            return info;
+        }
+        static void CheckParents(string path, string root) {
+            var parents = new Stack<string>();
+            for (string entry = Path.GetDirectoryName(path); entry != null; entry = Path.GetDirectoryName(entry)) parents.Push(entry);
+            while (parents.Count > 0) {
+                string entry = parents.Pop();
+                using (var handle = OpenMetadata(entry)) Metadata(handle, entry, true, !Inside(entry.TrimEnd('\\'), root));
+            }
+        }
+        static bool SameFile(FileInfoByHandle a, FileInfoByHandle b) { return a.Volume == b.Volume && a.IndexHigh == b.IndexHigh && a.IndexLow == b.IndexLow; }
+        internal static Action<string> AfterLinkEnumeration; // 自检制造链接增减、替换或读取失败；正式运行为空。
+        // 硬链接放行规则（SPEC 存储校验硬链接例外）：
+        // 1. 账号内的每个名字都必须是 file-history 或明确形状的会话／子代理记录，敏感名字不能借用豁免。
+        // 2. 账号外的名字只能是 %TEMP%\claude\<一层目录>\<会话 ID>\tasks\<代理 ID>.output，且同一文件在本账号有对应的
+        //    subagents\agent-<代理 ID>.jsonl（会话 ID、代理 ID 都相同）：Claude Code 把子代理记录硬链接成后台任务输出（2026-11-07 实测 12/12）。
+        // 其他与账号目录外（含其他账号）共用的硬链接仍拒绝。
         public static bool LinksWithin(string path, string folder) {
-            string full = Path.GetFullPath(folder).TrimEnd('\\'), prefix = full.Substring(Path.GetPathRoot(full).Length - 1) + "\\";
-            return LinkNames(path).All(name => name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase));
+            for (int attempt = 0; ; attempt++) {
+                try {
+                    using (var handle = OpenMetadata(path)) {
+                        var before = Metadata(handle, path, false);
+                        var names = LinkNames(path);
+                        if (AfterLinkEnumeration != null) AfterLinkEnumeration(path);
+                        if (names.Count != before.Links || names.Distinct(StringComparer.OrdinalIgnoreCase).Count() != names.Count)
+                            throw new IOException("硬链接枚举数量与文件元数据不一致。");
+                        bool allowed = NamesAllowed(names, LongPath(folder), before);
+                        var after = Metadata(handle, path, false);
+                        using (var current = OpenMetadata(path)) {
+                            var now = Metadata(current, path, false);
+                            if (!SameFile(before, now) || before.Links != after.Links || before.Links != now.Links)
+                                throw new IOException("硬链接检查期间文件或链接数发生变化。");
+                        }
+                        return allowed;
+                    }
+                } catch (IOException error) {
+                    if (attempt == 1) throw new IOException("无法确认存储项硬链接隔离（已检查两次），已停止：" + Display(path), error);
+                }
+            }
+        }
+        static bool NamesAllowed(List<string> names, string full, FileInfoByHandle expected) {
+            string prefix = VolumeRelative(full) + "\\";
+            var inside = names.Where(name => name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)).ToList();
+            if (inside.Count == 0 || inside.Any(name => !DataName(name.Substring(prefix.Length)))) return false;
+            var outside = names.Where(name => !name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)).ToList();
+            string temp = outside.Count == 0 ? null : LongPath(TaskTemp);
+            if (temp != null && (!string.Equals(Path.GetPathRoot(temp), Path.GetPathRoot(full), StringComparison.OrdinalIgnoreCase) || Inside(temp, full) || Inside(full, temp))) return false;
+            var allowed = new List<System.Text.RegularExpressions.Regex>();
+            foreach (string name in inside) {
+                var match = SubagentName.Match(name.Substring(prefix.Length));
+                if (temp != null && match.Success) allowed.Add(new System.Text.RegularExpressions.Regex(@"\A" + System.Text.RegularExpressions.Regex.Escape(VolumeRelative(temp) + "\\") + @"[^\\]+\\"
+                    + match.Groups[1].Value + @"\\tasks\\" + match.Groups[2].Value + @"\.output\z", System.Text.RegularExpressions.RegexOptions.IgnoreCase));
+            }
+            if (outside.Any(name => !allowed.Any(rule => rule.IsMatch(name)))) return false;
+            foreach (string name in names) {
+                string alias = Path.GetPathRoot(full).TrimEnd('\\') + name;
+                CheckParents(alias, name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) ? full : temp);
+                using (var handle = OpenMetadata(alias)) {
+                    var actual = Metadata(handle, alias, false);
+                    if (!SameFile(expected, actual) || expected.Links != actual.Links) throw new IOException("硬链接检查期间别名或链接数发生变化。");
+                }
+            }
+            return true;
         }
         public static int LinkCount(string path) {
             // FILE_READ_ATTRIBUTES，共享全部；BACKUP_SEMANTICS | OPEN_REPARSE_POINT 不跟随链接。
@@ -120,7 +219,7 @@ namespace ClaudeLauncher {
                 } catch (FileNotFoundException) { continue; } catch (DirectoryNotFoundException) { continue; }
                 catch (UnauthorizedAccessException) { throw new IOException("无法读取存储项所有者，已停止：" + shown); }
                 if (!OwnedByMe(owner)) throw new IOException("存储项不属于当前用户，已停止：" + shown);
-                if (!directory && LinkCount(path) > 1 && !LinksWithin(path, folder)) throw new IOException("存储项与账号目录外的文件共用硬链接，已停止：" + shown);
+                if (!directory && LinkCount(path) > 1 && !LinksWithin(path, folder)) throw new IOException("存储项硬链接包含不允许的位置，已停止：" + shown);
                 if (!directory || !recursive) continue;
                 try { foreach (string entry in Directory.EnumerateFileSystemEntries(path)) pending.Push(entry); }
                 catch (DirectoryNotFoundException) { }
@@ -279,7 +378,7 @@ namespace ClaudeLauncher {
                 Rejects(() => Storage.Validate(2, roaming, local), "长路径下的硬链接必须拒绝");
                 File.Delete(longFile);
                 Storage.Validate(2, roaming, local);
-                // 账号目录内部的硬链接放行（Claude Code file-history 在会话间硬链接备份）；跨账号仍拒绝
+                // 只有会话数据位置可共享；账号内的缓存、敏感配置也不能借用豁免。
                 string history = Path.Combine(Core.CodeConfig(folder), "file-history");
                 Directory.CreateDirectory(Path.Combine(history, "a")); Directory.CreateDirectory(Path.Combine(history, "b"));
                 File.WriteAllText(Path.Combine(history, @"a\x@v3"), "x");
@@ -287,8 +386,13 @@ namespace ClaudeLauncher {
                 Check(Storage.LinkNames(Path.Combine(history, @"a\x@v3")).Count == 2, "硬链接名字数量错误");
                 Storage.Validate(2, roaming, local);
                 Check(CreateHardLink(Storage.Extended(longFile), Path.Combine(history, @"a\x@v3"), IntPtr.Zero), "无法创建长路径账号内硬链接夹具");
-                Storage.Validate(2, roaming, local);
+                Rejects(() => Storage.Validate(2, roaming, local), "账号内缓存名字不能借用 file-history 豁免");
                 File.Delete(longFile);
+                string longHistory = Storage.Extended(Path.Combine(history, new string('d', 120), new string('e', 120), "x@v3"));
+                Directory.CreateDirectory(Path.GetDirectoryName(longHistory));
+                Check(CreateHardLink(longHistory, Path.Combine(history, @"a\x@v3"), IntPtr.Zero), "无法创建长路径备份硬链接夹具");
+                Storage.Validate(2, roaming, local);
+                File.Delete(longHistory);
                 Directory.CreateDirectory(folders[2]);
                 Check(CreateHardLink(Path.Combine(folders[2], "shared"), Path.Combine(history, @"a\x@v3"), IntPtr.Zero), "无法创建跨账号硬链接夹具");
                 Rejects(() => Storage.Validate(2, roaming, local), "与其他账号共用的硬链接必须拒绝");
@@ -296,9 +400,124 @@ namespace ClaudeLauncher {
                 Directory.CreateDirectory(Path.Combine(folder, "Network"));
                 Check(CreateHardLink(Path.Combine(folder, @"Network\x"), outside, IntPtr.Zero) && CreateHardLink(Path.Combine(folder, "Preferences"), outside, IntPtr.Zero), "无法创建账号内外混合硬链接夹具");
                 Rejects(() => Storage.Validate(2, roaming, local), "账号内外混合的硬链接必须拒绝");
+                File.Delete(outside);
+                Rejects(() => Storage.Validate(2, roaming, local), "仅剩账号内部敏感名字的硬链接仍须拒绝");
                 File.Delete(Path.Combine(folder, @"Network\x")); File.Delete(Path.Combine(folder, "Preferences"));
-                Directory.Delete(history, true); Directory.Delete(folders[2]);
+                Directory.Delete(Storage.Extended(history), true); Directory.Delete(folders[2]);
                 Storage.Validate(2, roaming, local);
+                // 子代理记录与 %TEMP%\claude\<目录>\<会话>\tasks\<代理>.output 共用硬链接放行（Claude Code 后台任务输出）；其他形状仍拒绝
+                string savedTemp = Storage.TaskTemp;
+                try {
+                    Storage.TaskTemp = Path.Combine(root, @"Temp\claude");
+                    const string sid = "4f2d3219-db6e-4c05-9e39-2556b17bf35a", otherSid = "11111111-2222-3333-4444-555555555555";
+                    string subagents = Path.Combine(Core.CodeConfig(folder), @"projects\D--proj\" + sid + @"\subagents");
+                    Directory.CreateDirectory(subagents);
+                    string transcript = Path.Combine(subagents, "agent-afa6c355ac2b14d0b.jsonl");
+                    File.WriteAllText(transcript, "{}");
+                    Action<string, bool, string> taskLink = (relative, allowed, message) => {
+                        string link = Path.Combine(Storage.TaskTemp, relative);
+                        Directory.CreateDirectory(Path.GetDirectoryName(link));
+                        Check(CreateHardLink(link, transcript, IntPtr.Zero), "无法创建任务输出硬链接夹具：" + relative);
+                        if (allowed) Storage.Validate(2, roaming, local); else Rejects(() => Storage.Validate(2, roaming, local), message);
+                        File.Delete(link);
+                    };
+                    taskLink(@"a20177659752a04a\" + sid + @"\tasks\afa6c355ac2b14d0b.output", true, null);
+                    taskLink(@"a20177659752a04a\" + otherSid + @"\tasks\afa6c355ac2b14d0b.output", false, "会话 ID 不同的任务输出硬链接必须拒绝");
+                    taskLink(@"a20177659752a04a\" + sid + @"\tasks\a000000000000000.output", false, "代理 ID 不同的任务输出硬链接必须拒绝");
+                    taskLink(@"a20177659752a04a\" + sid + @"\other\afa6c355ac2b14d0b.output", false, "不在 tasks 下的硬链接必须拒绝");
+                    taskLink(@"x\y\" + sid + @"\tasks\afa6c355ac2b14d0b.output", false, "多一层目录的任务输出硬链接必须拒绝");
+                    taskLink(sid + @"\tasks\afa6c355ac2b14d0b.output", false, "少一层目录的任务输出硬链接必须拒绝");
+                    // 账号外名字不在 Temp\claude：拒绝
+                    Check(CreateHardLink(Path.Combine(root, "afa6c355ac2b14d0b.output"), transcript, IntPtr.Zero), "无法创建账号外硬链接夹具");
+                    Rejects(() => Storage.Validate(2, roaming, local), "临时目录外的子代理硬链接必须拒绝");
+                    File.Delete(Path.Combine(root, "afa6c355ac2b14d0b.output"));
+                    // 非子代理记录（如 Preferences）与任务输出共用：拒绝
+                    string plain = Path.Combine(Core.CodeConfig(folder), @"projects\D--proj\" + sid + @"\afa6c355ac2b14d0b.jsonl");
+                    File.WriteAllText(plain, "{}");
+                    string plainLink = Path.Combine(Storage.TaskTemp, @"h\" + sid + @"\tasks\afa6c355ac2b14d0b.output");
+                    Directory.CreateDirectory(Path.GetDirectoryName(plainLink));
+                    Check(CreateHardLink(plainLink, plain, IntPtr.Zero), "无法创建非子代理硬链接夹具");
+                    Rejects(() => Storage.Validate(2, roaming, local), "非子代理记录与任务输出共用必须拒绝");
+                    File.Delete(plainLink); File.Delete(plain);
+                    // 任务输出合法，但同时又与其他账号共用：拒绝
+                    string okLink = Path.Combine(Storage.TaskTemp, @"h\" + sid + @"\tasks\afa6c355ac2b14d0b.output");
+                    Directory.CreateDirectory(folders[2]);
+                    Check(CreateHardLink(okLink, transcript, IntPtr.Zero) && CreateHardLink(Path.Combine(folders[2], "shared"), transcript, IntPtr.Zero), "无法创建任务输出与跨账号混合夹具");
+                    Rejects(() => Storage.Validate(2, roaming, local), "任务输出之外又与其他账号共用必须拒绝");
+                    File.Delete(Path.Combine(folders[2], "shared")); File.Delete(okLink); Directory.Delete(folders[2]);
+                    // 同一文件混入敏感／未知名字，无论有无任务输出都拒绝。
+                    Check(CreateHardLink(okLink, transcript, IntPtr.Zero), "无法创建合法任务输出夹具");
+                    foreach (string relative in new[] { "Preferences", @"Network\Cookies", @"ClaudeCodeConfig\.claude.json", @"ClaudeCodeConfig\settings.json", @"ClaudeCodeConfig\projects\D--proj\settings.json", @"ClaudeCodeConfig\projects-other\record.jsonl", "unlisted.txt" }) {
+                        string mixed = Path.Combine(folder, relative);
+                        Directory.CreateDirectory(Path.GetDirectoryName(mixed));
+                        Check(CreateHardLink(mixed, transcript, IntPtr.Zero), "无法创建混合名字夹具");
+                        Check(!Storage.LinksWithin(transcript, folder) && !Storage.LinksWithin(mixed, folder), "敏感或未知名字不能借用子代理及任务输出豁免");
+                        Rejects(() => Storage.Validate(2, roaming, local), "混合名字必须阻止完整存储校验");
+                        File.Delete(mixed);
+                    }
+                    File.Delete(okLink);
+                    string sessionAlias = Path.Combine(Core.CodeConfig(folder), @"projects\D--proj\" + sid + ".jsonl");
+                    Check(CreateHardLink(sessionAlias, transcript, IntPtr.Zero), "无法创建账号内会话关联夹具");
+                    Check(Storage.LinksWithin(transcript, folder), "合法的会话与子代理内部关联应通过");
+                    Storage.Validate(2, roaming, local);
+                    Rejects(() => { using (LocalFiles.OpenRead(transcript, 1024)) { } }, "启动允许的会话硬链接仍不能作为同步读取来源");
+                    Check(LocalFiles.FileState(sessionAlias) == null, "启动允许的会话硬链接仍不能作为同步替换目标");
+                    string sensitive = Path.Combine(folder, "Preferences");
+                    Check(CreateHardLink(sensitive, transcript, IntPtr.Zero), "无法创建内部敏感名字夹具");
+                    Rejects(() => Storage.Validate(2, roaming, local), "没有外部名字时也不能放过敏感别名");
+                    File.Delete(sensitive); File.Delete(sessionAlias);
+                    Check(CreateHardLink(okLink, transcript, IntPtr.Zero), "无法创建规范化路径夹具");
+                    string taskRoot = Storage.TaskTemp;
+                    Storage.TaskTemp = Path.Combine(taskRoot, ".") + "\\";
+                    Check(Storage.LinksWithin(transcript, folder), "临时目录尾斜杠和点路径应规范化");
+                    Storage.TaskTemp = taskRoot;
+                    string redirected = Path.Combine(root, "redirected-temp");
+                    Junction(redirected, Path.GetDirectoryName(taskRoot));
+                    try {
+                        Storage.TaskTemp = Path.Combine(redirected, "claude");
+                        Rejects(() => { if (!Storage.LinksWithin(transcript, folder)) throw new IOException(); }, "临时根目录上级重定向必须拒绝");
+                    } finally { Storage.TaskTemp = taskRoot; Directory.Delete(redirected); }
+                    string tasks = Path.GetDirectoryName(okLink), parked = Path.Combine(root, "parked-tasks");
+                    try {
+                        Storage.AfterLinkEnumeration = path => {
+                            if (Directory.Exists(parked)) return;
+                            Directory.Move(tasks, parked); Junction(tasks, parked);
+                        };
+                        Rejects(() => { if (!Storage.LinksWithin(transcript, folder)) throw new IOException(); }, "枚举后临时目录内部变成重解析点必须拒绝");
+                    } finally {
+                        Storage.AfterLinkEnumeration = null;
+                        if (Directory.Exists(parked)) { Directory.Delete(tasks); Directory.Move(parked, tasks); }
+                    }
+                    // 查真实目录项身份：扫描中增减链接或替换原路径，不能沿用旧枚举结果。
+                    string moving = Path.Combine(subagents, "agent-moving.jsonl");
+                    int scans = 0;
+                    try {
+                        Storage.AfterLinkEnumeration = path => {
+                            scans++;
+                            if (File.Exists(moving)) File.Delete(moving);
+                            else if (!CreateHardLink(moving, transcript, IntPtr.Zero)) throw new IOException("无法创建变化夹具");
+                        };
+                        Rejects(() => Storage.LinksWithin(transcript, folder), "扫描期间持续变化必须报告无法确认");
+                        Check(scans == 2, "不稳定扫描只能尝试两次");
+                        if (File.Exists(moving)) File.Delete(moving);
+                        scans = 0;
+                        Storage.AfterLinkEnumeration = path => { if (++scans == 1 && !CreateHardLink(moving, transcript, IntPtr.Zero)) throw new IOException("无法创建变化夹具"); };
+                        Check(Storage.LinksWithin(transcript, folder) && scans == 2, "首次变化后应重新完整检查，稳定且合法才通过");
+                        File.Delete(moving);
+                        Storage.AfterLinkEnumeration = path => { File.Delete(path); File.WriteAllText(path, "replacement"); };
+                        Rejects(() => Storage.LinksWithin(transcript, folder), "扫描中路径被替换必须拒绝");
+                        File.Delete(transcript);
+                        Check(CreateHardLink(transcript, okLink, IntPtr.Zero), "无法恢复身份变化夹具");
+                        scans = 0;
+                        Storage.AfterLinkEnumeration = path => { scans++; throw new IOException("模拟扫描元数据失败"); };
+                        Rejects(() => Storage.LinksWithin(transcript, folder), "扫描失败不能当作通过");
+                        Check(scans == 2, "读取失败重试必须有界");
+                    } finally { Storage.AfterLinkEnumeration = null; if (File.Exists(moving)) File.Delete(moving); }
+                    File.Delete(okLink);
+                    Rejects(() => Storage.LinkNames(Path.Combine(root, "missing-file")), "原生枚举失败必须报告错误");
+                    Directory.Delete(Path.Combine(Core.CodeConfig(folder), "projects"), true);
+                    Storage.Validate(2, roaming, local);
+                } finally { Storage.TaskTemp = savedTemp; }
                 Junction(folders[2], target);
                 Rejects(() => Storage.Validate(3, roaming, local), "链接账号目录必须拒绝");
                 Directory.Delete(folders[2]);
