@@ -317,7 +317,12 @@ NSDictionary *CleanSession(NSString *sourcePath, NSString *project, NSString *ho
         [seen addObject:row[@"uuid"]]; [chain insertObject:row atIndex:0];
         id parent = row[@"parentUuid"];
         if (![parent isKindOfClass:NSString.class]) parent = row[@"logicalParentUuid"];
-        row = [parent isKindOfClass:NSString.class] ? byId[parent] : nil;
+        NSDictionary *next = [parent isKindOfClass:NSString.class] ? byId[parent] : nil;
+        // Newer compaction can name a logical parent that was never written; resume from the last message before the boundary.
+        if (!next && [row[@"type"] isEqual:@"system"] && [row[@"subtype"] isEqual:@"compact_boundary"])
+            for (NSUInteger i = [rows indexOfObjectIdenticalTo:(id)row]; i-- > 0; )
+                if ([rows[i][@"type"] isEqual:@"user"] || [rows[i][@"type"] isEqual:@"assistant"]) { next = rows[i]; break; }
+        row = next;
     }
     // Where the session ended up decides its project: it may have started elsewhere (Claude moves scratch sessions into a folder).
     NSString *root = project.stringByStandardizingPath, *lastCwd = nil;
