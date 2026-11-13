@@ -58,10 +58,13 @@ namespace ClaudeLauncher {
             if(translatedCache.TryGetValue(source,out translated)) return translated;
             if(translatedCache.Count>2000) translatedCache.Clear();
             // 字面内容最长的优先，否则 "%@ %@" 这样的宽泛词条会抢走具体词条。
-            foreach(var pair in translations.Where(p=>p.Key.Contains("%@")||Regex.IsMatch(p.Key,"%[0-9.]*[ldiu]")).OrderByDescending(p=>Regex.Replace(p.Key,"%[0-9.]*[ldiu@]+","").Length)) {
-                string pattern="^"+Regex.Replace(Regex.Escape(pair.Key),"%[0-9.]*[ldiu@]+","(.*?)")+"$";
+            // 占位符含 %.0f 这类小数；%% 是字面百分号。
+            const string Placeholder="%%|%[0-9.]*(?:l?[diuf]|@)";
+            foreach(var pair in translations.Where(p=>p.Key.Contains("%@")||Regex.IsMatch(p.Key,"%[0-9.]*l?[diuf]")).OrderByDescending(p=>Regex.Replace(p.Key,Placeholder,"").Length)) {
+                // 先认占位符再转义其余字符，否则 %.0f 的点会被转义。
+                string pattern="^"+Regex.Replace(pair.Key,"("+Placeholder+")|([\\s\\S])",m=>m.Groups[1].Success?(m.Value=="%%"?"%":"(.*?)"):Regex.Escape(m.Value))+"$";
                 Match match=Regex.Match(source,pattern); if(!match.Success) continue;
-                int index=0; return translatedCache[source]=Regex.Replace(pair.Value,"%[0-9.]*[ldiu@]+",m=>match.Groups[++index].Value);
+                int index=0; return translatedCache[source]=Regex.Replace(pair.Value,Placeholder,m=>m.Value=="%%"?"%":match.Groups[++index].Value);
             }
             return translatedCache[source]=source;
         }

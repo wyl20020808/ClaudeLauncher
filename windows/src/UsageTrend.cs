@@ -32,6 +32,19 @@ namespace ClaudeLauncher {
             double a=(week?first.Week:first.Five).Value,b=(week?last.Week:last.Five).Value;
             return hours >= 1.0/3 && b>a ? (double?)((100-b)*hours/(b-a)) : null;
         }
+        // 折线分段（SPEC 用量趋势）：数值回落是限额重置，相邻两点间隔超过该额度窗口（5 小时线 5 小时、周线 7 天）
+        // 中间可能有没看到的重置，两种情况都新起一段，不画跨重置或跨天的斜线。
+        internal static List<List<TrendPoint>> Runs(IEnumerable<TrendPoint> points, bool week, DateTime begin) {
+            var runs = new List<List<TrendPoint>>(); double previous = -1; DateTime previousAt = DateTime.MinValue;
+            TimeSpan window = week ? TimeSpan.FromDays(7) : TimeSpan.FromHours(5);
+            foreach (var point in points.OrderBy(p => p.At)) {
+                double? value = week ? point.Week : point.Five;
+                if (!value.HasValue || point.At < begin) continue;
+                if (runs.Count == 0 || value.Value < previous || point.At - previousAt > window) runs.Add(new List<TrendPoint>());
+                runs[runs.Count - 1].Add(point); previous = value.Value; previousAt = point.At;
+            }
+            return runs;
+        }
         internal static int Recommend(IEnumerable<TrendPoint> points, IEnumerable<int> accounts) {
             return points.Where(p => accounts.Contains(p.Account) && p.Week.HasValue).GroupBy(p => p.Account).Select(g => g.OrderBy(p => p.At).Last()).OrderBy(p => p.Week).ThenBy(p => p.Five ?? 100).Select(p => p.Account).FirstOrDefault();
         }

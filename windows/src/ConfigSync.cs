@@ -15,11 +15,17 @@ namespace ClaudeLauncher {
         internal static string LinkTarget(string path) {
             using(var handle=CreateFile(path,0,7,IntPtr.Zero,3,0x02200000,IntPtr.Zero)) {
                 byte[] data=new byte[16384]; int returned;
-                if(handle.IsInvalid||!DeviceIoControl(handle,0x900A8,IntPtr.Zero,0,data,data.Length,out returned,IntPtr.Zero)||returned<20||BitConverter.ToUInt32(data,0)!=0xA000000C) throw new IOException("仅支持普通符号链接。");
+                if(handle.IsInvalid||!DeviceIoControl(handle,0x900A8,IntPtr.Zero,0,data,data.Length,out returned,IntPtr.Zero)||returned<16) throw new IOException("仅支持符号链接或目录联接。");
+                uint tag=BitConverter.ToUInt32(data,0);
+                // 目录联接（mklink /J，无需开发者模式）没有符号链接的 Flags 字段，路径区从 16 开始。
+                int start=tag==0xA000000C?20:tag==0xA0000003?16:-1;
+                if(start<0||returned<start) throw new IOException("仅支持符号链接或目录联接。");
                 int offset=BitConverter.ToUInt16(data,8),length=BitConverter.ToUInt16(data,10);
-                if(20+offset+length>returned) throw new IOException("链接格式无效。");
-                string target=System.Text.Encoding.Unicode.GetString(data,20+offset,length);
+                if(start+offset+length>returned) throw new IOException("链接格式无效。");
+                string target=System.Text.Encoding.Unicode.GetString(data,start+offset,length);
                 if(target.StartsWith(@"\??\")) target=target.Substring(4);
+                // 联接只接受盘符绝对路径，排除卷挂载点（Volume{GUID}）。
+                if(tag==0xA0000003&&!System.Text.RegularExpressions.Regex.IsMatch(target,@"^[A-Za-z]:\\")) throw new IOException("目录联接不是盘符路径。");
                 target=Path.GetFullPath(Path.IsPathRooted(target)?target:Path.Combine(Path.GetDirectoryName(path),target));
                 if(new[]{".claude.json",".credentials.json","credentials.json"}.Contains(Path.GetFileName(target),StringComparer.OrdinalIgnoreCase)) throw new IOException("链接指向身份或凭据文件，拒绝同步。");
                 return target;

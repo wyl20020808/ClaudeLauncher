@@ -63,6 +63,7 @@ namespace ClaudeLauncher {
         }
         // 返回相对 root 的路径（统一用 /），root 本身返回空串，不在其内返回 null。按整段比较，D:\ab 不在 D:\a 内。
         internal static string Within(string path, string root) {
+            if (path == null || root == null) return null;
             string[] items = path.TrimEnd('\\').Split('\\'), bases = root.TrimEnd('\\').Split('\\');
             if (items.Length < bases.Length) return null;
             for (int i = 0; i < bases.Length; i++) if (!String.Equals(items[i], bases[i], StringComparison.OrdinalIgnoreCase)) return null;
@@ -70,11 +71,13 @@ namespace ClaudeLauncher {
         }
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern SafeFileHandle CreateFile(string name, uint access, uint share, IntPtr security, uint disposition, uint flags, IntPtr template);
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern int GetFinalPathNameByHandle(SafeFileHandle file, StringBuilder path, int size, int flags);
-        static string FinalPath(string path) {
+        // error：0 成功；2／3 不存在；其他（如 448 不受信任的挂载点）表示路径存在但无法解析。
+        static string FinalPath(string path, out int error) {
             using (var handle = CreateFile(path, 0, 7, IntPtr.Zero, 3, 0x02000000, IntPtr.Zero)) {
-                if (handle.IsInvalid) return null;
+                if (handle.IsInvalid) { error = Marshal.GetLastWin32Error(); return null; }
                 var text = new StringBuilder(32768);
-                return GetFinalPathNameByHandle(handle, text, text.Capacity, 0) > 0 ? text.ToString() : null;
+                if (GetFinalPathNameByHandle(handle, text, text.Capacity, 0) > 0) { error = 0; return text.ToString(); }
+                error = Marshal.GetLastWin32Error(); return null;
             }
         }
         // 解析最近的已存在上级，未存在的尾部保留。非固定盘只做字面判断，不为一条历史记录访问网络盘。
@@ -84,7 +87,9 @@ namespace ClaudeLauncher {
             try { if (new DriveInfo(full.Substring(0, 1)).DriveType != DriveType.Fixed) return full; } catch (ArgumentException) { return full; }
             var tail = new Stack<string>();
             for (string at = full; ; ) {
-                string real = FinalPath(at);
+                int error; string real = FinalPath(at, out error);
+                // 存在却解析不了（Windows 重定向保护拒绝穿过目录链接时返回 448）：不能当作上级目录里的普通路径，按无法解析处理。
+                if (real == null && error != 2 && error != 3) return null;
                 if (real != null) {
                     string normal = Normalize(real);
                     if (normal == null) return null; // 映射到网络或设备路径：不算项目内。

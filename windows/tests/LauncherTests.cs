@@ -186,7 +186,18 @@ public static class LauncherTests {
             string preferences = Path.Combine(root, "settings.json");
             var alerts = new LauncherUI(new LauncherSettings(), preferences); alerts.Snapshot(0, new List<Instance>());
             var high = new UsageMetric { Percent = 80, Reset = "reset-A", Observed = DateTime.Now };
+            var alertFlags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            // 另一个低用量账号也不推荐：提醒只说明本账号，不出现切换。
+            ((Dictionary<int, UsageRecord>)typeof(LauncherUI).GetField("savedUsage", alertFlags).GetValue(alerts))[5] = new UsageRecord { Status = UsageInterface.Observed, FiveHour = new UsageMetric { Percent = 3, Reset = "" } };
             Check(alerts.ObserveUsageAlert(2, high), "Threshold alerts once");
+            string alertText = ((TextBlock)typeof(LauncherUI).GetField("message", alertFlags).GetValue(alerts)).Text;
+            Check(alertText == "账号 02 五小时已用 80%（提醒阈值 80%）。" && !alertText.Contains("切换") && !alertText.Contains("05"), "Usage alert only reminds: " + alertText);
+            var alertCards = (System.Collections.IDictionary)typeof(LauncherUI).GetField("cards", alertFlags).GetValue(alerts);
+            Check(alertCards.Values.Cast<object>().All(c => !Children((DependencyObject)c.GetType().GetField("Root").GetValue(c)).OfType<Button>().Any(b => (b.Content as string ?? "").Contains("切换"))), "Cards have no switch button");
+            int alertLanguage = Appearance.Language; Appearance.Language = 1;
+            try { Check(Appearance.Text(alertText) == "Account 02 has used 80% of its 5-hour limit (reminder at 80%).", "Usage alert English: " + Appearance.Text(alertText)); }
+            finally { Appearance.Language = alertLanguage; }
+            ((Dictionary<int, UsageRecord>)typeof(LauncherUI).GetField("savedUsage", alertFlags).GetValue(alerts)).Remove(5);
             Check(!alerts.ObserveUsageAlert(2, high), "Same reset deduped");
             var restarted = new LauncherUI(new LauncherSettings(), preferences); restarted.Snapshot(0, new List<Instance>());
             Check(!restarted.ObserveUsageAlert(2, high), "Alert state survives restart");
@@ -231,6 +242,22 @@ public static class LauncherTests {
         Check(!Children(trendPage).OfType<TextBlock>().Any(t => t.Text == "账号管理" || t.Text == "登录邮箱"), "Account management table and navigation removed");
         var infoButtons = Children(ui.Snapshot(4, state)).OfType<Button>().Where(b => (b.ToolTip as string ?? "").StartsWith("从各账号本机记录里")).ToArray();
         Check(infoButtons.Length == 1 && AutomationProperties.GetName(infoButtons[0]).Length > 0, "Import info icon missing");
+        var projectAll = Children(ui.Snapshot(4, state)).ToArray();
+        Func<string, Button> projectButton = name => projectAll.OfType<Button>().Single(b => AutomationProperties.GetName(b) == name);
+        var toolbar = new[] { projectButton("同步会话…"), projectButton("识别并导入"), projectButton("添加目录"), projectButton("刷新状态") };
+        Check(toolbar.All(b => Canvas.GetTop(b) == 56 && b.Height == 44), "Project buttons share the title row");
+        for (int i = 0; i + 1 < toolbar.Length; i++) Check(Canvas.GetLeft(toolbar[i]) + toolbar[i].Width + 10 == Canvas.GetLeft(toolbar[i + 1]), "Project buttons sit side by side: " + i);
+        Check(Canvas.GetLeft(toolbar[3]) + toolbar[3].Width == 772 && toolbar[3].Width == 44 && toolbar[3].Content is TextBlock, "Refresh is an icon button at the right edge");
+        foreach (int host in new[] { 0, 1 }) {
+            var info = projectAll.OfType<Button>().Single(b => (b.ToolTip as string ?? "").StartsWith(host == 0 ? "把会话清理后同步" : "从各账号本机记录里"));
+            Check(Canvas.GetLeft(info) > Canvas.GetLeft(toolbar[host]) && Canvas.GetLeft(info) + info.Width <= Canvas.GetLeft(toolbar[host]) + toolbar[host].Width && Canvas.GetTop(info) >= 56 && Canvas.GetTop(info) + info.Height <= 100, "Info icon sits inside its button: " + host);
+        }
+        var removedTexts = new[] { "所有账号共用一份本机项目入口", "共享目录中的代码", "同一项目请轮流使用", "本机目录入口", "选择账号后会复制路径", "添加一个已有文件夹", "查看实例启动、关闭与异常信息", "调整启动器自身的行为", "近 7 天 · 只记录", "依据：", "这些设置只影响本启动器", "语言更改在下次打开", "日志记录保存在数据目录", "安全确认和错误弹窗始终保留", "不会自动联网检查", "关闭窗口只隐藏", "非官方本地工具", "更改即时保存并生效" };
+        foreach (int index in new[] { 1, 2, 3, 4 }) {
+            var texts = Children(ui.Snapshot(index, state)).OfType<TextBlock>().Select(t => t.Text ?? "").ToList();
+            foreach (string removed in removedTexts) Check(!texts.Any(t => t.Contains(removed)), "Removed hint text on page " + index + ": " + removed);
+        }
+        Check(Children(ui.Snapshot(3, state)).OfType<TextBlock>().Any(t => t.Text == Diagnostics.Redact(LauncherSettings.DataDirectory)), "Data directory path stays in settings");
         var all = Children(ui.Snapshot(3, state)).ToArray();
         Func<string, CheckBox> toggle = name => all.OfType<CheckBox>().Single(b => AutomationProperties.GetName(b) == name);
         Func<string, ComboBox> choice = name => all.OfType<ComboBox>().Single(b => AutomationProperties.GetName(b) == name);
@@ -400,7 +427,7 @@ public static class LauncherTests {
         click(pageButtons[1]);
         Check(visibleEntries() == 6 && prev.IsEnabled, "Page number navigates");
         var summary = (TextBlock)typeof(LauncherUI).GetField("logSummary", flags).GetValue(ui);
-        Check(summary.Text == "共 16 条日志 · 每页显示 10 条", "Summary text: " + summary.Text);
+        Check(summary.Text == "共 16 条日志", "Summary text: " + summary.Text);
         choice("日志时间范围").SelectedIndex = 0;
         string exported = LauncherUI.LogText(LauncherUI.FilterLogs(logs, "信息", null, null, null));
         string[] lines = exported.Split(new[] { "\r\n" }, StringSplitOptions.RemoveEmptyEntries);

@@ -1,5 +1,57 @@
 # 项目状态
 
+## Windows 1.9.4：skills 目录联接放行（2026-11-13）
+
+- 现象：账号 02 自行退出后再启动，弹“账号存储隔离检查未通过：仅支持普通符号链接。”，不带路径。启动器只有用户点“关闭”才调 `CloseMainWindow`，当天启动器日志无关闭记录，退出不是启动器触发的（原因未查，未读 Claude 日志）。
+- 原因（只读元数据）：`Claude-Second\ClaudeCodeConfig\skills\` 下 `caveman`、`karpathy-guidelines`、`moonshot-prompt`、`ponytail` 是 10:05 建的目录联接（tag `0xA0000003`），指向 `~/.claude/skills\` 同名目录；不是启动器建的（配置同步只建符号链接）。`ConfigSync.LinkTarget` 只认符号链接 tag，直接抛错，`Storage.Check` 也没带路径。
+- 修复：`LinkTarget` 同时解析目录联接（路径区偏移 16，只接受盘符绝对路径，拒绝卷挂载点），之后走原有白名单、目标判定和内容树检查；`Storage.Check` 把链接检查异常补上路径。SPEC「配置同步链接例外」同步。
+- 验证：`build.ps1 -OutputDirectory build/junction-fix` 通过：LauncherTests 452、SyncTests 175、SessionSyncTests 373、TutorialTests 80、自检 330（新增：白名单 skills 联接放行、目标解析、指向用户目录的联接拒绝且提示含路径）。新程序对真实 4 个联接调用 `SharedLinkAllowed` 均为 True（只读）。日志：`build/junction-fix-build.log`。
+- 未验证：新程序对真实 `Claude-Second` 的完整 `Storage.Validate` 在本终端停在 `subagents\agent-*.jsonl` 硬链接名枚举——本终端处于 Claude MSIX 容器内，`AppData\Roaming` 下任何文件 `FindFirstFileNameW` 都返回 50（`Temp`、`Documents` 正常），与本次改动无关；经 WMI 在容器外运行被拒绝访问。真实 GUI 启动未测。
+- 发布：用户 2026-11-13 要求提交并发布，版本 1.9.4，发布说明见 [RELEASE-windows-1.9.4](RELEASE-windows-1.9.4.md)。改版本号后完整 `build.ps1` 结果同上（自检 330），`test-install.ps1`（3 个场景）、`publish-release.ps1 -DryRun` 通过。dev 与 main 同为 `ec9672c`（main 快进推送）。已发布为 `windows-v1.9.4`（Latest）：草稿附件经 API 核对通过，GitHub latest/download 两份清单、Setup、DMG 复核 OK；脚本退出 2（未回滚，自建更新服务连接被关闭，与前几版相同）。附件 `ClaudeLauncherSetup-1.9.4.exe` 8328515 字节，SHA-256 `a712107d2fc9bc32ff5dddc913f73f9c4cffe64e63e1dba5395568bc44b6d656`；原样带入 macOS 1.8.3 DMG（8959147 字节）与 `latest-macos.json`，未重签。日志：`build/v1.9.4-*.log`。
+
+## Windows 1.9.3：子代理任务输出硬链接及隔离收紧（2026-11-07；2026-11-08 发布）
+
+- 现象：打开账号 02 弹“账号存储隔离检查未通过：存储项与账号目录外的文件共用硬链接，已停止：…\Claude-Second\ClaudeCodeConfig\projects\D--shijing-wanxiang\<会话 ID>\subagents\agent-afa6c355ac2b14d0b.jsonl”。1.9.1 只放行“全部名字在账号目录内”的硬链接（file-history），这是另一种来源。
+- 原因（此前本机核实，只看元数据）：按文件 ID 查到该文件另一个名字是 `%TEMP%\claude\a20177659752a04a\<同一会话 ID>\tasks\afa6c355ac2b14d0b.output`。Claude Code 把子代理记录硬链接成后台任务输出。`.claude` 与 `Claude-Second` 两处共 12 个硬链接的 `agent-*.jsonl`，对应 12 个 `.output`，全部是“同会话 ID、同代理 ID、`tasks` 下”的形状，没有其他去向；该记录不是本次对新规则的真实账号验收。
+- 修复：保留方案 A 的输出路径与会话／代理 ID 匹配，同时收紧 `Storage.LinksWithin` 的全部账号内名字：仅允许 `file-history` 和明确形状的项目会话／子代理记录。原先“全部在账号内即放行”也收紧，防止配置、身份数据或缓存借用会话豁免；任何敏感或其他位置名字混入都整体拒绝。
+- 临时路径及稳定性：比较前规范化绝对路径、展开短名；逐级检查所有别名的目录链、重解析点、所有者及文件身份。临时／账号根目录内仍须本人所有，系统祖先额外允许 SYSTEM／TrustedInstaller。枚举数量须与链接数一致；枚举前后核对文件身份和链接数，异常最多完整检查两次，不能确认就报错。只读元数据、全共享句柄，不锁定或修复官方数据。
+- 同步边界：`LocalFiles.cs`、`SessionSync.cs` 和启动／同步调用流程未改；来源读取与目标替换仍要求单链接，启动警告的“仍然继续”不传递给同步。
+- 验证：2026-11-08 完整 `powershell -NoProfile -ExecutionPolicy Bypass -File windows/scripts/build.ps1` 通过：LauncherTests 452、SyncTests 175、SessionSyncTests 373、TutorialTests 80、自检 326（修改前 281）。保留原 9 类任务输出用例，新增敏感名字＋合法子代理名＋合法输出、纯内部敏感共享、项目未知位置、合法内部关联及长路径、路径规范化、临时上级／内部重解析点、持续链接数变化、重试后稳定、原路径被替换、扫描错误及同步单链接防线。首轮沙箱临时文件移动权限失败，改为沙箱外运行；修正新增长路径夹具的清理后通过。现有 CS0649／CS0219 警告仍在；符号链接创建不可用，相关配置同步测试走拷贝回退，目录 junction 测试已执行。日志：`build/hardlink-isolation-build.log`。
+- 未验证：本次未访问真实账号文件、未打开会话或登录数据、未启动 Claude，真实 `Claude-Second` 新规则和 GUI 均未验证。此前终端有 Claude MSIX AppData 虚拟化、真实文件 `FindFirstFileNameW` 返回 50 的限制，本次不把历史元数据观察或合成测试当作真实账号通过。不同用户所有者 ACL 场景未做实机验收。
+- 复核（2026-11-08，另一会话，只读元数据）：重跑 `build.ps1` 结果相同（自检 326）。按路径统计真实 `Claude-Second` 各存储项内链接数大于 1 的文件共 12 个，全部是 `projects\…\subagents\agent-*.jsonl`，均在新规则允许的账号内位置，没有会被收紧误伤的；`file-history` 当前没有多链接文件。真实目录链所有者：`C:\` TrustedInstaller、`C:\Users` SYSTEM、`C:\Users\WYL20` 与 `AppData` Administrators、`Local`／`Temp`／`Temp\claude\<目录>`／`Roaming`／`Claude-Second` 本人，均在允许范围。仍未用新程序对真实账号跑一次完整校验（本终端 `FindFirstFileNameW` 受 MSIX 虚拟化限制）。
+- macOS：代码未改；SPEC 写明待实现方案，在允许位置内按 `(st_dev, st_ino)` 计数，等于稳定的 `st_nlink` 才放行，不能遍历完整或发生变化时拒绝。本次未编译、未实测 macOS。
+- 发布：用户 2026-11-08 要求提交并发布 Windows 版，版本 1.9.3（含下一节“建分组去前缀”），SPEC 顶部加「[Windows] 1.9.3」一节，发布说明见 [RELEASE-windows-1.9.3](RELEASE-windows-1.9.3.md)。本地 dev 曾与远端分叉（1.9.2 发布时远端重整过提交），已把未发布的去前缀提交接到 `origin/dev` 之后，原本地分支备份为 `backup/dev-before-1.9.3`。改版本号后完整 `build.ps1` 第一次在 SyncTests 的 5 秒异步回调等待超时（“1.7.17: asynchronous callback completed”，与本次改动无关的计时项），原样重跑通过：LauncherTests 452、SyncTests 175、SessionSyncTests 373、TutorialTests 80、自检 326。`test-install.ps1`（3 个场景）、`publish-release.ps1 -DryRun` 通过。dev 与 main 同为 `c8f543e`（main 快进推送）。已发布为 `windows-v1.9.3`（Latest）：草稿附件经 API 核对通过，GitHub latest/download 两份清单、Setup、DMG 复核 OK；脚本退出 2（未回滚，自建更新服务连接被关闭，与前几版相同）。附件 `ClaudeLauncherSetup-1.9.3.exe` 8328433 字节，SHA-256 `3ef4e17fadb8ebd24f7c45aba65f7e2e05a102658758bf559e4a04f434d4fb8e`；原样带入 macOS 1.8.3 DMG（8959147 字节）与 `latest-macos.json`，未重签。
+
+## 建分组后去掉标题前缀（两端，2026-11-06；Windows 随 1.9.3 发布，macOS 未发布）
+
+- 用户要求：分完组后副本标题里的「【分组名】」前缀多余，要去掉。采用方案：只改预填指令，让目标账号的 Claude 建好分组后用官方改会话标题工具去掉前缀；启动器仍只预填、不代发，不新增写官方数据的入口。
+- 改动：`SidebarGroups.InstructionHead`（Windows）、`SessionSync.m` 的 `InstructionHead`（macOS）、`english.strings` 同一条，三处文字相同。新第 5 条：只改清单里已在对应分组、标题正好以「【分组名】」开头的会话，去掉这一段、其余原样，去掉后为空不改，改标题工具不可用就跳过并汇报；第 6 条“除第 5 条外不删改”；第 1 条允许查找加载这两类官方工具；汇报加“去掉了几条前缀”。AGENTS「分组预填例外」、SPEC「原生分组」、Windows 用户指南同步。两端测试各加一条断言。
+- 验证：Windows `build.ps1` 通过（LauncherTests 452、SyncTests 175、SessionSyncTests 372、TutorialTests 80、自检 264）。
+- 未验证：macOS 未构建、未跑自检；真实账号里那边的 Claude 能否加载并调用改标题工具、改名后重启是否保留，未实测。同一会话再次替换同步时标题会重新带前缀（替换会改标题），需再建一次分组。
+
+## Windows 1.9.2：跟上 macOS 1.8.1～1.8.3（2026-11-06）
+
+- 范围：[HANDOFF-windows-1.9.2](HANDOFF-windows-1.9.2.md) 的 5 项，逐项先用代码核对（交接里的行号与现状一致）。规格见 SPEC 顶部「[Windows] 1.9.2」一节。
+  1. 用量提醒只提示：文本与 macOS 相同（“账号 NN 五小时已用 X%（提醒阈值 Y%）。”），去掉卡片“切换到账号”按钮；`RecommendedAccount` 只留给交接默认选择。
+  2. 趋势图断线：`UsageTrend.Runs` 按回落或超过额度窗口（5 小时／7 天）分段，图表改用它。
+  3. 页面精简：去副标题、设置说明与提示框、项目页提示框和底部说明，日志页只显示条数；项目页四个按钮放到标题行（宽度按译后文字计算），说明改为按钮内的 i 图标；日志、设置、趋势页内容从 y=124 开始。
+  4. 同名分组复用：`SidebarGroups.InstructionHead` 第 2 条换成 macOS 原文；`english.strings` 删除旧的“多个就跳过”词条，两端共用新词条。
+  5. 预填时同时复制：在预填链接交给目标账号时（`Launch`／托盘转交的 `Activate`）把指令写入剪贴板（`ClipboardWriter` 可注入），完成窗口加提示；复制失败只记诊断日志。
+- 交接里漏掉、一并处理的：
+  - 教程配图：macOS 1.8.2（`6c769f1`）更新了项目页和趋势页的教程图，Windows 的 `assets/tutorial/guide-projects.*.jpg`、`guide-trend.*.jpg` 还是旧布局。已用 `UiPreview.exe --guide` 从演示数据重新生成（实例页配图未变，未替换）。
+  - 趋势页错位：Windows 趋势页内容比窗口矮时被 ScrollViewer 居中，标题和建议条比其他页低约 35 px、右移 10 px，标题也是 24 号。改为靠左上、32 号标题，与其他页对齐。
+  - 英文占位符：Windows 的翻译匹配不认 `%.0f` 和 `%%`（且转义后才替换占位符，`%.0f` 的点被转义），所以用量提醒等带百分号的文本没有英文。已修，提醒的英文有测试。
+  - 删除了只被已删说明文字使用、两端都不再引用的 45 条英文词条（macOS 1.8.2 删掉的说明也在内）。
+  - SPEC 里过时的“界面语言 Windows 待实现”（两处）改为已实现；设置页布局描述同步。
+- 新发现的问题（顺带修复，请留意）：本机这次的 `build.ps1` 在原 dev（`bf41fec`，未改动）上也失败于 SessionSyncTests “a link inside the project resolves outside”。原因：当前终端从 Claude 桌面版启动，继承了进程缓解策略 `EnforceRedirectionTrust`（实测 flags=0x1），系统拒绝穿过用户建的目录链接（`CreateFile` 返回 448）；`SessionSync.Real` 打不开就退回上级目录按字面判断，于是把项目内指向项目外的链接算成项目内。已改为：存在却解析不了（错误码不是 2／3）时返回 null，按项目外处理；`Within(null)` 返回 null。从资源管理器启动的启动器通常没有这个策略，行为不变。
+- 验证（本机，本终端带上述策略）：`build.ps1` 通过——LauncherTests 452、SyncTests 175、SessionSyncTests 371、TutorialTests 80、自检 264；`-Preview` 离屏渲染四个页面，人工看过中文项目、趋势、日志、设置（常规）页和英文项目页截图。新增测试：提醒文本不含切换、不推荐低用量账号、卡片无切换按钮、提醒英文；`Runs` 分段（5 小时线超过 5 小时的空档断开、回落断开、周线 13 小时空档不断、超过 7 天断开、起点前的点跳过）与图上折线条数；指令含“不要再建同名分组”“排在最前的那个”、不含“有多个就跳过”及英文对应；完成窗口含剪贴板提示、预填启动时复制、复制失败仍启动、普通启动不复制；项目页四个按钮同一行且相邻、i 图标在按钮内、各页不再出现已删说明、数据目录路径保留、趋势页靠上对齐到 y=124。
+- 未验证：
+  - SessionSyncTests 的“同一目录经两条路径出现算一个”（junction 去重）在本终端被策略阻断，输出 SKIP 未运行；需要在普通终端（不从 Claude 桌面版启动）跑一次 `build.ps1` 确认。尝试用 WMI 脱离父进程运行被权限拒绝，未再尝试。
+  - 安装后的真实窗口：点击 i 图标弹出说明、项目页按钮点击、英文界面实际宽度、高 DPI。
+  - 真实账号：用量提醒触发、冷启动“打开并建分组”后剪贴板内容和粘贴、同名分组复用由官方 Claude 执行的效果（指令文字与 macOS 相同，macOS 已用真实账号测过冷启动丢 `q`）。
+  - macOS 只改了 `SessionSync.m` 的注释和 `english.strings`（删除未用词条），未在 macOS 上构建。
+- 发布：用户 2026-11-06 要求推送并发布。已发布为 `windows-v1.9.2`（Latest），目标 `9602b56`（dev 与 main 同一提交，快进推送），发布说明见 [RELEASE-windows-1.9.2](RELEASE-windows-1.9.2.md)。发布时本机工作区有另一会话未提交的“去掉【分组名】前缀”改动，为不混入，在干净的临时 worktree 里把两个提交接到远端 dev（`bfc580e`）之后构建和发布，STATUS 顶部冲突手工合并。`test-install.ps1`（3 个场景）、`publish-release.ps1 -DryRun` 通过；正式发布退出 2（未回滚，自建更新服务返回 502，与前几版相同），草稿附件经 API 逐字节核对通过，GitHub latest/download 两份清单、Setup、DMG 复核 OK。附件 `ClaudeLauncherSetup-1.9.2.exe` 8324312 字节，SHA-256 `cd0dbedfbb6154cf9a977d192cfc5c5906e5d0dbb1d6557f9117ce72691d170b`；原样带入 macOS 1.8.3 DMG（8959147 字节）与 `latest-macos.json`，未重签。
+
 ## macOS 1.8.3：存储校验硬链接误报、01 配置目录（2026-11-06，已发布）
 
 - 发布（用户 2026-11-06 要求）：`macos-v1.8.3`（目标 dev `bf41fec`，未合并 main），固定证书构建，`scripts/publish-macos.sh --dry-run` 通过后正式运行，草稿 API 核对、转 Latest、latest/download 复核全部通过。DMG `ClaudeLauncher-1.8.3.dmg`，8959147 字节，SHA-256 `972b559ce8e817a41d3f8e954d877a4aec80ae57b33874385523891e61b66841`。Windows 文件沿用 `ClaudeLauncherSetup-1.9.1.exe`，未重签。
