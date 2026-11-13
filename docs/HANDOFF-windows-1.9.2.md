@@ -36,13 +36,6 @@ dev 已合并 Windows 1.9.1（`a32f793`）并推送。下面按 macOS 提交逐�
 - 现状：Windows `FinishSessionSync`（`LauncherUI.cs:958` 附近）只在指令过长、不能预填时才复制。
 - 要求：能预填时也把指令写入剪贴板；完成对话框加一句“指令同时会复制到剪贴板。账号启动较慢时输入框可能是空的，粘贴即可。”复制失败只记日志，不阻止打开。
 
-### 6. 同步会话：压缩边界接不上时退回边界前的消息（2026-11-13）
-
-- 原因：新版自动压缩的 `compact_boundary` 行，`logicalParentUuid` 可能指向没写进 JSONL 的消息。回溯在边界处断开，只剩压缩后的工具调用；如果压缩前只有一条用户消息，就会报“来源会话没有可同步的对话文字”（真实案例：账号 03 一条压缩后跑到限额的会话）。
-- 现状：Windows `SessionSync.cs` `Clean` 的回溯循环（`at.Parent ?? at.Logical`）有同样问题。
-- 要求：当前行是 `type=system`、`subtype=compact_boundary` 且父 ID 在 `byId` 里找不到时，取 `rows` 中该行之前最近的一条 `user`／`assistant` 行继续回溯。参考 `src/SessionSync.m` `CleanSession` 回溯循环。`Row` 需要加 `Subtype` 字段。
-- 测试：构造“首条用户消息 → 助手 → compact_boundary（logicalParentUuid 指向不存在的 ID）→ 压缩摘要 → 工具调用 → 工具结果”的 JSONL，修复前报错，修复后保留首条用户消息。
-
 ## Windows 已有，无需改动
 
 - 存储校验硬链接误报：Windows 1.9.1 已修（`Storage.LinksWithin`，名字都在同一账号目录内即放行）。macOS 这次（`39b19cd`）也修了，范围更窄：只放行全部名字都在本账号 `ClaudeCodeConfig/file-history` 内的硬链接（macOS 无法列出文件的全部名字）。SPEC「存储校验」已合并成一段。
@@ -55,6 +48,6 @@ dev 已合并 Windows 1.9.1（`a32f793`）并推送。下面按 macOS 提交逐�
 
 ## 完成标准
 
-- 以上 1～6 全部实现，`build.ps1` 全部通过（LauncherTests、SyncTests、SessionSyncTests、TutorialTests、自检），新增测试覆盖 1、2、4、5、6。
+- 以上 1～5 全部实现，`build.ps1` 全部通过（LauncherTests、SyncTests、SessionSyncTests、TutorialTests、自检），新增测试覆盖 1、2、4、5。
 - SPEC 对应 `[Windows]` 标注更新，`docs/STATUS.md` 写一节，说明已验证和未验证的内容。
 - 提交到 dev。是否发布 1.9.2、是否推送，先问用户。
