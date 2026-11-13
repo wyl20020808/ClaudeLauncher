@@ -1,6 +1,8 @@
 # 项目状态
 
-## macOS 1.8.4：压缩会话同步、建分组去前缀（2026-11-13）
+## macOS 1.8.4：压缩会话同步、建分组去前缀（2026-11-13，已发布）
+
+- 发布（用户 2026-11-13 要求）：`macos-v1.8.4`（目标 dev `0170be2`，未合并 main），固定证书构建，`scripts/publish-macos.sh --dry-run` 通过后正式运行，草稿 API 核对、转 Latest、latest/download 复核全部通过。DMG `ClaudeLauncher-1.8.4.dmg`，8951518 字节，SHA-256 `9a818ac14fab26338b6ae6c3ddeee0a2aba5ceaa5ab2b4f2bc328fbfc6df6f40`。Windows 文件沿用 `ClaudeLauncherSetup-1.9.4.exe`，未重签。日志：`build/v1.8.4-publish.log`。
 
 - 现象：账号 03 的会话“高清档材料恢复与五官检查”（自动压缩后跑到限额）同步时报“来源会话没有可同步的对话文字”。
 - 原因：压缩边界的 `logicalParentUuid`（`5edd9fc2…`）不在 JSONL 里，回溯在边界断开；压缩后只剩工具调用、工具结果和被跳过的压缩摘要，全会话唯一一条用户消息在压缩前。
