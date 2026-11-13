@@ -1,14 +1,14 @@
-﻿; Claude 多开启动器 Windows 安装程序（Inno Setup 6）。由 scripts/setup.ps1 调用 ISCC 生成。
+; Claude 多开启动器 Windows 安装程序（Inno Setup 6）。由 scripts/setup.ps1 调用 ISCC 生成。
 ; 按当前用户安装到 %LOCALAPPDATA%\Programs，不需要管理员权限。应用内更新下载本 Setup，以
 ; /SILENT /SUPPRESSMSGBOXES /NORESTART /RELAUNCH=1 运行（只显示中文进度窗口），装好后重新打开启动器。
 ; 卸载只删除本程序安装的文件和更新残留；绝不删除任何账号数据目录
 ; （%APPDATA%\Claude-*、%LOCALAPPDATA%\Claude-Data、商店版 Packages 目录）或启动器日志/状态目录。
 
 #ifndef AppVersion
-  #define AppVersion "1.9.3"
+  #define AppVersion "1.9.4"
 #endif
 #ifndef FileVersion
-  #define FileVersion "1.9.3.0"
+  #define FileVersion "1.9.4.0"
 #endif
 #ifndef SourceExe
   #define SourceExe "..\artifacts\bin\ClaudeLauncher.exe"

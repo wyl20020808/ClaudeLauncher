@@ -1,5 +1,11 @@
 # 跨平台行为规格
 
+## [Windows] 1.9.4 配置白名单内的目录联接（2026-11-13）
+
+- 起因：客户机账号 02 的 `ClaudeCodeConfig\skills\` 下 4 个 skill 是目录联接（`mklink /J`，无需开发者模式），指向 `~/.claude/skills\` 同名目录；启动时报“仅支持普通符号链接。”且不带路径。
+- 规则：「配置同步链接例外」位置上的目录联接按符号链接同样判定（目标判定、所有者、内容树检查不变）；联接目标只接受盘符绝对路径，卷挂载点等拒绝。其他存储位置的联接仍拒绝。链接检查出错时提示附上链接路径。
+- [macOS] 不涉及（无 junction）。
+
 ## [Windows] 1.9.3 存储校验硬链接收紧、建分组去前缀（2026-11-08）
 
 本节优先于下方 Windows 旧描述；细则见「存储隔离」下「账号内硬链接例外」「子代理任务输出硬链接例外」两段和「会话同步」下「原生分组」。
@@ -204,7 +210,7 @@ macOS（`src/main.m`）和 Windows（`windows/`）各自原生实现，共同遵
 只检查元数据，从不读取内容。目录及各级上级不得为链接或非目录；以下存储项不得为链接、非本人所有、与账号目录外共用的普通文件硬链接：
 `Cookies`、`Cookies-journal`、`Network`、`Local Storage`、`Session Storage`、`IndexedDB`、`Partitions`、`Local State`、`Preferences`、`config.json`、`Cache`、`Code Cache`、`Service Worker`、`ClaudeCodeConfig`。
 
-配置同步链接例外（2026-10-30，修复链接模式导致 02～10 无法启动）：`ClaudeCodeConfig` 内只有配置同步可放置的条目（顶层 `settings.json`、顶层 `*.md`，`skills`、`agents`、`commands`、`output-styles` 的直接子项，不含点开头的名称）可以是符号链接。链接目标解析后须由当前用户所有（目标不存在时跳过所有者判断），不得是 `~/.claude.json`、启动器数据目录，也不得位于账号数据目录或 `~/.claude` 内的白名单条目之外，不得是这些目录的上级。`ClaudeCodeConfig` 或分类目录本身是链接、其他位置的链接仍判为未通过。只看链接元数据，不打开目标内容。[Windows] 目标判定已按本段实现（`ConfigSync.TargetAllowed`）。差异：Windows 还检查目标内容树（硬链接、所有者、大小上限），目标不存在时判为未通过；只解析一层链接，下一层由内容树检查拒绝身份或凭据文件名。
+配置同步链接例外（2026-10-30，修复链接模式导致 02～10 无法启动）：`ClaudeCodeConfig` 内只有配置同步可放置的条目（顶层 `settings.json`、顶层 `*.md`，`skills`、`agents`、`commands`、`output-styles` 的直接子项，不含点开头的名称）可以是符号链接。链接目标解析后须由当前用户所有（目标不存在时跳过所有者判断），不得是 `~/.claude.json`、启动器数据目录，也不得位于账号数据目录或 `~/.claude` 内的白名单条目之外，不得是这些目录的上级。`ClaudeCodeConfig` 或分类目录本身是链接、其他位置的链接仍判为未通过。只看链接元数据，不打开目标内容。[Windows] 目标判定已按本段实现（`ConfigSync.TargetAllowed`）。差异：Windows 还检查目标内容树（硬链接、所有者、大小上限），目标不存在时判为未通过；只解析一层链接，下一层由内容树检查拒绝身份或凭据文件名。[Windows] 同一位置的目录联接（junction，`mklink /J`，无需开发者模式；2026-11-13 客户机 02 的 skills 由此安装）按符号链接同样判定，只接受盘符绝对路径，卷挂载点拒绝；未通过时提示带出链接路径。
 
 账号内硬链接例外（2026-11-06 引入，2026-11-08 收紧）：Claude Code 的 `file-history` 会在会话续接／分叉时把检查点备份硬链接到新会话目录（此前本机实测 695 个文件中 178 个，全部在同一 `file-history` 内）。[Windows] 用 `FindFirstFileNameW`／`FindNextFileNameW` 列出全部名字；账号内的每个名字只能位于本账号 `ClaudeCodeConfig/file-history/` 下，或符合 `ClaudeCodeConfig/projects/<一层项目目录>/<UUID>.jsonl`、`ClaudeCodeConfig/projects/<一层项目目录>/<UUID>/subagents/agent-<字母数字代理 ID>.jsonl`。不再放行任意“全部名字在账号内”的硬链接：`Preferences`、`Network/Cookies`、`.claude.json`、`settings.json`、缓存或其他位置的名字混入，一律整体拒绝，防止敏感数据借用会话豁免；单链接文件的检查不因此扩大。每个别名都检查目录链、文件类型、所有者及卷序列号／文件 ID；只读元数据，不打开内容。[macOS] 当前代码保持原样，只统计本账号 `ClaudeCodeConfig/file-history` 内各 `(st_dev, st_ino)` 的目录项数量，等于 `st_nlink` 才放行；尚未实现 Windows 的会话记录范围。
 

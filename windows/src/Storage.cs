@@ -208,7 +208,10 @@ namespace ClaudeLauncher {
                 FileAttributes? attributes = Attributes(path);
                 if (attributes == null) continue;
                 if ((attributes.Value & FileAttributes.ReparsePoint) != 0) {
-                    if (ConfigSync.SharedLinkAllowed(root, shown)) continue;
+                    bool shared;
+                    try { shared = ConfigSync.SharedLinkAllowed(root, shown); }
+                    catch (IOException error) { throw new IOException(error.Message.TrimEnd('。') + "：" + shown, error); }
+                    if (shared) continue;
                     throw new IOException("存储项含链接或重定向，已停止：" + shown);
                 }
                 bool directory = (attributes.Value & FileAttributes.Directory) != 0;
@@ -365,6 +368,18 @@ namespace ClaudeLauncher {
                 Junction(code, target);
                 Rejects(() => Storage.Validate(2, roaming, local), "深层 Code 存储链接必须拒绝");
                 Directory.Delete(code);
+                Storage.Validate(2, roaming, local);
+                // 白名单内的 skills 目录联接（mklink /J 安装的 skill）放行；指向受保护目录上级的仍拒绝，报错带路径
+                string skill = Path.Combine(Core.CodeConfig(folder), @"skills\shared");
+                Directory.CreateDirectory(Path.GetDirectoryName(skill));
+                Junction(skill, target);
+                Check(ConfigSync.LinkTarget(skill) == target, "目录联接目标解析错误");
+                Storage.Validate(2, roaming, local);
+                Directory.Delete(skill);
+                Junction(skill, Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
+                try { Storage.Validate(2, roaming, local); Check(false, "指向用户目录（~/.claude 上级）的联接必须拒绝"); }
+                catch (IOException error) { Check(error.Message.Contains(@"skills\shared"), "联接拒绝提示缺少路径"); }
+                Directory.Delete(skill);
                 Storage.Validate(2, roaming, local);
                 // 长路径（超过 260 字符，Claude 缓存常见）：正常文件通过，深层硬链接仍拒绝
                 string longDir = Path.Combine(folder, "Cache", new string('d', 120), new string('e', 120), new string('f', 120));

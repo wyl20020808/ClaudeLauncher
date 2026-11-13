@@ -1,5 +1,13 @@
 # 项目状态
 
+## Windows 1.9.4：skills 目录联接放行（2026-11-13）
+
+- 现象：账号 02 自行退出后再启动，弹“账号存储隔离检查未通过：仅支持普通符号链接。”，不带路径。启动器只有用户点“关闭”才调 `CloseMainWindow`，当天启动器日志无关闭记录，退出不是启动器触发的（原因未查，未读 Claude 日志）。
+- 原因（只读元数据）：`Claude-Second\ClaudeCodeConfig\skills\` 下 `caveman`、`karpathy-guidelines`、`moonshot-prompt`、`ponytail` 是 10:05 建的目录联接（tag `0xA0000003`），指向 `~/.claude/skills\` 同名目录；不是启动器建的（配置同步只建符号链接）。`ConfigSync.LinkTarget` 只认符号链接 tag，直接抛错，`Storage.Check` 也没带路径。
+- 修复：`LinkTarget` 同时解析目录联接（路径区偏移 16，只接受盘符绝对路径，拒绝卷挂载点），之后走原有白名单、目标判定和内容树检查；`Storage.Check` 把链接检查异常补上路径。SPEC「配置同步链接例外」同步。
+- 验证：`build.ps1 -OutputDirectory build/junction-fix` 通过：LauncherTests 452、SyncTests 175、SessionSyncTests 373、TutorialTests 80、自检 330（新增：白名单 skills 联接放行、目标解析、指向用户目录的联接拒绝且提示含路径）。新程序对真实 4 个联接调用 `SharedLinkAllowed` 均为 True（只读）。日志：`build/junction-fix-build.log`。
+- 未验证：新程序对真实 `Claude-Second` 的完整 `Storage.Validate` 在本终端停在 `subagents\agent-*.jsonl` 硬链接名枚举——本终端处于 Claude MSIX 容器内，`AppData\Roaming` 下任何文件 `FindFirstFileNameW` 都返回 50（`Temp`、`Documents` 正常），与本次改动无关；经 WMI 在容器外运行被拒绝访问。真实 GUI 启动未测；未改版本号、未发布。
+
 ## Windows 1.9.3：子代理任务输出硬链接及隔离收紧（2026-11-07；2026-11-08 发布）
 
 - 现象：打开账号 02 弹“账号存储隔离检查未通过：存储项与账号目录外的文件共用硬链接，已停止：…\Claude-Second\ClaudeCodeConfig\projects\D--shijing-wanxiang\<会话 ID>\subagents\agent-afa6c355ac2b14d0b.jsonl”。1.9.1 只放行“全部名字在账号目录内”的硬链接（file-history），这是另一种来源。
