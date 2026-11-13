@@ -6,7 +6,8 @@
 - 原因（只读元数据）：`Claude-Second\ClaudeCodeConfig\skills\` 下 `caveman`、`karpathy-guidelines`、`moonshot-prompt`、`ponytail` 是 10:05 建的目录联接（tag `0xA0000003`），指向 `~/.claude/skills\` 同名目录；不是启动器建的（配置同步只建符号链接）。`ConfigSync.LinkTarget` 只认符号链接 tag，直接抛错，`Storage.Check` 也没带路径。
 - 修复：`LinkTarget` 同时解析目录联接（路径区偏移 16，只接受盘符绝对路径，拒绝卷挂载点），之后走原有白名单、目标判定和内容树检查；`Storage.Check` 把链接检查异常补上路径。SPEC「配置同步链接例外」同步。
 - 验证：`build.ps1 -OutputDirectory build/junction-fix` 通过：LauncherTests 452、SyncTests 175、SessionSyncTests 373、TutorialTests 80、自检 330（新增：白名单 skills 联接放行、目标解析、指向用户目录的联接拒绝且提示含路径）。新程序对真实 4 个联接调用 `SharedLinkAllowed` 均为 True（只读）。日志：`build/junction-fix-build.log`。
-- 未验证：新程序对真实 `Claude-Second` 的完整 `Storage.Validate` 在本终端停在 `subagents\agent-*.jsonl` 硬链接名枚举——本终端处于 Claude MSIX 容器内，`AppData\Roaming` 下任何文件 `FindFirstFileNameW` 都返回 50（`Temp`、`Documents` 正常），与本次改动无关；经 WMI 在容器外运行被拒绝访问。真实 GUI 启动未测；未改版本号、未发布。
+- 未验证：新程序对真实 `Claude-Second` 的完整 `Storage.Validate` 在本终端停在 `subagents\agent-*.jsonl` 硬链接名枚举——本终端处于 Claude MSIX 容器内，`AppData\Roaming` 下任何文件 `FindFirstFileNameW` 都返回 50（`Temp`、`Documents` 正常），与本次改动无关；经 WMI 在容器外运行被拒绝访问。真实 GUI 启动未测。
+- 发布：用户 2026-11-13 要求提交并发布，版本 1.9.4，发布说明见 [RELEASE-windows-1.9.4](RELEASE-windows-1.9.4.md)。改版本号后完整 `build.ps1` 结果同上（自检 330），`test-install.ps1`（3 个场景）、`publish-release.ps1 -DryRun` 通过。dev 与 main 同为 `ec9672c`（main 快进推送）。已发布为 `windows-v1.9.4`（Latest）：草稿附件经 API 核对通过，GitHub latest/download 两份清单、Setup、DMG 复核 OK；脚本退出 2（未回滚，自建更新服务连接被关闭，与前几版相同）。附件 `ClaudeLauncherSetup-1.9.4.exe` 8328515 字节，SHA-256 `a712107d2fc9bc32ff5dddc913f73f9c4cffe64e63e1dba5395568bc44b6d656`；原样带入 macOS 1.8.3 DMG（8959147 字节）与 `latest-macos.json`，未重签。日志：`build/v1.9.4-*.log`。
 
 ## Windows 1.9.3：子代理任务输出硬链接及隔离收紧（2026-11-07；2026-11-08 发布）
 
