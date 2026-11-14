@@ -1215,7 +1215,7 @@ static NSAttributedString *TutorialDocumentText(NSString *markdown, CGFloat imag
 @property NSView *projectRowsView;
 @property NSTextField *projectFooter, *projectFeedback;
 @property NSButton *addProjectButton, *importProjectsButton, *syncSessionButton;
-@property BOOL discoveringProjects, syncingSessions, offeringInitialSync;
+@property BOOL discoveringProjects, syncingSessions, offeringInitialSync, offeringUpdateQuit;
 @property NSPanel *syncProgressPanel;
 @property NSProgressIndicator *syncProgressBar;
 @property NSTextField *syncProgressLabel;
@@ -1246,6 +1246,10 @@ static NSAttributedString *TutorialDocumentText(NSString *markdown, CGFloat imag
 @property NSMutableSet<NSNumber *> *storageRiskAccepted;
 // Only retain this launcher's successful launches; never infer configuration from a directory or read process environments.
 @property NSMutableDictionary<NSNumber *, NSRunningApplication *> *configuredApps;
+// Official-update quits (see UpdateQuits): Claude version seen while running and at the quit, launcher-asked closes, pending offers.
+@property NSMutableDictionary<NSNumber *, NSString *> *runningVersions, *quitVersions;
+@property NSMutableSet<NSNumber *> *closeRequested;
+@property NSMutableDictionary<NSNumber *, NSArray *> *updateQuits;
 @property NSMutableDictionary<NSNumber *, NSString *> *errors;
 @property NSDictionary<NSNumber *, NSArray<NSNumber *> *> *processes;
 @property NSString *scanError;
@@ -1288,6 +1292,7 @@ static NSAttributedString *TutorialDocumentText(NSString *markdown, CGFloat imag
         self.starting = [NSMutableDictionary dictionary]; self.errors = [NSMutableDictionary dictionary];
         self.pendingLaunches = [NSMutableSet set];
         self.checking = [NSMutableSet set]; self.environmentConfirmed = [NSMutableSet set]; self.storageRiskAccepted = [NSMutableSet set]; self.configuredApps = [NSMutableDictionary dictionary];
+        self.runningVersions = [NSMutableDictionary dictionary]; self.quitVersions = [NSMutableDictionary dictionary]; self.closeRequested = [NSMutableSet set]; self.updateQuits = [NSMutableDictionary dictionary];
     }
     return self;
 }
@@ -1693,6 +1698,67 @@ static NSAttributedString *TutorialDocumentText(NSString *markdown, CGFloat imag
 // Claude Code config folder per account: 01 uses the default ~/.claude, 02-10 their own CLAUDE_CONFIG_DIR.
 static NSString *CodeConfigFolder(NSInteger n) { return n == 1 ? [NSHomeDirectory() stringByAppendingPathComponent:@".claude"] : CodeConfigPath(n); }
 - (void)syncSession:(id)sender { [self loadSessionsToSync:0]; }
+// The official Claude.app the launcher starts; nil when neither standard location has it.
+static NSString *ClaudeBundlePath(void) {
+    for (NSString *path in @[@"/Applications/Claude.app", [NSHomeDirectory() stringByAppendingPathComponent:@"Applications/Claude.app"]])
+        if ([NSFileManager.defaultManager isExecutableFileAtPath:[path stringByAppendingPathComponent:@"Contents/MacOS/Claude"]]) return path;
+    return nil;
+}
+// Read from disk each time (NSBundle caches Info.plist); nil while an update is swapping the bundle.
+static NSString *ClaudeVersion(void) {
+    NSString *path = ClaudeBundlePath();
+    NSDictionary *info = path ? [NSDictionary dictionaryWithContentsOfURL:[NSURL fileURLWithPath:[path stringByAppendingPathComponent:@"Contents/Info.plist"]] error:nil] : nil;
+    id version = info[@"CFBundleShortVersionString"];
+    return [version isKindOfClass:NSString.class] && [version length] ? version : nil;
+}
+// Claude's idle update ("stealth update") quits each idle instance in turn (no running task, window not in front, about 10
+// minutes), and the update relaunches only the default profile, without --user-data-dir (main.log, 2026-11-13/14). So an
+// account that quit and then saw Claude.app change version gets one reopen offer. Uses the process list and Info.plist only.
+// running: version seen while each account ran (the bundle is swapped only after every instance quits); quit: that version for
+// quits not yet offered; closing: quits this launcher asked for. Returns @[account, old, new] per offer, lowest account first.
+// shortcut: a close the user cancels in Claude stays in closing until that account quits, so that quit is not offered; fine while closes are rare.
+static NSArray<NSArray *> *UpdateQuits(NSMutableDictionary *running, NSMutableDictionary *quit, NSMutableSet *closing, NSSet *alive, NSString *(^version)(void)) {
+    NSString *current = nil; BOOL read = NO;
+    for (NSNumber *key in running.allKeys) if (![alive containsObject:key]) {
+        if (![closing containsObject:key]) quit[key] = running[key];
+        [running removeObjectForKey:key];
+    }
+    [closing intersectSet:alive];
+    for (NSNumber *key in alive) {
+        [quit removeObjectForKey:key];
+        if (!running[key]) { if (!read) { current = version(); read = YES; } if (current) running[key] = current; }
+    }
+    NSMutableArray *offers = [NSMutableArray array];
+    if (!quit.count) return offers;
+    if (!read) current = version();
+    if (!current) return offers;
+    for (NSNumber *key in [quit.allKeys sortedArrayUsingSelector:@selector(compare:)]) if (![quit[key] isEqual:current]) {
+        [offers addObject:@[key,quit[key],current]]; [quit removeObjectForKey:key];
+    }
+    return offers;
+}
+static void TestUpdateQuits(void) {
+    NSMutableDictionary *running = [NSMutableDictionary dictionary], *quit = [NSMutableDictionary dictionary]; NSMutableSet *closing = [NSMutableSet set];
+    __block NSString *disk = @"5.1"; __block NSUInteger reads = 0;
+    NSString *(^version)(void) = ^NSString *{ reads++; return disk; };
+    NSSet *all = [NSSet setWithArray:@[@1,@2,@3]], *none = [NSSet set];
+    NSCAssert(!UpdateQuits(running,quit,closing,all,version).count && [running[@2] isEqual:@"5.1"] && reads == 1,@"running accounts remember the bundle version, read once");
+    reads = 0;
+    NSCAssert(!UpdateQuits(running,quit,closing,all,version).count && reads == 0,@"nothing read while nothing changes");
+    [closing addObject:@3];
+    NSCAssert(!UpdateQuits(running,quit,closing,[NSSet setWithObject:@1],version).count && [quit isEqual:@{@2:@"5.1"}] && !closing.count,@"a quit waits for a version change; the launcher's own close is not recorded");
+    disk = nil;
+    NSCAssert(!UpdateQuits(running,quit,closing,none,version).count && quit.count == 2,@"no offer while the bundle is unreadable");
+    disk = @"5.2";
+    NSArray *offers = UpdateQuits(running,quit,closing,none,version);
+    NSCAssert(([offers isEqual:@[@[@1,@"5.1",@"5.2"],@[@2,@"5.1",@"5.2"]]] && !quit.count),@"each quit before the update is offered once, lowest first");
+    NSCAssert(!UpdateQuits(running,quit,closing,none,version).count,@"asked once");
+    UpdateQuits(running,quit,closing,[NSSet setWithObject:@2],version);
+    NSCAssert(!UpdateQuits(running,quit,closing,none,version).count && [quit isEqual:@{@2:@"5.2"}],@"a quit on the current version waits");
+    UpdateQuits(running,quit,closing,[NSSet setWithObject:@2],version);
+    NSCAssert(!quit.count,@"an account that is running again is not offered");
+    puts("PASS: official-update quits are offered once after Claude.app changes version; launcher closes and an unreadable bundle are skipped");
+}
 static NSString *const InitialSyncKey = @"initialSyncAccounts";
 static NSString *const SessionLinksKey = @"sessionSyncLinks";
 // First pending account that can be offered now; 0 if none. Deleted or invalid accounts are reported so they stop waiting.
@@ -1784,6 +1850,29 @@ static void TestInitialSync(void) {
     NSString *failure = SessionSyncGuard(account);
     if (failure) { [self alert:L(@"暂时不能同步") detail:failure]; return; }
     [self loadSessionsToSync:account];
+}
+// Asks while the launcher is in front and idle, one account at a time; reopening is the user's click through the normal launch checks.
+- (void)offerUpdateQuitIfReady {
+    if (!self.updateQuits.count || self.snapshotMode || self.offeringUpdateQuit || self.scanError || self.loginAccount || self.starting.count || self.checking.count ||
+        self.tutorialOverlay || NSApp.modalWindow || self.window.attachedSheet || !NSApp.isActive) return;
+    NSArray *offer = nil;
+    for (NSNumber *key in [self.updateQuits.allKeys sortedArrayUsingSelector:@selector(compare:)]) {
+        if (!self.processes[key].count && [NSFileManager.defaultManager fileExistsAtPath:ProfilePath(key.integerValue)]) { offer = self.updateQuits[key]; break; }
+        [self.updateQuits removeObjectForKey:key]; // Reopened or deleted meanwhile.
+    }
+    if (!offer) return;
+    self.offeringUpdateQuit = YES; // refresh runs inside other flows, so the dialog waits for the next main-queue turn.
+    dispatch_async(dispatch_get_main_queue(), ^{
+        self.offeringUpdateQuit = NO;
+        if (NSApp.modalWindow || self.window.attachedSheet) return; // Still pending; the next refresh asks again.
+        [self.updateQuits removeObjectForKey:offer[0]]; // Asked once.
+        NSInteger account = [offer[0] integerValue];
+        NSAlert *alert = [NSAlert new];
+        alert.messageText = [NSString stringWithFormat:L(@"账号 %02ld 在 Claude 更新后没有回来"),(long)account];
+        alert.informativeText = [NSString stringWithFormat:L(@"Claude 已从 %@ 更新到 %@。窗口空闲约 10 分钟、没有进行中的任务时，官方会自动退出并安装更新，但更新后只重新打开默认的账号 01，其他账号不会自己回来。\n\n如果是你自己退出的，选“不用了”即可。启动器不会自动打开账号。"),offer[1],offer[2]];
+        [alert addButtonWithTitle:[NSString stringWithFormat:L(@"重新打开账号 %02ld"),(long)account]]; [alert addButtonWithTitle:L(@"不用了")];
+        if ([alert runModal] == NSAlertFirstButtonReturn) [self selectAccount:self.buttons[account-1]];
+    });
 }
 // newAccount: 0 for the project page button; otherwise also looks in projects not yet on the shared list, and preselects for that target.
 - (void)loadSessionsToSync:(NSInteger)newAccount {
@@ -2987,7 +3076,7 @@ static NSString *SupportSummary(NSDictionary *result) {
     NSApp.mainMenu = menu;
 }
 - (void)show:(id)sender { [self.window deminiaturize:nil]; [self.window makeKeyAndOrderFront:nil]; [NSApp activateIgnoringOtherApps:YES]; [self readLocalUsage]; }
-- (void)applicationDidBecomeActive:(NSNotification *)note { [self readLocalUsage]; [self offerInitialSyncIfReady]; }
+- (void)applicationDidBecomeActive:(NSNotification *)note { [self readLocalUsage]; [self offerInitialSyncIfReady]; [self offerUpdateQuitIfReady]; }
 - (void)windowDidBecomeKey:(NSNotification *)note { if (note.object == self.window) [self readLocalUsage]; }
 - (BOOL)canObserveUsage {
     if (![self.settings[@"showUsageHistory"] boolValue] || self.snapshotMode || self.loginAccount || self.scanError || !self.processes) return NO;
@@ -3288,6 +3377,15 @@ static OSStatus HotKeyHandler(EventHandlerCallRef next, EventRef event, void *co
     if (failure) self.message.stringValue = failure;
     else if (self.loginAccount) self.message.stringValue = [NSString stringWithFormat:L(@"账号 %02ld 登录保护中。%@"),(long)self.loginAccount,LoginConflict(snapshot,self.loginAccount) ? L(@"检测到其他 Claude！请停止登录，并正常退出其他实例。") : L(@"完成登录并核对身份后，点「结束登录保护」恢复多开。")];
     self.accessibilityStatus.stringValue = AXIsProcessTrusted() ? L(@"已授权：可恢复 Claude 窗口、只读界面用量。") : L(@"未授权：无法恢复窗口或读取界面用量，不自动更改权限。");
+    if (!failure && !self.snapshotMode) {
+        NSMutableSet *alive = [NSMutableSet set];
+        for (NSInteger n = 1; n <= 10; n++) if (self.processes[@(n)].count) [alive addObject:@(n)];
+        for (NSArray *offer in UpdateQuits(self.runningVersions,self.quitVersions,self.closeRequested,alive,^NSString *{ return ClaudeVersion(); })) {
+            self.updateQuits[offer[0]] = offer;
+            NSString *quitText = [NSString stringWithFormat:L(@"账号 %02ld 已退出，之后 Claude 从 %@ 更新到 %@。官方更新后只会重新打开账号 01，可在此重新打开。"),(long)[offer[0] integerValue],offer[1],offer[2]];
+            self.message.stringValue = quitText; [self addLog:quitText]; self.lastLogged = quitText; [self showLocalNotice:quitText];
+        }
+    }
     NSString *text = self.message.stringValue;
     if (text.length && ![text isEqual:self.lastLogged]) {
         self.lastLogged = text; [self addLog:text];
@@ -3297,6 +3395,7 @@ static OSStatus HotKeyHandler(EventHandlerCallRef next, EventRef event, void *co
     [self updateUsageCards];
     [self.tutorialOverlay relayout]; // An account appearing or quitting moves the cards under the highlight.
     [self offerInitialSyncIfReady];
+    [self offerUpdateQuitIfReady];
 }
 // Launcher-owned metadata: when this launcher last started or switched to an account. Never read from Claude data.
 - (void)markUsed:(NSInteger)account {
@@ -3544,6 +3643,7 @@ NSString *CloseAccountBlocker(NSArray *expected, NSArray *pids, BOOL busy, BOOL 
     NSRunningApplication *app = failure ? nil : [NSRunningApplication runningApplicationWithProcessIdentifier:[item.representedObject[0] intValue]];
     if (!failure && (!app || ![app terminate])) failure = L(@"系统没有接受退出请求，请在该 Claude 的菜单中选择退出。");
     if (failure) { self.message.stringValue = [NSString stringWithFormat:L(@"账号 %02ld：%@"),(long)n,failure]; return; }
+    [self.closeRequested addObject:key]; // Not an update quit; no reopen offer.
     self.message.stringValue = [NSString stringWithFormat:L(@"账号 %02ld 已请求退出；Claude 可能会先询问是否保存或确认。"),(long)n]; // Logged by the next refresh.
 }
 - (void)deleteProfile:(NSMenuItem *)item {
@@ -3721,10 +3821,7 @@ NSString *CloseAccountBlocker(NSArray *expected, NSArray *pids, BOOL busy, BOOL 
     NSArray *pids = self.processes[key];
     [self.errors removeObjectForKey:key];
     if (pids.count == 1) { [self activatePID:[pids.firstObject intValue] account:account prepare:prepare]; return; }
-    NSString *bundlePath = nil;
-    for (NSString *path in @[@"/Applications/Claude.app", [NSHomeDirectory() stringByAppendingPathComponent:@"Applications/Claude.app"]]) {
-        if ([NSFileManager.defaultManager isExecutableFileAtPath:[path stringByAppendingPathComponent:@"Contents/MacOS/Claude"]]) { bundlePath = path; break; }
-    }
+    NSString *bundlePath = ClaudeBundlePath();
     if (!bundlePath) { [self alert:L(@"未找到官方 Claude.app") detail:L(@"请将官方 Claude.app 安装到 /Applications 或 ~/Applications 后重试。")] ; return; }
     if (!environmentConfirmed) { // Every new launch shows the local proxy check; state is re-validated after confirmation.
         [self confirmEnvironment:account completion:^{
@@ -3983,6 +4080,7 @@ static int SelfTest(void) {
         TestUsageTrend();
         TestTutorial();
         TestInitialSync();
+        TestUpdateQuits();
         NSCAssert(SuggestedAccount(@[@[@1,@85],@[@2,@12],@[@3,NSNull.null],@[@4,@40]],1,80) == 2,@"lowest observed account suggested");
         NSCAssert(SuggestedAccount(@[@[@1,@85],@[@2,@92],@[@3,NSNull.null]],1,80) == 0 && SuggestedAccount(@[@[@1,@5]],1,80) == 0,@"no suggestion above threshold, unobserved or self");
         NSCAssert(AccountForArguments(@[@"Claude"]) == 1, @"default");

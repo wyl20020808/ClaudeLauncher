@@ -836,6 +836,11 @@
 "要把其他账号的项目和会话同步过来吗？默认勾选全部原始会话，之前同步过的副本不勾选；可以调整，写入前还会预览。\n\n写入的是清理副本：只保留对话文字和工具请求说明。\n\n选“以后再说”不再提示，之后可以在项目页点“同步会话…”。" = "Sync projects and sessions from your other accounts? All original sessions start ticked; copies from earlier syncs do not. You can adjust this, and you will see a preview before anything is written.\n\nWhat gets written is a cleaned copy: conversation text and tool request notes only.\n\nIf you choose Later, this will not ask again. You can still use Sync Session… on the Projects page.";
 "选择并同步…" = "Choose and Sync…";
 "以后再说" = "Later";
+"账号 %02ld 已退出，之后 Claude 从 %@ 更新到 %@。官方更新后只会重新打开账号 01，可在此重新打开。" = "Account %02ld quit, and Claude has since updated from %@ to %@. The official update reopens only account 01; you can reopen this one here.";
+"账号 %02ld 在 Claude 更新后没有回来" = "Account %02ld Did Not Come Back After the Claude Update";
+"Claude 已从 %@ 更新到 %@。窗口空闲约 10 分钟、没有进行中的任务时，官方会自动退出并安装更新，但更新后只重新打开默认的账号 01，其他账号不会自己回来。\n\n如果是你自己退出的，选“不用了”即可。启动器不会自动打开账号。" = "Claude has updated from %@ to %@. When its window has been idle for about 10 minutes with no task running, Claude quits on its own to install an update, but afterwards it reopens only the default account 01; other accounts do not come back by themselves.\n\nIf you quit this account yourself, choose No Thanks. The launcher never opens accounts on its own.";
+"重新打开账号 %02ld" = "Reopen Account %02ld";
+"不用了" = "No Thanks";
 "暂时不能同步" = "Cannot Sync Right Now";
 "目标账号还没有可用的本地记录目录。请先在该账号正常创建一次本地会话。" = "The target account has no usable local record folder yet. Create a local session in that account first.";
 "目标账号有多套账号／组织记录，要读到它当前的组织才能确定写入位置，但这次没有读到（%@）。如果刚才拒绝了钥匙串提示，请重新打开启动器再试。" = "The target account has records for several accounts or organizations. Its current organization decides where to write, but it could not be read (%@). If you just denied the keychain prompt, reopen the launcher and try again.";

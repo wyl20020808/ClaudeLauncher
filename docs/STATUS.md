@@ -1,5 +1,13 @@
 # 项目状态
 
+## macOS 1.8.5：官方静默更新后的重开提示（2026-11-14）
+
+- 现象（客户反馈，本机也有）：三开挂着不动时，其中一个 Claude 会“自己关掉”。
+- 原因（本机只读 `~/Library/Logs/Claude/main*.log`、崩溃报告和官方 `app.asar`）：官方静默更新。更新下载好后，实例空闲约 10 分钟（源码 `Cos=6e5`；无进行中任务、窗口不在前台且非全屏）就记 `[stealth-update] Triggering stealth update after idle timeout`，正常退出并调用 `autoUpdater.quitAndInstall()`。各实例分别计时，逐个退出；最后一个退出后只重启一次，而且不带 `--user-data-dir`，只有 01 回来。11-13：06:31:36、06:43:22、07:02:46 先后退出，07:02:53 只拉起 01，02、03 到 10:07 才手动重开；11-14：08:17:01、08:36:22、08:36:34 先后退出，08:36:41 拉起的是无参数的实例（01），03 直到检查时都没运行。11 天里官方推了 8 次更新，静默退出 14 次；所有退出记录都是 `completed: true`。已排除：启动器（只有“关闭”菜单会请求退出，日志 2 次都是手动）、真崩溃（没有 `.ips`，`.diag` 都是 `disk writes`、`Action taken: none`）、内存被杀（没有 Jetsam 报告）。
+- 修改：`UpdateQuits` 用进程列表和官方 `Info.plist` 版本判断“退出后官方版本变了”的账号；`refresh` 记日志并显示窗口内提示，`offerUpdateQuitIfReady` 在启动器处于前台且空闲时逐个询问一次，点“重新打开”走普通启动流程。启动器“关闭”请求的那次退出不提示。`ClaudeBundlePath` 由原启动代码提出共用。SPEC「启动与激活」、使用说明、英文词典已同步。
+- 验证：`scripts/build.sh build/update-quit` 通过，全部自检通过（新增 `TestUpdateQuits`：只读一次版本、关闭请求不计入、版本不可读时不询问、按账号顺序各问一次、在当前版本退出的不问、重新运行后撤销），无编译警告；`arch -x86_64 … --self-test` 也通过。
+- 未验证：真实官方更新下的 GUI 提示和重新打开（要等下一次官方更新）、英文界面截图；Windows 未实现，也没实测官方更新在 Windows 上的行为。
+
 ## macOS 1.8.4：压缩会话同步、建分组去前缀（2026-11-13，已发布）
 
 - 发布（用户 2026-11-13 要求）：`macos-v1.8.4`（目标 dev `0170be2`，未合并 main），固定证书构建，`scripts/publish-macos.sh --dry-run` 通过后正式运行，草稿 API 核对、转 Latest、latest/download 复核全部通过。DMG `ClaudeLauncher-1.8.4.dmg`，8951518 字节，SHA-256 `9a818ac14fab26338b6ae6c3ddeee0a2aba5ceaa5ab2b4f2bc328fbfc6df6f40`。Windows 文件沿用 `ClaudeLauncherSetup-1.9.4.exe`，未重签。日志：`build/v1.8.4-publish.log`。
