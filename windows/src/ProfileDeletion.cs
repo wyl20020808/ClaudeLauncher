@@ -41,12 +41,12 @@ namespace ClaudeLauncher {
             }
             if (!Exists(full)) return;
             // 账号内容常有超过 260 字符的缓存路径，遍历用扩展长度前缀。
+            // 内部链接（如配置同步的共享链接）不跟随：回收站只移走链接本身，链接指向的内容不动。
             var directories = new Stack<string>(); directories.Push(Storage.Extended(full));
             while (directories.Count > 0) {
                 foreach (string entry in Directory.EnumerateFileSystemEntries(directories.Pop())) {
                     FileAttributes attributes = File.GetAttributes(entry);
-                    if ((attributes & FileAttributes.ReparsePoint) != 0) throw new IOException("账号内容含链接，未删除任何尚未处理的目录：" + Storage.Display(entry));
-                    if ((attributes & FileAttributes.Directory) != 0) directories.Push(entry);
+                    if ((attributes & (FileAttributes.Directory | FileAttributes.ReparsePoint)) == FileAttributes.Directory) directories.Push(entry);
                 }
             }
         }

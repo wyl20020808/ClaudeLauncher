@@ -59,11 +59,7 @@ public static class DeletionTests {
                 process.WaitForExit();
                 check(process.ExitCode == 0, "Could not create junction test fixture");
             }
-            try {
-                rejected = false;
-                try { ProfileDeletion.Prepare(3, roaming, local); } catch (IOException) { rejected = true; }
-                check(rejected && File.Exists(Path.Combine(neighbour, "keep.txt")), "Junction must block deletion");
-            } finally { Directory.Delete(link, false); }
+            check(ProfileDeletion.Prepare(3, roaming, local).SequenceEqual(approved), "Junction inside profile must not block deletion");
 
             calls = 0; rejected = false;
             try {
