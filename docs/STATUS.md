@@ -5,7 +5,8 @@
 - 现象：删除账号 02 报“账号内容含链接，未删除任何尚未处理的目录：…\Claude-Second\ClaudeCodeConfig\skills\caveman”（即 1.9.4 记录的 skills 目录联接）。
 - 修复：`ProfileDeletion.ValidateTarget` 遍历账号内容时，链接不再报错，也不进入；整个目录照旧用 Shell `IFileOperation` 移入回收站，链接本身随之移走，目标不动。账号根目录及上级是链接仍拒绝。SPEC「删除账号」同步。
 - 验证：`build.ps1` 通过：LauncherTests 452、SyncTests 175、SessionSyncTests 373、TutorialTests 80、自检 330；删除测试原“联接阻止删除”改为“联接不阻止删除”，并在其后真实移入回收站、核对联接指向的另一临时账号文件不变。
-- 未验证：真实 GUI 删除；未打安装包、未发布。
+- 未验证：真实 GUI 删除。
+- 发布：用户 2026-11-16 要求提交并发布，版本 1.9.5，发布说明见 [RELEASE-windows-1.9.5](RELEASE-windows-1.9.5.md)。先变基到远端 macOS 1.8.4／1.8.5 之后（`2cd35f8`），`test-install.ps1`（3 个场景）、`publish-release.ps1 -DryRun` 通过；中途 gh 令牌失效，用户重新登录后继续。main 快进到 `2cd35f8` 并推送（一并带上 macOS 1.8.4／1.8.5 提交）。已发布为 `windows-v1.9.5`（Latest）：草稿附件经 API 核对通过，GitHub latest/download 两份清单、Setup、DMG 复核 OK；脚本退出 2（未回滚，自建更新服务连接被关闭，与前几版相同）。附件 `ClaudeLauncherSetup-1.9.5.exe` 8328944 字节，SHA-256 `c5d35af2476c063422fa57939aa47559c131d18e5b0659e1bd2c7d067ab381eb`；原样带入 macOS 1.8.5 DMG 与 `latest-macos.json`，未重签。日志：`build/v1.9.5-*.log`。HANDOFF-windows-1.9.5 的两项（压缩边界回溯、静默更新重开提示）不在本版，仍待做。
 
 ## macOS 1.8.5：官方静默更新后的重开提示（2026-11-14，已发布）
 
