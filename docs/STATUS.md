@@ -1,6 +1,8 @@
 # 项目状态
 
-## macOS 1.8.6：最近会话页取代用量趋势页（2026-11-16，两端；macOS 已发布，Windows 未编译）  - 发布（用户 2026-11-17 要求）：`macos-v1.8.6`（目标 dev `f77ae1b`，未合并 main），版本号 1.8.6（build 37），发布说明见 [RELEASE-macos-1.8.6](RELEASE-macos-1.8.6.md)。提交前变基到远端 Windows 1.9.5（`18b272f`）之后，STATUS 与使用说明冲突两边都保留。固定证书构建，arm64／x86_64 `--self-test` 与 `--ui-self-test` 通过，`scripts/publish-macos.sh --dry-run` 通过后正式运行，草稿 API 核对、转 Latest、latest/download 复核全部通过；DMG `ClaudeLauncher-1.8.6.dmg`（9076958 字节，SHA-256 `61166109…ffafff60`），Windows 文件沿用 `ClaudeLauncherSetup-1.9.5.exe`。/Applications 中的安装版需用户自行用新 DMG 更新。
+## macOS 1.8.6：最近会话页取代用量趋势页（2026-11-16，两端；macOS 已发布，Windows 未编译）
+
+- 发布（用户 2026-11-17 要求）：`macos-v1.8.6`（目标 dev `f77ae1b`，未合并 main），版本号 1.8.6（build 37），发布说明见 [RELEASE-macos-1.8.6](RELEASE-macos-1.8.6.md)。提交前变基到远端 Windows 1.9.5（`18b272f`）之后，STATUS 与使用说明冲突两边都保留。固定证书构建，arm64／x86_64 `--self-test` 与 `--ui-self-test` 通过，`scripts/publish-macos.sh --dry-run` 通过后正式运行，草稿 API 核对、转 Latest、latest/download 复核全部通过；DMG `ClaudeLauncher-1.8.6.dmg`（9076958 字节，SHA-256 `61166109…ffafff60`），Windows 文件沿用 `ClaudeLauncherSetup-1.9.5.exe`。/Applications 中的安装版需用户自行用新 DMG 更新。
 
 - 需求（用户 2026-11-16）：侧栏第二页改为“最近会话”：各账号会话按修改时间排在一起，每行显示标题、账号、项目、时间，可直接同步（选目标 → 预览 → 确认，复用同步窗口写入代码）。用户选择：进入页面才读、启动恢复不读；每页 10 条可显示全部；趋势停止记录、旧数据不动；Windows 写代码和测试并附交接。AGENTS.md 新增「最近会话例外」。规格见 SPEC 文首。
 - 点击数：打开页面后 2 次到预览（原同步窗口 5～7 次），全程 4 次（原约 8 次）。
