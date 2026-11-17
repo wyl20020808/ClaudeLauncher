@@ -666,6 +666,8 @@ namespace ClaudeLauncher {
         static string[] SyncProfiles(int number) { return ProfileDeletion.Candidates(number, Core.Root, ProfileDeletion.Local); }
         // 启动器自己的文件，恢复默认不清除（SPEC 版本判断、新账号提示）。
         string LinksPath { get { return IOPath.Combine(IOPath.GetDirectoryName(settingsPath), "session-links.json"); } }
+        // 新版副本标记（只存「账号号:会话ID」），同样恢复默认不清除。
+        string PlainTitlesPath { get { return IOPath.Combine(IOPath.GetDirectoryName(settingsPath), "session-plain-titles.json"); } }
         string InitialSyncPath { get { return IOPath.Combine(IOPath.GetDirectoryName(settingsPath), "initial-sync.json"); } }
         internal sealed class SessionPicker {
             public Window Dialog; public ComboBox Target; public CheckBox All; public TextBlock Count; public Button Confirm, Diagnose; public bool WantsDiagnosis;
@@ -907,6 +909,10 @@ namespace ClaudeLauncher {
         // 确定写入位置、生成清理副本、预览，确认后写入；同步窗口和最近会话页共用。返回是否写入了会话。
         async Task<bool> SyncSelected(List<SyncSessionRow> selected, int to) {
             bool linksWritable; var links = LoadSessionLinks(out linksWritable);
+            // 标记读取失败时当作没有标记，本次不写，免得覆盖原文件。
+            bool plainWritable = true; HashSet<string> plainTitles;
+            try { plainTitles = SessionSync.LoadPlainTitles(PlainTitlesPath); }
+            catch (Exception error) { plainWritable = false; plainTitles = new HashSet<string>(StringComparer.Ordinal); AddLog("新版副本标记无法读取，本次不保存标记：" + error.Message); }
             // 预览前确定写入位置：多套目录时只在这里读一次当前组织；之后预览期间切换组织不会被发现，和 macOS 相同。
             string[] profiles = SyncProfiles(to); string organization = null, problem = null;
             bool located = await Task.Run(() => SessionSync.ResolveTarget(profiles, Organization.Read, out organization, out problem));
@@ -917,7 +923,7 @@ namespace ClaudeLauncher {
                 foreach (var session in selected) {
                     SyncVersion existing; session.Versions.TryGetValue(to, out existing);
                     CleanedSession clean;
-                    try { clean = SessionSync.Clean(session.Path, session.ProjectPath, home, existing == null ? null : existing.Id, session.Group); } catch (Exception error) { clean = new CleanedSession { Error = error.Message }; }
+                    try { clean = SessionSync.Clean(session.Path, session.ProjectPath, home, existing == null ? null : existing.Id, SessionSync.LegacyTitleGroup(session, plainTitles)); } catch (Exception error) { clean = new CleanedSession { Error = error.Message }; }
                     report(++done);
                     if (clean.Error != null) failures.Add("「" + session.Title + "」：" + Appearance.Text(clean.Error));
                     else { clean.From = session.Account; clean.FromId = session.Id; clean.Group = session.Group; clean.Project = session.ProjectPath; result.Add(clean); }
@@ -943,6 +949,8 @@ namespace ClaudeLauncher {
                             : SessionSync.Publish(profiles, organization, config, clean.Slug, clean.SessionId, clean.Jsonl, clean.Record, guard);
                         if (problemText != null) return problemText;
                         SessionSync.SetDate(config, clean.Slug, clean.SessionId, clean.Stamp);
+                        // 只给成功写入的副本记标记，以后再同步时不会把你自己起的标题当成旧前缀。
+                        if (plainTitles.Add(to + ":" + clean.SessionId) && plainWritable) try { SessionSync.SavePlainTitles(PlainTitlesPath, plainTitles); } catch (Exception error) { plainWritable = false; Diagnostics.Error("session_plain_titles_write", error); }
                         // 逐条保存：中途退出时已写入的副本仍有关联。
                         links = SessionSync.Link(links, clean.From, clean.FromId, to, clean.SessionId);
                         if (linksWritable) try { SessionSync.SaveLinks(LinksPath, links); } catch (Exception error) { linksWritable = false; Diagnostics.Error("session_links_write", error); }

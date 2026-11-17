@@ -1,4 +1,5 @@
 # 交接：Windows 跟上 macOS 1.8.7 副本标题与建组指令（2026-11-17）
+> 2026-11-17 已完成：Windows 1.9.7 按本文第 1～6 节实现并通过 `build.ps1`，结论见 STATUS「Windows 1.9.7」。
 
 macOS 1.8.7 已发布。Windows 目前停在第一轮改动：`SessionSync.WithoutGroup`、`SidebarGroups.InstructionHead`、界面文字、测试和文档已改，但**没有编译、没有跑测试**，也不含 macOS 第二轮（验收修复）的保护。行为以 `docs/SPEC.md`「同步会话 · 侧栏分组」为准，参考实现是 `src/SessionSync.m` 和 `src/main.m`。
 

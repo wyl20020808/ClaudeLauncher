@@ -12,7 +12,7 @@ using Microsoft.Win32;
 using Microsoft.Win32.SafeHandles;
 
 namespace ClaudeLauncher {
-    internal sealed class SyncVersion { public string Id; public long Stamp; }
+    internal sealed class SyncVersion { public string Id, Group; public long Stamp; }
     // Stamp：最后写入时间的 Ticks（100 ns，NTFS 的最小单位）。Versions：关联组里各账号的版本。
     // Group：来源账号侧栏里的分组名（没有为 null），GroupRank：它在来源侧栏的位置。
     internal sealed class SyncSessionRow { public string Path, Id, Title, ProjectPath, ProjectName, Group; public int GroupRank = Int32.MaxValue; public DateTime Modified; public long Stamp; public int Account; public bool Linked; public Dictionary<int, SyncVersion> Versions = new Dictionary<int, SyncVersion>(); }
@@ -215,10 +215,40 @@ namespace ClaudeLauncher {
                 string key = session.ProjectPath + "\n" + (linked ? "#" + group : session.Account + ":" + session.Id);
                 SyncSessionRow row;
                 if (!merged.TryGetValue(key, out row)) { row = session; row.Versions = new Dictionary<int, SyncVersion>(); merged[key] = row; rows.Add(row); }
-                row.Versions[session.Account] = new SyncVersion { Id = session.Id, Stamp = session.Stamp };
+                // Group 只放内存：未分组的旧副本可能是最新版本，去旧前缀时要用关联里的分组。
+                row.Versions[session.Account] = new SyncVersion { Id = session.Id, Stamp = session.Stamp, Group = session.Group };
                 if (linked) row.Linked = true;
             }
             return rows;
+        }
+        // 只用于去旧副本标题前缀的分组：新版副本（有标记）不去；先用来源自己的分组，没有时用各版本里唯一的分组，冲突或都没有时为 null。
+        // 不影响同步窗口的分组展示和建组清单，它们只用来源行自己的分组。
+        internal static string LegacyTitleGroup(SyncSessionRow row, ICollection<string> plainTitles) {
+            if (plainTitles != null && plainTitles.Contains(row.Account + ":" + row.Id)) return null;
+            string group = row.Group == null ? null : row.Group.Trim();
+            if (!String.IsNullOrEmpty(group)) return group;
+            foreach (var version in row.Versions.Values) {
+                string name = version.Group == null ? null : version.Group.Trim();
+                if (String.IsNullOrEmpty(name)) continue;
+                if (!String.IsNullOrEmpty(group) && group != name) return null; // 冲突时不猜
+                group = name;
+            }
+            return String.IsNullOrEmpty(group) ? null : group;
+        }
+        // 新版副本标记（SPEC 同步会话 · 侧栏分组）：只存「账号号:会话ID」，不存标题、分组名或正文。启动器自己的文件，恢复默认不清除；
+        // 损坏或版本不符时抛出，调用方当作没有标记，本次不写，免得覆盖原文件。
+        static readonly Regex PlainTitleKey = new Regex("^(?:[1-9]|10):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", RegexOptions.IgnoreCase);
+        internal static HashSet<string> LoadPlainTitles(string path) {
+            var result = new HashSet<string>(StringComparer.Ordinal);
+            if (!File.Exists(path)) return result;
+            var root = Json().DeserializeObject(LocalFiles.Read(path, 4 * 1024 * 1024)) as Dictionary<string, object>;
+            object version, raw;
+            if (root == null || !root.TryGetValue("version", out version) || !(version is int) || (int)version != 1 || !root.TryGetValue("sessions", out raw) || !(raw is object[])) throw new InvalidDataException("新版副本标记无法识别。");
+            foreach (object item in (object[])raw) { string key = item as string; if (key != null && PlainTitleKey.IsMatch(key)) result.Add(key); }
+            return result;
+        }
+        internal static void SavePlainTitles(string path, IEnumerable<string> keys) {
+            LocalFiles.Write(path, Json().Serialize(new Dictionary<string, object> { { "version", 1 }, { "sessions", keys.OrderBy(k => k, StringComparer.Ordinal).ToArray() } }));
         }
         // 合并后的一行在某账号的版本：0 没有，1 较旧，2 最新（时间相同算最新）。
         internal static int VersionAt(SyncSessionRow row, int account) {
@@ -364,10 +394,13 @@ namespace ClaudeLauncher {
             }
         }
         // 副本标题不加「【分组名】」前缀（2026-11-17 用户要求）；旧版本留下的同组前缀在再次同步时去掉，去掉后为空则保留。不碰官方分组数据。
+        // 只处理带同步后缀的旧副本；你自己起的「【门店】毛利分析」这类标题不动。剩余文字原样保留。
         internal static string WithoutGroup(string title, string group) {
-            if (String.IsNullOrWhiteSpace(group)) return title;
-            string prefix = "【" + group.Trim() + "】";
-            return title.StartsWith(prefix, StringComparison.Ordinal) && title.Length > prefix.Length ? title.Substring(prefix.Length) : title;
+            if (String.IsNullOrEmpty(title) || String.IsNullOrWhiteSpace(group)) return title;
+            string prefix = "【" + group.Trim() + "】"; var suffix = OldSuffix.Match(title);
+            if (!suffix.Success || !title.StartsWith(prefix, StringComparison.Ordinal) || suffix.Index <= prefix.Length) return title;
+            if (title.Substring(prefix.Length, suffix.Index - prefix.Length).Trim().Length == 0) return title; // 后缀和空白不算标题
+            return title.Substring(prefix.Length);
         }
         internal static string CopyTitle(string title, DateTime date) {
             string text = OldSuffix.Replace(title, ""), time = date.ToString("MM/dd HH:mm", System.Globalization.CultureInfo.InvariantCulture);
