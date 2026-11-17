@@ -2,6 +2,7 @@
 
 ## macOS 1.8.7：同步标题与建组指令验收修复（2026-11-17）
 
+- 发布（用户 2026-11-17 要求）：`macos-v1.8.7`（目标 dev `d770bfe`，未合并 main：其中的 Windows 第一轮改动尚未编译），版本号 1.8.7（build 38），发布说明见 [RELEASE-macos-1.8.7](RELEASE-macos-1.8.7.md)。提交前变基到远端 Windows 1.9.6（`8d77681`）之后，STATUS 冲突两边都保留。固定证书构建，arm64／x86_64 `--self-test` 各 22 项 PASS，`--ui-self-test` 通过，`scripts/publish-macos.sh --dry-run` 通过后正式运行，草稿 API 核对、转 Latest、latest/download 复核全部通过；DMG `ClaudeLauncher-1.8.7.dmg`（9104250 字节，SHA-256 `c62fac8b…89afc2c5`），Windows 文件沿用 `ClaudeLauncherSetup-1.9.6.exe`。/Applications 中的安装版需用户自行用新 DMG 更新。
 - 范围：仅 macOS；Windows 只有下一节的第一轮改动（未编译），本轮保护见 [HANDOFF-windows-title-prefix](HANDOFF-windows-title-prefix.md)。以下规则替代下一节初版中“旧前缀下次替换一定去掉”的笼统描述；历史发布结论保留。
 - 标题：仅迁移带同步后缀的旧副本；先排除后缀再做非空判断，保护「【甲】」及只剩空白的标题。保留其余文字，不擅自 trim 用户标题。
 - 未建组旧副本回同步：合并关联时保留各版本的分组（只在内存）；来源未分组且已知关联分组唯一时，只用它匹配旧标题前缀。未知或冲突时不猜测，不改变来源分组展示或官方分组数据。
