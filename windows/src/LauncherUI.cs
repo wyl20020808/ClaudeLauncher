@@ -1961,8 +1961,13 @@ namespace ClaudeLauncher {
             var itemStyle = new Style(typeof(ListBoxItem));
             itemStyle.Setters.Add(new Setter(Control.TemplateProperty, new ControlTemplate(typeof(ListBoxItem)) { VisualTree = new FrameworkElementFactory(typeof(ContentPresenter)) }));
             itemStyle.Setters.Add(new Setter(UIElement.FocusableProperty, false));
-            recentList = new ListBox { ItemTemplate = new DataTemplate { VisualTree = row }, ItemContainerStyle = itemStyle, BorderThickness = new Thickness(0), Background = Brushes.Transparent, Margin = new Thickness(0, 0, 0, 1) };
-            ScrollViewer.SetHorizontalScrollBarVisibility(recentList, ScrollBarVisibility.Disabled); VirtualizingStackPanel.SetIsVirtualizing(recentList, true);
+            recentList = new ListBox { ItemTemplate = new DataTemplate { VisualTree = row }, ItemContainerStyle = itemStyle, BorderThickness = new Thickness(0), Background = Brushes.Transparent }; // 10 行正好 500，等于面板内高，分页时不出滚动条。
+            // 系统默认模板的外框写死 1 像素内边距，10 行放不下会出滚动条；只留滚动区，按行滚动以便虚拟化。
+            var scroller = new FrameworkElementFactory(typeof(ScrollViewer));
+            scroller.SetValue(ScrollViewer.HorizontalScrollBarVisibilityProperty, ScrollBarVisibility.Disabled); scroller.SetValue(ScrollViewer.CanContentScrollProperty, true); scroller.SetValue(UIElement.FocusableProperty, false);
+            scroller.AppendChild(new FrameworkElementFactory(typeof(ItemsPresenter)));
+            recentList.Template = new ControlTemplate(typeof(ListBox)) { VisualTree = scroller };
+            VirtualizingStackPanel.SetIsVirtualizing(recentList, true);
             AutomationProperties.SetName(recentList, Appearance.Text("最近会话")); AutomationProperties.SetAutomationId(recentList, "RecentList");
             panel.Child = recentList; recentPanel = panel;
             recentEmpty = At(recentPage, T("", 14, "#8A8178", FontWeights.Normal), 76, 320, 656); recentEmpty.TextAlignment = TextAlignment.Center; recentEmpty.TextWrapping = TextWrapping.Wrap;
@@ -2022,13 +2027,14 @@ namespace ClaudeLauncher {
             var row = new Canvas { Width = 734, Height = 50, Background = Brushes.Transparent };
             At(row, new Rectangle { Fill = B("#EFE7DC") }, 0, 49, 734, 1);
             string[] tone = Palette[(session.Account - 1) % 4];
-            string where = Appearance.Text("最新版本在" + DisplayName(session.Account));
+            // 行由列表模板生成、菜单是弹出层，都不在窗口逻辑树里，界面翻译走不到，这里的文字要自己翻译。
+            string where = Appearance.Text("最新版本在%@").Replace("%@", Appearance.Text(DisplayName(session.Account)));
             var badge = At(row, new Border { CornerRadius = new CornerRadius(8), Background = B(tone[0]), ToolTip = where }, 18, 11, 28, 28);
             badge.Child = new TextBlock { Text = Two(session.Account), FontSize = 12, FontWeight = FontWeights.SemiBold, Foreground = B(tone[1]), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
             AutomationProperties.SetName(badge, where);
             var title = At(row, T(session.Title, 14, Ink, FontWeights.Medium), 58, 6, 450); title.ToolTip = session.Title;
             // 账号、项目、来源侧栏分组，再写关联副本的位置：这一行总是最新的那份。
-            var parts = new List<string> { DisplayName(session.Account), session.ProjectName ?? IOPath.GetFileName(session.ProjectPath) };
+            var parts = new List<string> { Appearance.Text(DisplayName(session.Account)),session.ProjectName ?? IOPath.GetFileName(session.ProjectPath) };
             if (session.Group != null) parts.Add(session.Group);
             var copies = session.Versions.Keys.Where(n => n != session.Account).OrderBy(n => n)
                 .Select(n => Appearance.Text("账号 " + Two(n) + (SessionSync.VersionAt(session, n) == 2 ? " 已同步" : " 是旧版本"))).ToList();
@@ -2037,7 +2043,7 @@ namespace ClaudeLauncher {
             if (copies.Count > 0) detail.Inlines.Add(new System.Windows.Documents.Run(" · " + String.Join(Appearance.Text("，"), copies)) { Foreground = B("#9A5A32"), FontWeight = FontWeights.SemiBold });
             var time = At(row, T(RecentAge(session.Modified, DateTime.Now), 12, "#8A8178", FontWeights.Normal), 512, 16, 100);
             time.TextAlignment = TextAlignment.Right; time.ToolTip = Appearance.Text("最后修改：" + session.Modified.ToString("yyyy-MM-dd HH:mm:ss"));
-            var sync = At(row, Action("同步到…", "Btn", "", 13), 622, 10, 96, 30);
+            var sync = At(row, Action(Appearance.Text("同步到…"), "Btn", "", 13), 622, 10, 96, 30);
             sync.IsEnabled = !recentLoading && !syncingSessions; AutomationProperties.SetName(sync, Appearance.Text("把「" + session.Title + "」同步到其他账号"));
             sync.Click += async delegate {
                 await ScanNow(); // 当前运行状态，和同步窗口一样。
@@ -2052,7 +2058,7 @@ namespace ClaudeLauncher {
             foreach (int n in recentAccounts) {
                 int held = SessionSync.VersionAt(session, n); bool running = instances.Any(x => x.Number == n);
                 string state = held == 2 ? (n == session.Account ? "来源" : "已是最新") : running ? "运行中，请先退出" : held == 1 ? "有更新，替换旧版本" : "新增副本";
-                var item = new MenuItem { Header = new TextBlock { Text = DisplayName(n) + " · " + Appearance.Text(state) }, IsEnabled = held != 2 && !running, Tag = n };
+                var item = new MenuItem { Header = new TextBlock { Text = Appearance.Text(DisplayName(n)) + " · " + Appearance.Text(state) }, IsEnabled = held != 2 && !running, Tag = n };
                 int target = n; item.Click += async delegate { await RecentSync(session, target); };
                 menu.Items.Add(item);
             }

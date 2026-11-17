@@ -1,3 +1,7 @@
+## Windows 1.9.6（2026-11-17）
+
+侧栏“用量趋势”页换成“最近会话”（与 macOS 1.8.6 相同）：各账号的会话按修改时间排在一起，每页 10 条可显示全部，行内“同步到…”选目标后进入同步窗口同一预览和确认。只在点进页面、点“刷新”或从这一页同步完成后读取，启动恢复到这一页不读取；结果只在内存。用量趋势停止记录，旧的 `settings.json.usageTrend` 不读不写不清除。见 [发布说明](../docs/RELEASE-windows-1.9.6.md)。
+
 ## Windows 1.9.5（2026-11-16）
 
 修复账号目录里有链接（如 `ClaudeCodeConfigskills` 的目录联接）时删除账号报“账号内容含链接”：内部链接不再跟随、随账号一起移入回收站，链接指向的内容不动。见 [发布说明](../docs/RELEASE-windows-1.9.5.md)。
@@ -129,7 +133,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup.ps1
 - 先卸载再安装（SPEC）：用固定 AppId 查当前用户的卸载项；已安装时提示“检测到已安装 x.y.z，将先卸载再安装新版”。随后按 PID 核对、对旧安装目录中运行的启动器窗口发送正常关闭（WM_CLOSE，不结束进程，不涉及 Claude），等待退出；再静默运行旧版卸载程序，等卸载项和旧卸载程序都消失后才安装新版。启动器无法正常关闭（如删除未完成）或旧版卸载失败、超时，都中止安装并提示原因。
 - 卸载只删除安装的 `ClaudeLauncher.exe`、卸载程序以及自建更新在安装目录内留下的 `.previous-*`、`.new-*`、`.failed-*` 文件。**不删除任何账号数据目录**（`%APPDATA%\Claude-*`、`%LOCALAPPDATA%\Claude-Data`、商店版 `Packages\Claude_*`），也不删除启动器日志、登录保护和删除状态目录 `%LOCALAPPDATA%\Claude-MultiLauncher`。
 - 升级覆盖安装时，Inno Setup 只会请求关闭占用本程序文件的进程（启动器本身），不涉及 Claude。
-- 版本号 1.9.5（程序集 1.9.5.0，见 `src/Updates.cs`）；与 macOS 各自递增，不要求一致。
+- 版本号 1.9.6（程序集 1.9.6.0，见 `src/Updates.cs`）；与 macOS 各自递增，不要求一致。
 - 安装向导为简体中文：`installer/ChineseSimplified.isl` 取自 Inno Setup 官方源码 `Files/Languages/ChineseSimplified.isl`（6.5.0+；6.7.3 安装包未自带）。
 - **代码签名：未签名。** 本机没有代码签名证书，安装程序和 `ClaudeLauncher.exe` 都没有 Authenticode 签名。客户首次运行会看到 SmartScreen“Windows 已保护你的电脑”，需点“更多信息 → 仍要运行”；部分杀毒软件可能更谨慎。需要正式证书（OV/EV）后在打包时对 exe 和 setup.exe 签名，此项待用户决定。
 - 应用内更新运行 Setup 的参数 `/SILENT /SUPPRESSMSGBOXES /NORESTART /RELAUNCH=1`：只显示中文进度窗口（“正在卸载旧版… / 正在安装”），不显示向导页和确认框；`/RELAUNCH=1` 仅在静默模式下让 Setup 装好后重新打开启动器。1.7.1 及更早版本用 `/VERYSILENT`，不显示任何窗口。

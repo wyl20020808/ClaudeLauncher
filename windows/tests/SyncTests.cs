@@ -107,6 +107,48 @@ internal static class SyncTests {
         Check(rows.Zip(rows.Skip(1),(a,b)=>a.Stamp>=b.Stamp).All(x=>x),"newest change first");
         typeof(LauncherUI).GetField("recentPageIndex",flags).SetValue(ui,2); ui.UpdateRecent(); Check(list.Items.Count==3,"last page holds the rest");
         typeof(LauncherUI).GetField("recentAll",flags).SetValue(ui,true); ui.UpdateRecent(); Check(list.Items.Count==23&&pager.Children.Count==0,"show all lists every row without a pager");
+        Check((string)((System.Windows.Controls.Button)get("recentAllButton")).Content=="分页显示","show all offers paging back");
+        // 模板确实生成 50 高的行；“显示全部”只为看得见的行建容器（虚拟化）。
+        var panel=(System.Windows.Controls.Border)get("recentPanel"); panel.Measure(new System.Windows.Size(736,502)); panel.Arrange(new System.Windows.Rect(0,0,736,502));
+        Func<System.Windows.DependencyObject,IEnumerable<System.Windows.DependencyObject>> visuals=null;
+        visuals=node=>new[]{node}.Concat(Enumerable.Range(0,System.Windows.Media.VisualTreeHelper.GetChildrenCount(node)).SelectMany(i=>visuals(System.Windows.Media.VisualTreeHelper.GetChild(node,i))));
+        var first=list.ItemContainerGenerator.ContainerFromIndex(0);
+        Check(first!=null&&visuals(first).OfType<System.Windows.Controls.Canvas>().Any(c=>c.Height==50&&c.Width==734),"row template builds a 50-pixel row");
+        int realized=Enumerable.Range(0,list.Items.Count).Count(i=>list.ItemContainerGenerator.ContainerFromIndex(i)!=null);
+        Check(realized>=10&&realized<23,"show all builds only the visible rows: "+realized);
+        typeof(LauncherUI).GetField("recentAll",flags).SetValue(ui,false); typeof(LauncherUI).GetField("recentPageIndex",flags).SetValue(ui,0); ui.UpdateRecent();
+        var whole=(System.Windows.FrameworkElement)ui.Snapshot(1,new List<Instance>{new Instance{Number=2,ProcessId=111}}); whole.Measure(new System.Windows.Size(1080,720)); whole.Arrange(new System.Windows.Rect(0,0,1080,720)); whole.UpdateLayout();
+        var scroller=visuals(list).OfType<System.Windows.Controls.ScrollViewer>().First();
+        Check(list.Items.Count==10&&scroller.ExtentHeight<=scroller.ViewportHeight&&scroller.ComputedVerticalScrollBarVisibility!=System.Windows.Visibility.Visible,"a page of ten rows fits without a scroll bar: "+scroller.ViewportHeight+"/"+scroller.ExtentHeight);
+        // 每行的文字：来源账号、旧版本／已同步副本、来源分组。
+        var rowOf=typeof(LauncherUI).GetMethod("RecentRow",flags);
+        Func<SyncSessionRow,List<string>> strings=r=>LauncherTests.Children((System.Windows.DependencyObject)rowOf.Invoke(ui,new object[]{r})).SelectMany(d=>{
+            var found=new List<string>{System.Windows.Automation.AutomationProperties.GetName(d)};
+            var block=d as System.Windows.Controls.TextBlock; if(block!=null) found.Add(block.Text);
+            var run=d as System.Windows.Documents.Run; if(run!=null) found.Add(run.Text);
+            var element=d as System.Windows.FrameworkElement; if(element!=null) found.Add(element.ToolTip as string);
+            return found; }).Where(s=>!String.IsNullOrEmpty(s)).ToList();
+        var zh=strings(rows[0]); Check(zh.Contains("最新版本在账号 01")&&zh.Any(s=>s.EndsWith(" · 账号 02 是旧版本")),"row names the newest account and an older copy");
+        Check(strings(rows[2]).Any(s=>s.EndsWith(" · 账号 02 已同步")),"an equal copy reads in sync");
+        Check(strings(rows[3]).Any(s=>s.Contains(" · 发布")),"source sidebar group shown");
+        typeof(LauncherUI).GetField("recentLoading",flags).SetValue(ui,true); ui.UpdateRecent();
+        Check(((System.Windows.Controls.TextBlock)get("recentSummary")).Text=="正在刷新…"&&!((System.Windows.Controls.Button)get("recentRefresh")).IsEnabled
+            &&!LauncherTests.Children((System.Windows.DependencyObject)rowOf.Invoke(ui,new object[]{rows[0]})).OfType<System.Windows.Controls.Button>().Single().IsEnabled,"refreshing keeps rows but disables sync");
+        typeof(LauncherUI).GetField("recentLoading",flags).SetValue(ui,false); ui.UpdateRecent();
+        // 英文界面：行和菜单不在窗口逻辑树里，不能留中文（会话标题和项目名是用户内容，这里用英文）。
+        Appearance.Language=1;
+        try {
+            long stamp=now.AddMinutes(-3).Ticks;
+            var english=new SyncSessionRow { Path="demo",Id="e",Title="Fix login",ProjectPath=@"C:\Users\example\Projects\Website",ProjectName="Website",Modified=now.AddMinutes(-3),Stamp=stamp,Account=1,Linked=true,
+                Versions=new Dictionary<int,SyncVersion>{{1,new SyncVersion{Id="e",Stamp=stamp}},{2,new SyncVersion{Id="f",Stamp=stamp-1}},{3,new SyncVersion{Id="g",Stamp=stamp}}} };
+            ui.UpdateRecent();
+            var shown=strings(english);
+            foreach(System.Windows.Controls.MenuItem item in ui.RecentTargetMenu(english).Items) { var header=item.Header as System.Windows.Controls.TextBlock; shown.Add(header!=null?header.Text:(string)item.Header); }
+            shown.Add(((System.Windows.Controls.TextBlock)get("recentSummary")).Text); shown.Add((string)((System.Windows.Controls.Button)get("recentAllButton")).Content);
+            var chinese=shown.Where(s=>System.Text.RegularExpressions.Regex.IsMatch(s,"[\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]")).ToList();
+            Check(chinese.Count==0,"English recent page has no Chinese: "+String.Join(" | ",chinese));
+            Check(shown.Contains("Newest version is in Account 01")&&shown.Any(s=>s.EndsWith("account 02 has an older version, account 03 in sync"))&&shown.Contains("Account 02 · running, quit it first")&&shown.Contains("23 sessions · read just now"),"English row, menu and summary: "+String.Join(" | ",shown));
+        } finally { Appearance.Language=0; }
         Func<int,List<System.Windows.Controls.MenuItem>> menu=i=>ui.RecentTargetMenu(rows[i]).Items.Cast<System.Windows.Controls.MenuItem>().ToList();
         var m=menu(0); Check(m.Count==4&&!m[0].IsEnabled&&!m[1].IsEnabled&&!m[2].IsEnabled&&m[3].IsEnabled&&(int)m[3].Tag==3,"target menu: source and running disabled, new enabled");
         m=menu(1); Check(m[1].IsEnabled&&!m[3].IsEnabled,"an older copy can be replaced; the source cannot");
@@ -164,7 +206,7 @@ internal static class SyncTests {
             File.WriteAllText(list,"{broken");Check(Projects.Load(list).Count==0&&!File.Exists(list)&&Directory.GetFiles(root,"projects.json.corrupt-*").Length==1,"corrupt project file retained");
             var ui=new LauncherUI(new LauncherSettings(),Path.Combine(root,"ui-settings.json"));
             var flags=BindingFlags.NonPublic|BindingFlags.Instance;
-            var logs=(List<LogEntry>)typeof(LauncherUI).GetField("logs",flags).GetValue(ui);logs.Clear();logs.Add(new LogEntry { At=now,Time="fixture",Level="信息",Instance="系统",Text="fixture" });
+            var logs=(List<LogEntry>)typeof(LauncherUI).GetField("logs",flags).GetValue(ui);logs.Clear();logs.Add(new LogEntry { At=DateTime.UtcNow,Time="fixture",Level="信息",Instance="系统",Text="fixture" });
             string log=Path.Combine(root,"launcher-log.json");File.WriteAllText(log,"[]");string logAlias=log+".hard";Check(CreateHardLink(logAlias,log,IntPtr.Zero),"log hard-link fixture");
             Check(!ui.ClearStoredLogs()&&logs.Count==1&&File.ReadAllText(log)=="[]","failed clear preserves memory and disk");File.Delete(logAlias);Check(ui.ClearStoredLogs()&&logs.Count==0,"successful clear commits disk first");
             var progressA=ui.BuildUpdateProgress("2.0.0");int generationA=ui.BeginUpdateTask();ui.CancelUpdateTask(generationA,progressA,"fixture");

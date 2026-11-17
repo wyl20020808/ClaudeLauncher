@@ -1,6 +1,17 @@
 # 项目状态
 
-## macOS 1.8.6：最近会话页取代用量趋势页（2026-11-16，两端；macOS 已发布，Windows 未编译）
+## Windows 1.9.6：最近会话页（2026-11-17，dev，未提交、未发布）
+
+- 内容：跟上 macOS 1.8.6 的最近会话页（代码见 `f77ae1b`），发布说明见 [RELEASE-windows-1.9.6](RELEASE-windows-1.9.6.md)，核对结论见 [HANDOFF-windows-recent-sessions](HANDOFF-windows-recent-sessions.md) 文首。
+- 修复（相对 `f77ae1b` 的 Windows 代码）：① `SyncTests` 引用已删除的 `now`，测试程序编译失败；② 英文界面下行内和菜单的账号名、“同步到…”按钮仍是中文（行和菜单不在窗口逻辑树里，整体翻译走不到）；③ 一页 10 行时出滚动条（默认 ListBox 模板写死 1 像素内边距）。②③ 都先写测试复现失败再修。
+- 补测试：模板生成 50 高的行、显示全部只生成可见行、10 行无滚动条、副本说明与分组、刷新中停用同步、英文界面无中文；启动恢复到最近会话页（旧值 `accounts`）不读取；自检加 `VersionAt` 与相对时间分界。
+- 自检（`build.ps1`，本机）：LauncherTests 452、SyncTests 179、SessionSyncTests 372、TutorialTests 80、自检 331，均不少于 1.9.5（452／175／372／80／330，同机重跑）；`test-install.ps1` 3 个场景通过。编译警告 2 条与 1.9.5 相同。
+- 离屏 UI：`preview-ui.ps1` 生成 `recent.png`、`recent-unloaded.png`，面板 36,124,736×502、行高 50、刷新 664,56、页码 y640、显示全部 672,639，与 macOS 一致；`guide-recent.{zh,en}.jpg` 用 `UiPreview.exe --guide` 重新生成（英文配图示例标题为中文，与 macOS 相同）。
+- GUI 手动测试（2026-11-17，开发版 `artifacts\bin\ClaudeLauncher.exe`，本机只有账号 01）：① 通过——点侧栏“最近会话”读取 54 条，当前正在用的会话排第一、写“刚刚”，页码 `1 2 … 6`，“显示全部”可滚动、按钮变“分页显示”；行内“同步到…”菜单为标题行加“gshh · 01 · 来源”。英文界面（临时改启动器自己的 `settings.json` 语言，看完恢复原文件）：行、摘要“54 sessions · read just now”、“Sync to…”、菜单“Sync to (the target must have quit normally)”“gshh · 01 · source”均为英文，会话标题是用户原文。`settings.json.usageTrend` 修改时间仍为 10-31，未被读写。② 同步到另一账号、③ 运行中／有更新／替换进回收站：**未验证**（用户没有其他账号，2026-11-17 决定跳过）。观察：启动器窗口不在前台时点“同步到…”，菜单要等窗口回到前台才显示。
+- 开发版检查更新时日志记 `update_select version=1.9.5`，随后 `IsNewer` 判断不提示，属正常。测试中开发版以“关闭到托盘”方式隐藏，最后结束了这个开发版进程（只此一个，非 Claude）。
+- 版本号 1.9.6（程序集 1.9.6.0）；`updates/public/*.json` 待发布时生成。
+
+## macOS 1.8.6：最近会话页取代用量趋势页（2026-11-16，两端；macOS 已发布，Windows 见上方 1.9.6）
 
 - 发布（用户 2026-11-17 要求）：`macos-v1.8.6`（目标 dev `f77ae1b`，未合并 main），版本号 1.8.6（build 37），发布说明见 [RELEASE-macos-1.8.6](RELEASE-macos-1.8.6.md)。提交前变基到远端 Windows 1.9.5（`18b272f`）之后，STATUS 与使用说明冲突两边都保留。固定证书构建，arm64／x86_64 `--self-test` 与 `--ui-self-test` 通过，`scripts/publish-macos.sh --dry-run` 通过后正式运行，草稿 API 核对、转 Latest、latest/download 复核全部通过；DMG `ClaudeLauncher-1.8.6.dmg`（9076958 字节，SHA-256 `61166109…ffafff60`），Windows 文件沿用 `ClaudeLauncherSetup-1.9.5.exe`。/Applications 中的安装版需用户自行用新 DMG 更新。
 

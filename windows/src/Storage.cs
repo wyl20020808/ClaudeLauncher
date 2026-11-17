@@ -252,6 +252,11 @@ namespace ClaudeLauncher {
             const string app = @"""C:\Program Files\WindowsApps\Claude_4.29.0.0_x64__pzs8sxrjxfjjc\app\claude.exe""";
             try {
                 Directory.CreateDirectory(root);
+                // 最近会话页：目标菜单按版本判断可否同步；相对时间的分界与 macOS 相同。
+                var merged = new SyncSessionRow { Stamp = 10, Versions = new Dictionary<int, SyncVersion> { { 1, new SyncVersion { Stamp = 10 } }, { 2, new SyncVersion { Stamp = 9 } }, { 3, new SyncVersion { Stamp = 10 } } } };
+                Check(SessionSync.VersionAt(merged, 1) == 2 && SessionSync.VersionAt(merged, 2) == 1 && SessionSync.VersionAt(merged, 3) == 2 && SessionSync.VersionAt(merged, 4) == 0, "最近会话版本判断");
+                DateTime clock = new DateTime(2026, 11, 17, 12, 0, 0);
+                Check(LauncherUI.RecentAge(clock.AddSeconds(-59), clock) == "刚刚" && LauncherUI.RecentAge(clock.AddSeconds(-60), clock) == "1 分钟前" && LauncherUI.RecentAge(clock.AddHours(-23.9), clock) == "23 小时前" && LauncherUI.RecentAge(clock.AddDays(-1), clock) == "11-16 12:00" && LauncherUI.RecentAge(clock.AddMinutes(5), clock) == "刚刚", "最近会话相对时间");
                 var me = WindowsIdentity.GetCurrent();
                 Check(Storage.OwnedByMe(me.User) && Storage.OwnedByMe(me.Owner) && Storage.OwnedByMe(new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null)) && !Storage.OwnedByMe(new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null)) && !Storage.OwnedByMe(null), "所有者判断错误");
                 UpdateChecks(root);

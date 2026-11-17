@@ -217,6 +217,12 @@ public static class LauncherTests {
             typeof(LauncherUI).GetMethod("RecordUse", flags).Invoke(alerts, new object[] { 2 });
             var recentReload = new LauncherUI(new LauncherSettings(), preferences); recentReload.Snapshot(0, new List<Instance>());
             Check((string)typeof(LauncherUI).GetMethod("Recent", flags).Invoke(recentReload, new object[] { 2 }) != "—", "Recent usage persists");
+            // 旧值 accounts（原用量趋势页）恢复到最近会话页；启动时恢复不读取会话，只显示加载按钮。
+            LauncherSettings.WriteLastPage(Path.Combine(root, "last-page"), "accounts");
+            var restored = new LauncherUI(new LauncherSettings { RememberPage = true }, preferences);
+            Check((int)typeof(LauncherUI).GetField("page", flags).GetValue(restored) == 1, "Remembered accounts page opens recent sessions");
+            Check(typeof(LauncherUI).GetField("recentSessions", flags).GetValue(restored) == null && ((Button)typeof(LauncherUI).GetField("recentLoad", flags).GetValue(restored)).Visibility == Visibility.Visible, "Restoring to recent sessions reads nothing and offers the load button");
+            File.Delete(Path.Combine(root, "last-page"));
             string file = Path.Combine(root, "CLAUDE.md");
             Check(Handoff.Append(root) && File.ReadAllText(file) == Handoff.Rule, "Handoff creates exact rule");
             Check(!Handoff.Append(root) && File.ReadAllText(file) == Handoff.Rule, "Handoff deduplicates");
