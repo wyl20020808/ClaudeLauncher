@@ -40,7 +40,6 @@
     <Compile Include="src\Updates.cs" />
     <Compile Include="src\Settings.cs" />
     <Compile Include="src\LocalFiles.cs" />
-    <Compile Include="src\UsageTrend.cs" />
     <Compile Include="src\ConfigSync.cs" />
     <Compile Include="src\Projects.cs" />
     <Compile Include="src\Appearance.cs" />
@@ -59,11 +58,11 @@
     <EmbeddedResource Include="assets\tutorial\guide.zh.md"><LogicalName>ClaudeLauncher.Tutorial.guide.zh.md</LogicalName></EmbeddedResource>
     <EmbeddedResource Include="assets\tutorial\guide-instances.zh.jpg"><LogicalName>ClaudeLauncher.Tutorial.guide-instances.zh.jpg</LogicalName></EmbeddedResource>
     <EmbeddedResource Include="assets\tutorial\guide-projects.zh.jpg"><LogicalName>ClaudeLauncher.Tutorial.guide-projects.zh.jpg</LogicalName></EmbeddedResource>
-    <EmbeddedResource Include="assets\tutorial\guide-trend.zh.jpg"><LogicalName>ClaudeLauncher.Tutorial.guide-trend.zh.jpg</LogicalName></EmbeddedResource>
+    <EmbeddedResource Include="assets\tutorial\guide-recent.zh.jpg"><LogicalName>ClaudeLauncher.Tutorial.guide-recent.zh.jpg</LogicalName></EmbeddedResource>
     <EmbeddedResource Include="assets\tutorial\guide.en.md"><LogicalName>ClaudeLauncher.Tutorial.guide.en.md</LogicalName></EmbeddedResource>
     <EmbeddedResource Include="assets\tutorial\guide-instances.en.jpg"><LogicalName>ClaudeLauncher.Tutorial.guide-instances.en.jpg</LogicalName></EmbeddedResource>
     <EmbeddedResource Include="assets\tutorial\guide-projects.en.jpg"><LogicalName>ClaudeLauncher.Tutorial.guide-projects.en.jpg</LogicalName></EmbeddedResource>
-    <EmbeddedResource Include="assets\tutorial\guide-trend.en.jpg"><LogicalName>ClaudeLauncher.Tutorial.guide-trend.en.jpg</LogicalName></EmbeddedResource>
+    <EmbeddedResource Include="assets\tutorial\guide-recent.en.jpg"><LogicalName>ClaudeLauncher.Tutorial.guide-recent.en.jpg</LogicalName></EmbeddedResource>
     <EmbeddedResource Include="assets\app.ico"><LogicalName>ClaudeLauncher.Icon</LogicalName></EmbeddedResource>
     <EmbeddedResource Include="assets\update-public-key.xml"><LogicalName>ClaudeLauncher.UpdateKey</LogicalName></EmbeddedResource>
     <EmbeddedResource Include="..\resources\ui\background.webp"><LogicalName>ClaudeLauncher.UI.background</LogicalName></EmbeddedResource>

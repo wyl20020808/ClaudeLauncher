@@ -42,6 +42,8 @@ BOOL SessionIsSyncCopy(NSString *title);
 NSDictionary *CleanSession(NSString *sourcePath, NSString *project, NSString *home, NSString *targetId, NSString *group);
 // One row per session, keeping the newest of each linked group and adding versions {account: {id, stamp}} and linked. sessions: newest first.
 NSArray<NSDictionary *> *MergeLinkedSessions(NSArray<NSDictionary *> *sessions, NSArray<NSDictionary *> *links);
+// What one account holds of a merged row: 0 nothing, 1 an older version, 2 the newest (the same stamp counts as newest).
+NSInteger SessionVersionAt(NSDictionary *row, NSInteger account);
 // Links are groups {account: session id} of the same conversation; returns them with this pair joined.
 NSArray<NSDictionary *> *LinkSessions(NSArray<NSDictionary *> *links, NSInteger from, NSString *fromId, NSInteger to, NSString *toId);
 void TestSessionSync(void);

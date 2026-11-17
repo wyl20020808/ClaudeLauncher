@@ -44,13 +44,9 @@ public static class UiPreview {
             foreach (var text in Tree(page).OfType<System.Windows.Controls.TextBlock>()) { string tip = text.ToolTip as string; if (tip != null && real.ContainsKey(tip) && text.Text.Contains("\\")) { text.Text = real[tip]; text.ToolTip = real[tip]; } }
             foreach (var text in Tree(page).OfType<System.Windows.Controls.TextBlock>()) if (text.Text.IndexOf(Path.GetFileName(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)), StringComparison.OrdinalIgnoreCase) >= 0) throw new InvalidOperationException("guide picture would show the local user name");
             SaveJpeg(page, size, Path.Combine(output, "guide-projects." + languages[language] + ".jpg"));
-            var points = new List<TrendPoint>();
-            for (int i = 40; i >= 0; i--) { points.Add(new TrendPoint { Account = 1, At = now.AddHours(-i * 3), Five = (i * 7) % 60 + 5, Week = 60 - i }); points.Add(new TrendPoint { Account = 2, At = now.AddHours(-i * 3), Five = (i * 11) % 40 + 5, Week = 40 - i / 2 }); }
-            var accounts = ui.Snapshot(1, state); ui.SetTrend(points);
-            Appearance.TranslateTree(accounts); accounts.Measure(size); accounts.Arrange(new Rect(size)); accounts.UpdateLayout();
-            var scroll = (System.Windows.Controls.ScrollViewer)typeof(LauncherUI).GetField("accountsScroll", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance).GetValue(ui);
-            scroll.ScrollToVerticalOffset(0); scroll.UpdateLayout();
-            SaveJpeg(accounts, size, Path.Combine(output, "guide-trend." + languages[language] + ".jpg"));
+            var recent = ui.Snapshot(1, state); ui.SetRecent(LauncherUI.RecentDemo(DateTime.Now), new[] { 1, 2, 3 });
+            Appearance.TranslateTree(recent); recent.Measure(size); recent.Arrange(new Rect(size)); recent.UpdateLayout();
+            SaveJpeg(recent, size, Path.Combine(output, "guide-recent." + languages[language] + ".jpg"));
             Directory.Delete(temp, true);
         }
         Console.WriteLine("PASS: guide pictures rendered from demo data.");
@@ -81,14 +77,9 @@ public static class UiPreview {
         hoverCard.SetValue(hoverKey, true);
         Save(cardPage, new Size(1080, 720), Path.Combine(args[0], "instances-hover.png"));
         hoverCard.SetValue(hoverKey, false);
-        // 合成趋势：账号页滚到趋势区。
-        DateTime now = DateTime.UtcNow; var points = new List<TrendPoint>();
-        for (int i = 40; i >= 0; i--) points.Add(new TrendPoint { Account = 1, At = now.AddHours(-i * 3), Five = (i * 7) % 60 + 5, Week = 60 - i });
-        var accountsRoot = ui.Snapshot(1, state);
-        ui.SetTrend(points); Save(accountsRoot, new Size(1080, 720), Path.Combine(args[0], "accounts-top.png"));
-        var scroll = (System.Windows.Controls.ScrollViewer)typeof(LauncherUI).GetField("accountsScroll", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance).GetValue(ui);
-        scroll.ScrollToVerticalOffset(0); scroll.UpdateLayout(); Save(accountsRoot, new Size(1080, 720), Path.Combine(args[0], "accounts-trend.png"));
-        ui.SetTrend(new TrendPoint[0]);
+        // 最近会话：未加载状态和合成行各一张。
+        Save(ui.Snapshot(1, state), new Size(1080, 720), Path.Combine(args[0], "recent-unloaded.png"));
+        ui.SetRecent(LauncherUI.RecentDemo(DateTime.Now), new[] { 1, 2, 3 }); Save(ui.Snapshot(1, state), new Size(1080, 720), Path.Combine(args[0], "recent.png"));
         Save(ui.Snapshot(4, state), new Size(1080, 720), Path.Combine(args[0], "projects.png"));
         // 系统设置六个分类各一张。
         var section = typeof(LauncherUI).GetMethod("ShowSettingsSection", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);

@@ -18,7 +18,6 @@
 #import "Handoff.h"
 #import "SessionSync.h"
 #import "ConfigSync.h"
-#import "UsageTrend.h"
 #import "SupportReport.h"
 #import "Localization.h"
 #import <ServiceManagement/ServiceManagement.h>
@@ -1209,8 +1208,19 @@ static NSAttributedString *TutorialDocumentText(NSString *markdown, CGFloat imag
 @property BOOL diagnosing;
 @property NSView *settingsContent, *mainCanvas;
 @property NSArray<NSButton *> *settingsTabs;
-@property Canvas *accountsContent, *trendSection;
-@property NSString *trendSignature;
+// Recent sessions page (SPEC 最近会话): rows live in memory only; nil until the user first opens the page.
+@property NSArray<NSDictionary *> *recentSessions, *visibleRecent;
+@property NSArray<NSNumber *> *recentAccounts;
+@property NSDate *recentLoadedAt;
+@property NSTableView *recentTable;
+@property NSView *recentPanel;
+@property NSTextField *recentSummary, *recentEmpty;
+@property ActionButton *recentRefresh, *recentLoad, *recentDiagnose, *recentAllButton, *previousRecent, *nextRecent;
+@property NSProgressIndicator *recentSpinner;
+@property NSMutableArray<NSView *> *recentPageButtons;
+@property NSInteger recentPage;
+@property BOOL recentAll, recentLoading;
+@property BOOL syncFromRecent; // The running sync was started from a recent-sessions row; only then does it re-read that page.
 @property ProjectStore *projectStore;
 @property NSView *projectRowsView;
 @property NSTextField *projectFooter, *projectFeedback;
@@ -1261,7 +1271,6 @@ static NSAttributedString *TutorialDocumentText(NSString *markdown, CGFloat imag
 @property NSTextField *summaryLabel;
 @property NSDictionary<NSNumber *,NSDictionary *> *usageInterface;
 @property NSDictionary<NSNumber *,NSDictionary *> *savedUsageInterface;
-@property NSArray *usageTrend;
 @property BOOL readingUsageInterface;
 @property NSTimeInterval lastUsageRead;
 @property NSUInteger usageGeneration;
@@ -1323,7 +1332,6 @@ static NSAttributedString *TutorialDocumentText(NSString *markdown, CGFloat imag
     self.page = [self.settings[@"rememberPage"] boolValue] ? [self.preferences integerForKey:@"lastLauncherPage"] : [self.settings[@"startPage"] integerValue];
     [self makeWindow]; [self applySettings];
     if ([self.settings[@"showUsageHistory"] boolValue]) self.savedUsageInterface = LoadedUsageInterface([self.preferences objectForKey:@"usageInterfaceObservations"],NSDate.date);
-    if ([self.settings[@"showUsageHistory"] boolValue]) self.usageTrend = LoadedUsageTrend([self.preferences objectForKey:@"usageTrend"],NSDate.date);
     [self refresh]; [self show:nil];
     // Local text only: recomputes countdowns from already observed values, never reads Claude.
     self.countdownTimer = [NSTimer scheduledTimerWithTimeInterval:1 target:self selector:@selector(tickCountdowns) userInfo:nil repeats:YES];
@@ -1427,106 +1435,139 @@ static NSAttributedString *TutorialDocumentText(NSString *markdown, CGFloat imag
     NSPopover *popover = [NSPopover new]; popover.behavior = NSPopoverBehaviorTransient; popover.contentViewController = content;
     [popover showRelativeToRect:sender.bounds ofView:sender preferredEdge:NSRectEdgeMaxY];
 }
-// Usage trends page (formerly account management): trend cards, observed values and the rotation suggestion only.
-- (NSView *)accountsPage:(NSRect)frame {
-    Canvas *page = [self pageTitled:L(@"用量趋势") frame:frame];
-    self.trendSection = [[Canvas alloc] initWithFrame:NSMakeRect(0,104,NSWidth(frame),10)]; [page addSubview:self.trendSection];
-    self.accountsContent = page; self.trendSignature = nil;
-    NSScrollView *outer = [[NSScrollView alloc] initWithFrame:frame];
-    outer.drawsBackground = NO; outer.contentView.drawsBackground = NO; outer.hasVerticalScroller = YES; outer.autohidesScrollers = YES; outer.scrollerStyle = NSScrollerStyleOverlay;
-    outer.automaticallyAdjustsContentInsets = NO; // Keep the title level with the other pages.
-    outer.documentView = page; [self updateTrendSection];
-    return outer;
+// Recent sessions page (SPEC 最近会话; replaced the usage trend page): every account's sessions, newest change first, each
+// row with its own sync button. Reads only when the user opens the page, refreshes, or finishes a sync from it.
+- (NSView *)recentPage:(NSRect)frame {
+    Canvas *page = [self pageTitled:L(@"最近会话") frame:frame];
+    NSRect panel = NSMakeRect(36,124,736,502);
+    page.paint = ^(NSRect bounds) { DrawPanel(panel,16,0.9); };
+    self.recentRefresh = [self toolButton:L(@"刷新") symbol:@"arrow.clockwise" frame:NSMakeRect(664,56,108,44) action:@selector(refreshRecent:)];
+    self.recentRefresh.toolTip = L(@"重新读取各账号的会话"); [page addSubview:self.recentRefresh];
+    self.recentSpinner = [[NSProgressIndicator alloc] initWithFrame:NSMakeRect(638,70,16,16)];
+    self.recentSpinner.style = NSProgressIndicatorStyleSpinning; self.recentSpinner.controlSize = NSControlSizeSmall; self.recentSpinner.displayedWhenStopped = NO;
+    [page addSubview:self.recentSpinner];
+    NSScrollView *scroll = [[NSScrollView alloc] initWithFrame:NSInsetRect(panel,1,1)];
+    scroll.drawsBackground = NO; scroll.contentView.drawsBackground = NO; scroll.hasVerticalScroller = YES; scroll.autohidesScrollers = YES;
+    scroll.scrollerStyle = NSScrollerStyleOverlay; scroll.borderType = NSNoBorder;
+    // A view-based table makes row views only for what is on screen, so "show all" stays quick with thousands of rows.
+    self.recentTable = [[NSTableView alloc] initWithFrame:scroll.bounds]; self.recentTable.style = NSTableViewStylePlain; self.recentTable.headerView = nil;
+    self.recentTable.rowHeight = 50; self.recentTable.intercellSpacing = NSZeroSize; self.recentTable.backgroundColor = NSColor.clearColor;
+    self.recentTable.gridStyleMask = NSTableViewSolidHorizontalGridLineMask; self.recentTable.gridColor = Hex(0xEFE7DC);
+    self.recentTable.selectionHighlightStyle = NSTableViewSelectionHighlightStyleNone; self.recentTable.accessibilityLabel = L(@"最近会话");
+    NSTableColumn *column = [[NSTableColumn alloc] initWithIdentifier:@"recent"]; column.width = NSWidth(scroll.bounds); [self.recentTable addTableColumn:column];
+    self.recentTable.dataSource = self; self.recentTable.delegate = self;
+    scroll.documentView = self.recentTable; [page addSubview:scroll]; self.recentPanel = scroll;
+    self.recentEmpty = Text(@"",NSMakeRect(76,322,656,44),[NSFont systemFontOfSize:14],Hex(0x8A8178));
+    self.recentEmpty.alignment = NSTextAlignmentCenter; self.recentEmpty.maximumNumberOfLines = 2; self.recentEmpty.lineBreakMode = NSLineBreakByWordWrapping; [page addSubview:self.recentEmpty];
+    self.recentLoad = [self toolButton:L(@"加载最近会话") symbol:@"clock.arrow.circlepath" frame:NSMakeRect(310,380,188,42) action:@selector(refreshRecent:)];
+    self.recentLoad.primary = YES; [page addSubview:self.recentLoad];
+    self.recentDiagnose = [self toolButton:L(@"问题诊断…") symbol:@"stethoscope" frame:NSMakeRect(330,380,148,42) action:@selector(runSupportDiagnosis:)]; [page addSubview:self.recentDiagnose];
+    self.previousRecent = [self toolButton:@"" symbol:@"chevron.left" frame:NSMakeRect(57,640,32,32) action:@selector(previousRecentPage:)];
+    self.previousRecent.accessibilityLabel = self.previousRecent.toolTip = L(@"上一页"); [page addSubview:self.previousRecent];
+    self.nextRecent = [self toolButton:@"" symbol:@"chevron.right" frame:NSMakeRect(97,640,32,32) action:@selector(nextRecentPage:)];
+    self.nextRecent.accessibilityLabel = self.nextRecent.toolTip = L(@"下一页"); [page addSubview:self.nextRecent];
+    self.recentPageButtons = [NSMutableArray array];
+    self.recentSummary = Text(@"",NSMakeRect(360,647,300,20),[NSFont systemFontOfSize:13],Hex(0x8A8178)); self.recentSummary.alignment = NSTextAlignmentRight; [page addSubview:self.recentSummary];
+    self.recentAllButton = [self toolButton:L(@"显示全部") symbol:nil frame:NSMakeRect(672,639,100,34) action:@selector(toggleRecentAll:)];
+    self.recentAllButton.fontSize = 13; [page addSubview:self.recentAllButton];
+    [self updateRecent];
+    return page;
 }
-- (void)updateTrendSection {
-    Canvas *section = self.trendSection; if (!section) return;
-    NSDate *now = NSDate.date; BOOL on = [self.settings[@"showUsageHistory"] boolValue];
-    NSMutableArray<NSNumber *> *accounts = [NSMutableArray array];
-    for (NSInteger n = 1; n <= (NSInteger)self.cards.count; n++) if (!self.cards[n-1].hidden) [accounts addObject:@(n)];
-    NSMutableArray *names = [NSMutableArray array]; for (NSNumber *n in accounts) [names addObject:[self accountName:n.integerValue]];
-    // Rebuild only when something shown changes; forecasts age, so refresh at least every ten minutes.
-    NSString *signature = [NSString stringWithFormat:@"%d|%@|%@|%lu|%@|%ld|%@",on,accounts,names,(unsigned long)self.usageTrend.count,self.usageTrend.lastObject[@"time"],(long)(now.timeIntervalSince1970/600),self.buttons.count ? [[self.buttons valueForKey:@"title"] componentsJoinedByString:@","] : @""];
-    if ([signature isEqual:self.trendSignature]) return;
-    self.trendSignature = signature;
-    for (NSView *view in section.subviews.copy) [view removeFromSuperview];
-    CGFloat width = NSWidth(section.frame);
-    NSColor *muted = Hex(0x6E655C), *weekly = Hex(0x8C5C40), *five = Hex(0xE0894E);
-    NSDictionary *colors = @{@"grid":Hex(0xEDE4D8),@"axis":Hex(0x9A8F84),@"sd":weekly,@"fh":five};
-    NSInteger next = on ? UsageRotationAccount(self.usageTrend,accounts,0) : 0;
-    NSString *bannerText = !on ? L(@"用量趋势未开启：请先在“系统设置 → 外观”中开启“显示本地界面用量”。")
-        : next ? [NSString stringWithFormat:L(@"建议下一个使用：账号 %02ld"),(long)next]
-        : L(@"还没有观察记录。打开账号的 Claude Code 后，启动器会记录已显示的用量。");
-    section.paint = ^(NSRect bounds) {
-        NSDictionary *legend = @{NSFontAttributeName:[NSFont systemFontOfSize:11],NSForegroundColorAttributeName:muted};
-        CGFloat x = width-36-196;
-        for (NSArray *item in @[@[L(@"周限额"),weekly,@2.0],@[L(@"5 小时限额"),five,@1.5]]) {
-            NSBezierPath *swatch = [NSBezierPath bezierPath]; [swatch moveToPoint:NSMakePoint(x,8)]; [swatch lineToPoint:NSMakePoint(x+18,8)];
-            swatch.lineWidth = [item[2] doubleValue]; swatch.lineCapStyle = NSLineCapStyleRound; [(NSColor *)item[1] setStroke]; [swatch stroke];
-            [item[0] drawAtPoint:NSMakePoint(x+24,1) withAttributes:legend]; x += 98;
-        }
-        NSRect banner = NSMakeRect(36,26,width-72,52);
-        NSBezierPath *path = [NSBezierPath bezierPathWithRoundedRect:banner xRadius:14 yRadius:14];
-        [[Hex(next ? 0xFBEEE2 : 0xFFFDFA) colorWithAlphaComponent:0.92] setFill]; [path fill];
-        [Hex(next ? 0xF0D5BD : 0xEDE4D8) setStroke]; path.lineWidth = 1; [path stroke];
+- (void)updateRecent {
+    if (!self.recentTable) return;
+    NSArray *all = self.recentSessions ?: @[]; BOOL loaded = self.recentSessions != nil;
+    NSInteger pages = MAX(1,((NSInteger)all.count+9)/10); self.recentPage = MAX(0,MIN(self.recentPage,pages-1));
+    NSUInteger start = MIN(all.count,(NSUInteger)self.recentPage*10);
+    self.visibleRecent = self.recentAll ? all : [all subarrayWithRange:NSMakeRange(start,MIN(10,all.count-start))];
+    self.recentTable.gridStyleMask = self.visibleRecent.count ? NSTableViewSolidHorizontalGridLineMask : NSTableViewGridNone; // No ruled lines behind the empty state.
+    [self.recentTable reloadData]; [self.recentTable scrollRowToVisible:0];
+    if (self.recentLoading) [self.recentSpinner startAnimation:nil]; else [self.recentSpinner stopAnimation:nil];
+    self.recentRefresh.enabled = loaded && !self.recentLoading;
+    self.recentLoad.hidden = loaded || self.recentLoading;
+    self.recentDiagnose.hidden = !loaded || all.count || self.recentLoading;
+    self.recentEmpty.stringValue = all.count ? @"" : self.recentLoading ? L(@"正在读取各账号的会话…")
+        : !loaded ? L(@"启动器不会自动读取会话。点下面的按钮，列出各账号最近修改的会话。")
+        : L(@"公共清单里的项目在各账号下都没有会话（已归档的不列出）。如果你确定有，可以运行问题诊断查看原因。");
+    BOOL paged = !self.recentAll && all.count > 10;
+    self.recentAllButton.hidden = all.count <= 10; self.recentAllButton.title = self.recentAll ? L(@"分页显示") : L(@"显示全部");
+    self.previousRecent.hidden = self.nextRecent.hidden = !paged;
+    self.previousRecent.enabled = self.recentPage > 0; self.nextRecent.enabled = self.recentPage+1 < pages;
+    [self layoutPager:self.recentPageButtons previous:self.previousRecent next:self.nextRecent page:self.recentPage pages:paged ? pages : 0 action:@selector(goRecentPage:)];
+    self.recentSummary.stringValue = self.recentLoading && loaded ? L(@"正在刷新…") : all.count ? [NSString stringWithFormat:L(@"共 %lu 条 · %@读取"),(unsigned long)all.count,HandoffAge(self.recentLoadedAt,NSDate.date) ?: @""] : @"";
+}
+- (void)loadRecentSessions {
+    if (self.snapshotMode || self.recentLoading) return;
+    self.recentLoading = YES; [self updateRecent];
+    [self readSessions:NO done:^(NSArray *sessions, NSArray<NSNumber *> *accounts) {
+        self.recentLoading = NO; self.recentSessions = sessions; self.recentAccounts = accounts; self.recentLoadedAt = NSDate.date; [self updateRecent];
+    }];
+}
+- (void)refreshRecent:(id)sender { [self loadRecentSessions]; }
+- (void)toggleRecentAll:(id)sender { self.recentAll = !self.recentAll; [self updateRecent]; }
+- (void)goRecentPage:(NSButton *)sender { self.recentPage = sender.tag; [self updateRecent]; }
+- (void)previousRecentPage:(id)sender { self.recentPage--; [self updateRecent]; }
+- (void)nextRecentPage:(id)sender { self.recentPage++; [self updateRecent]; }
+- (NSString *)accountLabel:(NSInteger)account {
+    NSString *plain = [NSString stringWithFormat:L(@"账号 %02ld"),(long)account], *name = [self accountName:account];
+    return [name isEqual:plain] ? plain : [NSString stringWithFormat:@"%@（%@）",plain,name];
+}
+- (NSView *)recentRow:(NSInteger)row width:(CGFloat)width {
+    NSDictionary *session = self.visibleRecent[row]; NSInteger n = [session[@"account"] integerValue]; NSDate *now = NSDate.date;
+    const unsigned *palette = BadgePalette[(n-1)%4]; NSString *number = [NSString stringWithFormat:@"%02ld",(long)n];
+    Canvas *cell = [[Canvas alloc] initWithFrame:NSMakeRect(0,0,width,50)];
+    Canvas *badge = [[Canvas alloc] initWithFrame:NSMakeRect(18,11,28,28)];
+    badge.paint = ^(NSRect bounds) {
+        [Hex(palette[0]) setFill]; [[NSBezierPath bezierPathWithRoundedRect:bounds xRadius:8 yRadius:8] fill];
+        DrawCentered(number,bounds,@{NSFontAttributeName:[NSFont systemFontOfSize:12 weight:NSFontWeightSemibold],NSForegroundColorAttributeName:Hex(palette[1])});
     };
-    NSImageView *icon = [NSImageView imageViewWithImage:[NSImage imageWithSystemSymbolName:next ? @"arrow.triangle.swap" : @"chart.xyaxis.line" accessibilityDescription:nil]];
-    icon.frame = NSMakeRect(54,42,20,20); icon.contentTintColor = next ? Hex(0xC0743A) : muted; [section addSubview:icon];
-    [section addSubview:Text(bannerText,NSMakeRect(84,42,next ? 300 : width-140,20),[NSFont systemFontOfSize:14 weight:NSFontWeightSemibold],next ? Hex(0x795539) : muted)];
-    if (next) {
-        ActionButton *go = [self toolButton:[NSString stringWithFormat:L(@"%@账号 %02ld"),self.buttons[next-1].title,(long)next] symbol:nil frame:NSMakeRect(width-36-150,34,136,36) action:@selector(selectAccount:)];
-        go.tag = next; go.enabled = self.buttons[next-1].enabled; [section addSubview:go];
+    NSString *where = [NSString stringWithFormat:L(@"最新版本在%@"),[self accountLabel:n]];
+    badge.toolTip = where; badge.accessibilityElement = YES; badge.accessibilityRole = NSAccessibilityStaticTextRole; badge.accessibilityLabel = where; [cell addSubview:badge];
+    NSTextField *title = Text(session[@"title"],NSMakeRect(58,7,450,20),[NSFont systemFontOfSize:14 weight:NSFontWeightMedium],Hex(0x2B2622)); title.toolTip = session[@"title"]; [cell addSubview:title];
+    // Account, project and sidebar group, then where the linked copies stand: this row is always the newest version.
+    NSMutableArray *parts = [NSMutableArray arrayWithObjects:[self accountName:n],session[@"project"][@"name"] ?: [session[@"project"][@"path"] lastPathComponent] ?: @"",nil];
+    if (session[@"group"]) [parts addObject:session[@"group"]];
+    NSMutableArray *copies = [NSMutableArray array];
+    for (NSString *key in [[session[@"versions"] allKeys] sortedArrayUsingSelector:@selector(localizedStandardCompare:)]) {
+        NSInteger other = key.integerValue; if (other == n) continue;
+        [copies addObject:[NSString stringWithFormat:SessionVersionAt(session,other) == 2 ? L(@"账号 %02ld 已同步") : L(@"账号 %02ld 是旧版本"),(long)other]];
     }
-    CGFloat height = 94;
-    if (on) for (NSUInteger i = 0; i < accounts.count; i++) {
-        NSInteger n = accounts[i].integerValue; CGFloat cardWidth = (width-72-12)/2;
-        NSRect frame = NSMakeRect(36+(i%2)*(cardWidth+12),94+(i/2)*222,cardWidth,210);
-        Canvas *card = [[Canvas alloc] initWithFrame:frame];
-        BOOL suggested = n == next; const unsigned *palette = BadgePalette[(n-1)%4];
-        NSDictionary *latestFive = nil, *latestWeek = nil;
-        for (NSDictionary *point in self.usageTrend) if ([point[@"account"] integerValue] == n) { if (point[@"fh"]) latestFive = point; if (point[@"sd"]) latestWeek = point; }
-        card.paint = ^(NSRect bounds) {
-            NSBezierPath *path = [NSBezierPath bezierPathWithRoundedRect:NSInsetRect(bounds,0.5,0.5) xRadius:16 yRadius:16];
-            [[Hex(0xFFFDFA) colorWithAlphaComponent:0.9] setFill]; [path fill];
-            [Hex(suggested ? 0xE9C3A2 : 0xEDE4D8) setStroke]; path.lineWidth = suggested ? 1.5 : 1; [path stroke];
-            NSRect badge = NSMakeRect(18,18,28,28);
-            [Hex(palette[0]) setFill]; [[NSBezierPath bezierPathWithRoundedRect:badge xRadius:8 yRadius:8] fill];
-            DrawCentered([NSString stringWithFormat:@"%02ld",(long)n],badge,@{NSFontAttributeName:[NSFont systemFontOfSize:12 weight:NSFontWeightSemibold],NSForegroundColorAttributeName:Hex(palette[1])});
-            [Hex(0xF2EBE1) setFill]; NSRectFill(NSMakeRect(18,84,NSWidth(bounds)-36,1));
-        };
-        NSTextField *name = Text([self accountName:n],NSMakeRect(56,15,suggested ? 104 : 150,20),[NSFont systemFontOfSize:14 weight:NSFontWeightSemibold],Hex(0x2B2622));
-        name.lineBreakMode = NSLineBreakByTruncatingTail; name.toolTip = name.stringValue; [card addSubview:name];
-        [card addSubview:Text(latestFive || latestWeek ? [NSString stringWithFormat:L(@"更新于 %@"),HandoffAge([NSDate dateWithTimeIntervalSince1970:MAX([latestFive[@"time"] doubleValue],[latestWeek[@"time"] doubleValue])],now)] : L(@"尚无观察记录"),NSMakeRect(56,35,160,16),[NSFont systemFontOfSize:11],muted)];
-        if (suggested) {
-            NSTextField *tag = Text(L(@"建议"),NSMakeRect(162,17,40,18),[NSFont systemFontOfSize:11 weight:NSFontWeightSemibold],Hex(0xC0743A));
-            tag.alignment = NSTextAlignmentCenter; tag.wantsLayer = YES; tag.layer.cornerRadius = 9; tag.layer.backgroundColor = Hex(0xFBEEE2).CGColor; [card addSubview:tag];
-        }
-        NSArray *metrics = @[@[L(@"5 小时"),latestFive[@"fh"] ?: NSNull.null,five],@[L(@"周"),latestWeek[@"sd"] ?: NSNull.null,weekly]];
-        for (NSUInteger m = 0; m < metrics.count; m++) {
-            CGFloat x = cardWidth-18-(2-m)*70; id value = metrics[m][1];
-            NSTextField *label = Text(metrics[m][0],NSMakeRect(x,14,64,14),[NSFont systemFontOfSize:10],muted); label.alignment = NSTextAlignmentRight; [card addSubview:label];
-            NSTextField *percent = Text(value == NSNull.null ? @"—" : [NSString stringWithFormat:@"%.0f%%",[value doubleValue]],NSMakeRect(x,28,64,24),[NSFont monospacedDigitSystemFontOfSize:19 weight:NSFontWeightMedium],metrics[m][2]);
-            percent.alignment = NSTextAlignmentRight; [card addSubview:percent];
-        }
-        NSMutableArray *forecast = [NSMutableArray array];
-        for (NSArray *pair in @[@[@"fh",L(@"5 小时")],@[@"sd",L(@"周")]]) {
-            NSNumber *hours = UsageHoursLeft(self.usageTrend,n,pair[0],now);
-            if (hours) [forecast addObject:[NSString stringWithFormat:L(@"%@约 %@ 用完"),pair[1],hours.doubleValue >= 48 ? [NSString stringWithFormat:L(@"%.1f 天"),hours.doubleValue/24] : [NSString stringWithFormat:L(@"%.1f 小时"),hours.doubleValue]]];
-        }
-        if (forecast.count) [forecast insertObject:L(@"按当前速度") atIndex:0];
-        NSString *outlook = forecast.count ? [[forecast[0] stringByAppendingString:@"："] stringByAppendingString:[[forecast subarrayWithRange:NSMakeRange(1,forecast.count-1)] componentsJoinedByString:@" · "]] : latestFive || latestWeek ? L(@"用量平稳，暂无用完估算") : @"";
-        NSTextField *note = Text(outlook,NSMakeRect(18,60,cardWidth-36,16),[NSFont systemFontOfSize:11 weight:forecast.count ? NSFontWeightMedium : NSFontWeightRegular],forecast.count ? Hex(0x9A5A32) : muted);
-        note.lineBreakMode = NSLineBreakByTruncatingTail; note.toolTip = outlook; [card addSubview:note];
-        // Canvas is flipped; the chart draws in its own unflipped space.
-        if (latestFive || latestWeek) [card addSubview:UsageTrendChart(self.usageTrend,n,NSMakeRect(12,92,cardWidth-24,108),now,colors)];
-        else {
-            NSImageView *empty = [NSImageView imageViewWithImage:[NSImage imageWithSystemSymbolName:@"chart.line.flattrend.xyaxis" accessibilityDescription:nil]];
-            empty.frame = NSMakeRect(cardWidth/2-14,112,28,28); empty.contentTintColor = Hex(0xC9BEB1); [card addSubview:empty];
-            NSTextField *hint = Text(L(@"近 7 天暂无数据"),NSMakeRect(0,148,cardWidth,18),[NSFont systemFontOfSize:12],Hex(0x9A8F84)); hint.alignment = NSTextAlignmentCenter; [card addSubview:hint];
-        }
-        [section addSubview:card]; height = NSMaxY(frame)+28;
+    NSMutableAttributedString *detail = [[NSMutableAttributedString alloc] initWithString:[parts componentsJoinedByString:@" · "] attributes:@{NSFontAttributeName:[NSFont systemFontOfSize:12],NSForegroundColorAttributeName:Hex(0x8A8178)}];
+    if (copies.count) [detail appendAttributedString:[[NSAttributedString alloc] initWithString:[@" · " stringByAppendingString:[copies componentsJoinedByString:L(@"，")]] attributes:@{NSFontAttributeName:[NSFont systemFontOfSize:12 weight:NSFontWeightMedium],NSForegroundColorAttributeName:Hex(0x9A5A32)}]];
+    NSTextField *line = Text(@"",NSMakeRect(58,28,450,16),[NSFont systemFontOfSize:12],Hex(0x8A8178)); line.attributedStringValue = detail;
+    line.lineBreakMode = NSLineBreakByTruncatingTail; line.toolTip = [NSString stringWithFormat:@"%@\n%@",session[@"project"][@"path"] ?: @"",where]; [cell addSubview:line];
+    NSDate *modified = session[@"modified"]; NSDateFormatter *format = [NSDateFormatter new];
+    format.dateFormat = @"MM-dd HH:mm"; NSString *age = [now timeIntervalSinceDate:modified] < 86400 ? HandoffAge(modified,now) : [format stringFromDate:modified];
+    format.dateFormat = @"yyyy-MM-dd HH:mm:ss";
+    NSTextField *time = Text(age ?: @"",NSMakeRect(512,16,100,18),[NSFont monospacedDigitSystemFontOfSize:12 weight:NSFontWeightRegular],Hex(0x8A8178));
+    time.alignment = NSTextAlignmentRight; time.toolTip = [NSString stringWithFormat:L(@"最后修改：%@"),[format stringFromDate:modified] ?: @""]; [cell addSubview:time];
+    ActionButton *sync = [self toolButton:L(@"同步到…") symbol:@"arrow.right.circle" frame:NSMakeRect(width-112,10,96,30) action:@selector(recentSync:)];
+    sync.fontSize = 13; sync.tag = (NSInteger)[self.recentSessions indexOfObjectIdenticalTo:session]; sync.enabled = !self.recentLoading && !self.syncingSessions;
+    sync.accessibilityLabel = [NSString stringWithFormat:L(@"把「%@」同步到其他账号"),session[@"title"]]; [cell addSubview:sync];
+    return cell;
+}
+// Target menu: each account with what it holds of this session; the source, the newest copies and running accounts are disabled.
+- (NSMenu *)recentTargetMenu:(NSDictionary *)session {
+    NSMenu *menu = [NSMenu new]; menu.autoenablesItems = NO;
+    [menu addItemWithTitle:L(@"同步到（目标须已正常退出）") action:nil keyEquivalent:@""].enabled = NO;
+    for (NSNumber *account in self.recentAccounts) {
+        NSInteger n = account.integerValue, held = SessionVersionAt(session,n); BOOL running = self.processes[account].count > 0;
+        NSString *state = held == 2 ? (n == [session[@"account"] integerValue] ? L(@"来源") : L(@"已是最新")) : running ? L(@"运行中，请先退出") : held ? L(@"有更新，替换旧版本") : L(@"新增副本");
+        NSMenuItem *item = [menu addItemWithTitle:[NSString stringWithFormat:@"%@ · %@",[self accountLabel:n],state] action:@selector(recentSyncTo:) keyEquivalent:@""];
+        item.target = self; item.tag = n; item.representedObject = session; item.enabled = held != 2 && !running;
     }
-    [section setFrameSize:NSMakeSize(width,height)]; section.needsDisplay = YES;
-    [self.accountsContent setFrameSize:NSMakeSize(NSWidth(self.accountsContent.frame),NSMaxY(section.frame))];
+    return menu;
+}
+- (void)recentSync:(NSButton *)sender {
+    if (sender.tag < 0 || sender.tag >= (NSInteger)self.recentSessions.count) return;
+    [self refresh]; // Fresh running state, as the sync window does.
+    [[self recentTargetMenu:self.recentSessions[sender.tag]] popUpMenuPositioningItem:nil atLocation:NSMakePoint(0,NSHeight(sender.bounds)+4) inView:sender];
+}
+// The rest is the sync window's own flow: target location, cleaned copies, preview, confirmation and writing.
+- (void)recentSyncTo:(NSMenuItem *)item {
+    if (self.snapshotMode || self.syncingSessions || self.discoveringProjects || self.recentLoading || ![item.representedObject isKindOfClass:NSDictionary.class]) return;
+    [self refresh];
+    if (self.processes[@(item.tag)].count) { [self alert:L(@"目标账号正在运行") detail:L(@"请先在该账号中正常退出，再同步。启动器不会替你退出。")]; return; }
+    self.syncFromRecent = YES; [self previewSessionSync:@[item.representedObject] to:item.tag];
 }
 - (NSArray<NSDictionary *> *)projectRecords { return self.snapshotProjects ?: self.projectStore.projects ?: @[]; }
 - (void)projectNotice:(NSString *)text {
@@ -1877,6 +1918,16 @@ static void TestInitialSync(void) {
 // newAccount: 0 for the project page button; otherwise also looks in projects not yet on the shared list, and preselects for that target.
 - (void)loadSessionsToSync:(NSInteger)newAccount {
     if (self.snapshotMode || self.syncingSessions || self.discoveringProjects) return;
+    self.syncingSessions = YES; [self refreshProjects:nil];
+    [self projectNotice:L(@"正在查找各账号的本地会话…")];
+    [self readSessions:newAccount != 0 done:^(NSArray *sessions, NSArray<NSNumber *> *accounts) {
+        self.syncingSessions = NO; [self refreshProjects:nil];
+        [self chooseSessionToSync:sessions accounts:accounts newAccount:newAccount];
+    }];
+}
+// Every account's sessions in listed projects (discover: also unlisted ones found by import), newest first, linked copies
+// merged into one row. Read off the main thread; shared by the sync window and the recent sessions page (SPEC 同步会话、最近会话).
+- (void)readSessions:(BOOL)discover done:(void (^)(NSArray *sessions, NSArray<NSNumber *> *accounts))done {
     NSMutableArray *projects = [NSMutableArray array];
     for (NSDictionary *project in [self projectRecords]) if ([[self.projectStore statusForPath:project[@"path"]] isEqual:@"正常"]) [projects addObject:project];
     NSMutableArray<NSNumber *> *accounts = [NSMutableArray array];
@@ -1884,13 +1935,11 @@ static void TestInitialSync(void) {
         BOOL directory = NO;
         if ([NSFileManager.defaultManager fileExistsAtPath:ProfilePath(n) isDirectory:&directory] && directory) [accounts addObject:@(n)];
     }
-    self.syncingSessions = YES; [self refreshProjects:nil];
-    [self projectNotice:L(@"正在查找各账号的本地会话…")];
     NSMutableArray *profiles = [NSMutableArray array];
     for (NSInteger n = 1; n <= 10; n++) [profiles addObject:ProfilePath(n)];
     ProjectStore *validator = [self projectValidator];
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0), ^{
-        if (newAccount) {
+        if (discover) {
             NSArray *known = [projects valueForKey:@"path"];
             for (NSDictionary *candidate in DiscoverProjects(profiles,validator,NSHomeDirectory())[@"candidates"])
                 if (![known containsObject:candidate[@"path"]]) [projects addObject:@{@"name":[candidate[@"path"] lastPathComponent],@"path":candidate[@"path"]}];
@@ -1900,10 +1949,7 @@ static void TestInitialSync(void) {
             NSMutableDictionary *row = session.mutableCopy; row[@"account"] = account; [sessions addObject:row];
         }
         [sessions sortUsingDescriptors:@[[NSSortDescriptor sortDescriptorWithKey:@"stamp" ascending:NO]]];
-        dispatch_async(dispatch_get_main_queue(), ^{
-            self.syncingSessions = NO; [self refreshProjects:nil];
-            [self chooseSessionToSync:MergeLinkedSessions(sessions,[self.preferences arrayForKey:SessionLinksKey]) accounts:accounts newAccount:newAccount];
-        });
+        dispatch_async(dispatch_get_main_queue(), ^{ done(MergeLinkedSessions(sessions,[self.preferences arrayForKey:SessionLinksKey]),accounts); });
     });
 }
 - (void)beginSyncProgress:(NSString *)title total:(NSUInteger)total {
@@ -1949,6 +1995,10 @@ static void TestInitialSync(void) {
     if (response != NSAlertFirstButtonReturn) return;
     NSArray *selected = picker.selected; NSInteger to = target.selectedTag;
     if (!target.selectedItem.enabled) { [self alert:L(@"目标账号正在运行") detail:L(@"请先在该账号中正常退出，再同步。启动器不会替你退出。")] ; return; }
+    self.syncFromRecent = NO; [self previewSessionSync:selected to:to];
+}
+// Locates the target, makes the cleaned copies and shows the preview; nothing is written before the user confirms there.
+- (void)previewSessionSync:(NSArray<NSDictionary *> *)selected to:(NSInteger)to {
     self.syncingSessions = YES; [self refreshProjects:nil];
     [self beginSyncProgress:L(@"正在生成清理副本") total:selected.count];
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0), ^{
@@ -2027,6 +2077,7 @@ static void TestInitialSync(void) {
         }
         dispatch_async(dispatch_get_main_queue(), ^{
             self.syncingSessions = NO; [self endSyncProgress]; [self.checking removeObject:@(to)]; [self refresh]; [self refreshProjects:nil];
+            if (self.syncFromRecent && written && self.page == 1 && self.recentSessions) [self loadRecentSessions]; // Only a sync started from the page that wrote something re-reads it, as on Windows.
             NSString *log = [NSString stringWithFormat:L(@"会话同步：账号 %02ld 新增 %lu 条，替换 %lu 条，共选择 %lu 条"),(long)to,(unsigned long)(written-replaced),(unsigned long)replaced,(unsigned long)(cleans.count+failures.count)];
             [self projectNotice:failure ?: log]; [self addLog:log];
             NSAlert *done = [NSAlert new]; done.messageText = written == cleans.count ? L(@"会话已同步") : written ? L(@"同步未全部完成") : L(@"没有写入会话");
@@ -2303,27 +2354,31 @@ static void TestInitialSync(void) {
     self.logPage = MAX(0,MIN(self.logPage,pages-1)); NSUInteger start = self.logPage*10;
     self.visibleLogs = [filtered subarrayWithRange:NSMakeRange(start,MIN(10,filtered.count-start))]; [self.logTable reloadData];
     self.previousLogs.enabled = self.logPage > 0; self.nextLogs.enabled = self.logPage+1 < pages;
-    // Numbered pager: first, last, current ±1, with ellipses for gaps.
-    for (NSView *view in self.logPageButtons) [view removeFromSuperview];
-    [self.logPageButtons removeAllObjects];
-    CGFloat x = NSMaxX(self.previousLogs.frame)+8; NSInteger last = -1;
-    for (NSInteger i = 0; i < pages; i++) {
-        if (i != 0 && i != pages-1 && labs(i-self.logPage) > 1) continue;
-        if (last >= 0 && i-last > 1) {
-            NSTextField *gap = Text(@"…",NSMakeRect(x,658,24,20),[NSFont systemFontOfSize:13],Hex(0x8A8178)); gap.alignment = NSTextAlignmentCenter;
-            [self.previousLogs.superview addSubview:gap]; [self.logPageButtons addObject:gap]; x += 32;
-        }
-        ActionButton *button = [self toolButton:@(i+1).stringValue symbol:nil frame:NSMakeRect(x,634,32,32) action:@selector(goLogPage:)];
-        button.tag = i; button.fontSize = 13; button.primary = i == self.logPage; button.accessibilityLabel = [NSString stringWithFormat:L(@"第 %ld 页"),(long)i+1];
-        [self.previousLogs.superview addSubview:button]; [self.logPageButtons addObject:button]; x += 40; last = i;
-    }
-    [self.nextLogs setFrameOrigin:NSMakePoint(x,634)];
+    [self layoutPager:self.logPageButtons previous:self.previousLogs next:self.nextLogs page:self.logPage pages:pages action:@selector(goLogPage:)];
     self.logEmpty.stringValue = filtered.count ? @"" : self.logEntries.count ? L(@"没有匹配的日志，可清除搜索或切换筛选条件") : L(@"暂无日志");
     self.logSummary.stringValue = !filtered.count ? [NSString stringWithFormat:L(@"共 %lu 条日志"),(unsigned long)self.logEntries.count] : filtered.count == self.logEntries.count ? [NSString stringWithFormat:L(@"共 %lu 条日志"),(unsigned long)filtered.count] : [NSString stringWithFormat:L(@"匹配 %lu 条 / 共 %lu 条日志"),(unsigned long)filtered.count,(unsigned long)self.logEntries.count];
     if (self.logStorageFailed) { self.logSummary.stringValue = L(@"日志存储不可用 · 当前记录仅在内存中"); self.logSummary.toolTip = self.logStorageNotice; }
 }
-- (NSInteger)numberOfRowsInTableView:(NSTableView *)tableView { return self.visibleLogs.count; }
+// Numbered pager beside the previous button: first, last, current ±1, with ellipses for gaps; 0 pages leaves only the arrows.
+- (void)layoutPager:(NSMutableArray<NSView *> *)buttons previous:(NSButton *)previous next:(NSButton *)next page:(NSInteger)page pages:(NSInteger)pages action:(SEL)action {
+    for (NSView *view in buttons) [view removeFromSuperview];
+    [buttons removeAllObjects];
+    CGFloat x = NSMaxX(previous.frame)+8, y = NSMinY(previous.frame); NSInteger last = -1;
+    for (NSInteger i = 0; i < pages; i++) {
+        if (i != 0 && i != pages-1 && labs(i-page) > 1) continue;
+        if (last >= 0 && i-last > 1) {
+            NSTextField *gap = Text(@"…",NSMakeRect(x,y+24,24,20),[NSFont systemFontOfSize:13],Hex(0x8A8178)); gap.alignment = NSTextAlignmentCenter;
+            [previous.superview addSubview:gap]; [buttons addObject:gap]; x += 32;
+        }
+        ActionButton *button = [self toolButton:@(i+1).stringValue symbol:nil frame:NSMakeRect(x,y,32,32) action:action];
+        button.tag = i; button.fontSize = 13; button.primary = i == page; button.accessibilityLabel = [NSString stringWithFormat:L(@"第 %ld 页"),(long)i+1];
+        [previous.superview addSubview:button]; [buttons addObject:button]; x += 40; last = i;
+    }
+    [next setFrameOrigin:NSMakePoint(x,y)];
+}
+- (NSInteger)numberOfRowsInTableView:(NSTableView *)tableView { return tableView == self.recentTable ? (NSInteger)self.visibleRecent.count : (NSInteger)self.visibleLogs.count; }
 - (NSView *)tableView:(NSTableView *)tableView viewForTableColumn:(NSTableColumn *)column row:(NSInteger)row {
+    if (tableView == self.recentTable) return [self recentRow:row width:column.width];
     NSString *value = self.visibleLogs[row][column.identifier], *text = [@[@"level",@"instance"] containsObject:column.identifier] ? L(value) : value;
     NSView *cell = [[NSView alloc] initWithFrame:NSMakeRect(0,0,column.width,40)];
     if ([column.identifier isEqual:@"level"]) {
@@ -2439,7 +2494,7 @@ static void TestInitialSync(void) {
                 toggle.frame = NSMakeRect(696-16-42,y+18,42,24); [self.settingsContent addSubview:toggle];
             } else [self settingsAction:L(@"管理登录启动…") action:@selector(manageLoginItem:) title:L(@"登录时启动") detail:[self loginItemDescription] icon:@"power"];
             [self settingToggle:@"rememberPage" title:L(@"恢复启动器上次页面") detail:nil icon:@"arrow.uturn.backward"];
-            [self settingChoice:@"startPage" title:L(@"未恢复时的启动页面") choices:@[L(@"实例管理"),L(@"用量趋势"),L(@"项目管理"),L(@"日志记录"),L(@"系统设置")] values:@[@0,@1,@2,@3,@4] icon:@"house"];
+            [self settingChoice:@"startPage" title:L(@"未恢复时的启动页面") choices:@[L(@"实例管理"),L(@"最近会话"),L(@"项目管理"),L(@"日志记录"),L(@"系统设置")] values:@[@0,@1,@2,@3,@4] icon:@"house"];
             [self settingChoice:@"refreshInterval" title:L(@"本地进程状态刷新间隔") choices:@[L(@"1 秒"),L(@"3 秒"),L(@"5 秒")] values:@[@1,@3,@5] icon:@"arrow.clockwise"];
             [self settingToggle:@"restoreMinimized" title:L(@"点击账号时恢复最小化窗口") detail:nil icon:@"macwindow.on.rectangle"];
             [self settingsHeader:L(@"快捷键")];
@@ -2543,8 +2598,8 @@ static void TestInitialSync(void) {
     if (![self.settings[@"localNotifications"] boolValue]) self.toast.hidden = YES;
     self.usageGeneration++; self.usageInterface = nil; self.usagePopoverObservers = nil; self.pendingUsagePopovers = nil;
     if (![self.settings[@"showUsageHistory"] boolValue]) {
-        self.savedUsageInterface = nil; self.usageTrend = nil;
-        if (!self.snapshotMode) { [self.preferences removeObjectForKey:@"usageInterfaceObservations"]; [self.preferences removeObjectForKey:@"usageTrend"]; }
+        self.savedUsageInterface = nil;
+        if (!self.snapshotMode) [self.preferences removeObjectForKey:@"usageInterfaceObservations"];
     }
     [self updateUsageCards]; [self trimLogs]; [self reloadLogs];
 }
@@ -2609,7 +2664,7 @@ static void TestInitialSync(void) {
     self.settingsFeedback.stringValue = [NSString stringWithFormat:L(@"已导入 %lu 项设置"),(unsigned long)changes.count];
 }
 - (void)localHelp:(id)sender {
-    [self alert:L(@"本地使用帮助") detail:L(@"实例管理：点击整张卡片启动或打开账号；更多菜单可启动、打开、关闭或删除。\n用量趋势：近 7 天已观察到的用量和下一个账号建议。\n项目管理：维护公共目录入口；所有写入均需明确操作。\n日志记录：筛选、搜索、翻页、导出当前结果；重启和更新后保留。\n系统设置：更改即时保存并生效，恢复默认不会处理账号数据。\n\n启动器不查询 Claude 服务、不读取凭据，不控制官方客户端自身正常联网。")];
+    [self alert:L(@"本地使用帮助") detail:L(@"实例管理：点击整张卡片启动或打开账号；更多菜单可启动、打开、关闭或删除。\n最近会话：各账号的会话按修改时间排在一起，可直接同步到其他账号。\n项目管理：维护公共目录入口；所有写入均需明确操作。\n日志记录：筛选、搜索、翻页、导出当前结果；重启和更新后保留。\n系统设置：更改即时保存并生效，恢复默认不会处理账号数据。\n\n启动器不查询 Claude 服务、不读取凭据，不控制官方客户端自身正常联网。")];
 }
 static NSString *SupportSummary(NSDictionary *result) {
     return [result[@"problems"] integerValue] + [result[@"notices"] integerValue] ? [NSString stringWithFormat:L(@"发现 %@ 个问题、%@ 个注意事项"),result[@"problems"],result[@"notices"]] : L(@"没有发现已知问题");
@@ -3001,7 +3056,7 @@ static NSString *SupportSummary(NSDictionary *result) {
     NSTextField *edition = Text(@"", NSMakeRect(101,124,170,14), [NSFont systemFontOfSize:9], muted);
     edition.attributedStringValue = [[NSAttributedString alloc] initWithString:[NSString stringWithFormat:@"DESKTOP · V%@",[NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"DEV"] attributes:@{NSKernAttributeName:@2,NSFontAttributeName:[NSFont systemFontOfSize:9],NSForegroundColorAttributeName:muted}];
     [sidebar addSubview:edition];
-    NSArray *nav = @[@[L(@"实例管理"),@"briefcase"],@[L(@"用量趋势"),@"chart.xyaxis.line"],@[L(@"项目管理"),@"folder"],@[L(@"日志记录"),@"doc.text"],@[L(@"系统设置"),@"gearshape"]];
+    NSArray *nav = @[@[L(@"实例管理"),@"briefcase"],@[L(@"最近会话"),@"clock.arrow.circlepath"],@[L(@"项目管理"),@"folder"],@[L(@"日志记录"),@"doc.text"],@[L(@"系统设置"),@"gearshape"]];
     NSMutableArray *items = [NSMutableArray array];
     for (NSUInteger i = 0; i < nav.count; i++) { NSView *item = [self navItem:nav[i][0] symbol:nav[i][1] index:i]; [sidebar addSubview:item]; [items addObject:item]; }
     self.navItems = items;
@@ -3050,7 +3105,7 @@ static NSString *SupportSummary(NSDictionary *result) {
     self.endLoginButton.frame = NSMakeRect(640,680,140,28); self.endLoginButton.bezelStyle = NSBezelStyleRounded;
     [instances addSubview:self.endLoginButton];
 
-    NSView *accounts = [self accountsPage:main.bounds];
+    NSView *accounts = [self recentPage:main.bounds];
     NSView *projects = [self projectsPage:main.bounds];
     NSView *logs = [self logsPage:main.bounds];
     NSView *settings = [self settingsPage:main.bounds];
@@ -3147,15 +3202,8 @@ static NSString *SupportSummary(NSDictionary *result) {
                     if (![current isEqual:identities[n]]) { [combined removeObjectForKey:n]; if (current && ![current isEqual:saved[n][@"identity"]]) [saved removeObjectForKey:n]; continue; }
                     NSDictionary *previous = [combined[n][@"status"] isEqual:@"界面已读取"] ? combined[n] : saved[n];
                     combined[n] = MergeUsageInterface(previous,results[n],current,observedTimes[n]);
-                    if ([combined[n][@"status"] isEqual:@"界面已读取"]) {
-                        saved[n] = combined[n];
-                        // Only values observed in this read; a carried-over weekly value keeps its own older time.
-                        NSDate *at = observedTimes[n];
-                        NSNumber *fh = [combined[n][@"fh"][@"observedAt"] isEqual:at] ? combined[n][@"fh"][@"percent"] : nil;
-                        NSNumber *sd = [combined[n][@"sd"][@"observedAt"] isEqual:at] ? combined[n][@"sd"][@"percent"] : nil;
-                        NSArray *trend = AppendUsageTrend(self.usageTrend,n.integerValue,fh,sd,at);
-                        if (![trend isEqual:self.usageTrend]) { self.usageTrend = trend; if (!self.snapshotMode) [self.preferences setObject:trend forKey:@"usageTrend"]; }
-                    }
+                    // The usage trend is no longer recorded (2026-11-16); an old usageTrend preference is left as it is.
+                    if ([combined[n][@"status"] isEqual:@"界面已读取"]) saved[n] = combined[n];
                 }
                 if (![saved isEqual:self.savedUsageInterface]) { self.savedUsageInterface = saved; [self.preferences setObject:StoredUsageInterface(saved) forKey:@"usageInterfaceObservations"]; }
                 self.usageInterface = combined; [self updateUsageCards];
@@ -3165,7 +3213,6 @@ static NSString *SupportSummary(NSDictionary *result) {
     });
 }
 - (void)updateUsageCards {
-    [self updateTrendSection];
     NSDate *now = NSDate.date; NSMutableArray *readings = [NSMutableArray array];
     for (AccountCard *card in self.cards) {
         NSDictionary *record = self.usageInterface[@(card.number)];
@@ -3426,19 +3473,16 @@ static OSStatus HotKeyHandler(EventHandlerCallRef next, EventRef event, void *co
 }
 // The tour only points at real controls: the overlay takes every click and shortcut, so nothing starts or changes.
 - (NSArray<NSDictionary *> *)tutorialStepList {
-    NSMutableArray *steps = [NSMutableArray arrayWithObject:@{@"title":L(@"欢迎使用 Claude 启动器"),@"body":L(@"用 1 分钟认识账号、项目、同步会话和用量趋势。引导期间不会启动账号，也不会改动任何数据。"),@"page":@0,@"targets":@[]}];
+    NSMutableArray *steps = [NSMutableArray arrayWithObject:@{@"title":L(@"欢迎使用 Claude 启动器"),@"body":L(@"用 1 分钟认识账号、项目、同步会话和最近会话。引导期间不会启动账号，也不会改动任何数据。"),@"page":@0,@"targets":@[]}];
     for (AccountCard *card in self.cards) if (!card.hidden) {
         [steps addObject:@{@"title":L(@"启动或切换账号"),@"body":L(@"每个账号一张卡片。点击整张卡片：没运行时启动，运行中切到它的窗口。“···”里可以关闭或删除。各账号的登录和会话相互独立。"),@"page":@0,@"targets":@[card.button]}];
         break;
     }
-    // Suggestion and the first row of charts: the whole section would leave no room for the card.
-    NSMutableArray *trend = [NSMutableArray array];
-    for (NSView *view in self.trendSection.subviews) if (NSMaxY(view.frame) <= 360) [trend addObject:view];
     [steps addObjectsFromArray:@[
         @{@"title":L(@"新建账号"),@"body":L(@"点这里创建下一个空闲账号，然后在打开的 Claude 里登录。最多 10 个。"),@"page":@0,@"targets":@[self.createButton]},
         @{@"title":L(@"项目管理"),@"body":L(@"添加常用目录，或从各账号的本机记录里识别导入。所有账号共用这份清单。"),@"page":@2,@"targets":@[self.importProjectsButton,self.addProjectButton]},
         @{@"title":L(@"同步会话"),@"body":L(@"把会话同步到另一个账号接着聊。同步过的会话以最新版本为准，直接替换旧版本，不合并。目标账号要先正常退出；有项目后才能用。"),@"page":@2,@"targets":@[self.syncSessionButton]},
-        @{@"title":L(@"用量趋势"),@"body":L(@"用量趋势页记录近 7 天用量，并建议下一个使用的账号。只用启动器已观察到的数值，不查询 Claude。"),@"page":@1,@"targets":trend},
+        @{@"title":L(@"最近会话"),@"body":L(@"各账号的会话按修改时间排在一起，最新的在最上面。点一行的“同步到…”，选目标账号，就能预览并同步。进入这一页时才读取会话列表。"),@"page":@1,@"targets":@[self.navItems[1]]},
         @{@"title":L(@"随时回看"),@"body":L(@"在系统设置的关于页，可以重新播放引导，或查看文档教程。"),@"page":@4,@"about":@YES,@"targets":@[]}]];
     return steps;
 }
@@ -3582,7 +3626,6 @@ static OSStatus HotKeyHandler(EventHandlerCallRef next, EventRef event, void *co
 }
 - (void)showPage:(NSInteger)page {
     if (page < 0 || page >= (NSInteger)self.pages.count) page = 0;
-    if (page == 1) [self.accountsContent scrollPoint:NSZeroPoint]; // Each visit starts at the top.
     self.page = page;
     if (!self.snapshotMode) [self.preferences setInteger:page forKey:@"lastLauncherPage"];
     if (page == 2) [self refreshProjects:nil];
@@ -3594,7 +3637,8 @@ static OSStatus HotKeyHandler(EventHandlerCallRef next, EventRef event, void *co
     for (NSView *item in self.navItems) item.needsDisplay = YES;
     if (page == 0) [self readLocalUsage];
 }
-- (void)navigate:(NSButton *)sender { [self showPage:sender.tag]; }
+// Only the user's own click on the sidebar reads the recent sessions; restoring the page at launch or the tour does not.
+- (void)navigate:(NSButton *)sender { [self showPage:sender.tag]; if (sender.tag == 1) [self loadRecentSessions]; }
 - (void)newInstance:(id)sender {
     [self refresh];
     if (self.scanError || self.loginAccount) return;
@@ -3981,6 +4025,25 @@ static void TestLogStorage(void) {
         printf("TestLogStorage: PASS (directory/ancestor symlink, file symlink, hard link, missing file, safe 0600 round trip, size limit)\n");
     } @finally { [fm removeItemAtPath:root error:nil]; }
 }
+// Synthetic rows for the recent sessions page in self-tests and tutorial images; never read from disk.
+static NSArray *RecentDemo(NSDate *now) {
+    NSArray *titles = @[@"修复登录页的跳转问题",@"整理发布说明",@"给同步窗口加进度条",@"重写设置导入",@"排查 Windows 路径大小写",@"首页插画换成高清版",@"日志分页改成数字页码",@"项目识别支持 worktree",@"补充离线拒绝测试",@"教程配图更新"];
+    NSArray *projects = @[@{@"name":@"ClaudeLauncher",@"path":@"/Users/example/Projects/ClaudeLauncher"},@{@"name":@"Website",@"path":@"/Users/example/Projects/Website"},@{@"name":@"Notes",@"path":@"/Users/example/Documents/Notes"}];
+    NSMutableArray *rows = [NSMutableArray array];
+    for (NSInteger i = 0; i < 23; i++) {
+        NSInteger account = i == 1 ? 3 : i%3+1; long long stamp = (long long)((now.timeIntervalSince1970-i*i*1900-120)*1e9);
+        NSMutableDictionary *versions = [@{@(account).stringValue:@{@"id":@"a",@"stamp":@(stamp)}} mutableCopy];
+        if (i == 0) versions[@"2"] = @{@"id":@"b",@"stamp":@(stamp-1000)};
+        if (i == 1) versions[@"1"] = @{@"id":@"c",@"stamp":@(stamp-5000)};
+        if (i == 2) versions[@"2"] = @{@"id":@"d",@"stamp":@(stamp)};
+        NSMutableDictionary *row = [@{@"path":@"/dev/null",@"id":@"a",@"title":titles[i%titles.count],@"modified":[NSDate dateWithTimeIntervalSince1970:stamp/1e9],@"stamp":@(stamp),
+            @"project":projects[i%projects.count],@"account":@(account),@"versions":versions} mutableCopy];
+        if (versions.count > 1) row[@"linked"] = @YES;
+        if (i == 3) row[@"group"] = @"发布";
+        [rows addObject:row];
+    }
+    return rows;
+}
 static void TestTutorial(void) {
     NSCAssert(NSEqualRects(TutorialCardFrame(NSMakeRect(0,0,1000,700),NSZeroRect,NSMakeSize(300,200),NULL),NSMakeRect(350,250,300,200)),@"no highlight centres the card");
     NSRect bounds = NSMakeRect(0,0,1080,720); NSSize size = NSMakeSize(348,200);
@@ -4077,7 +4140,6 @@ static int SelfTest(void) {
         TestHandoff();
         TestLocalization();
         TestConfigSync();
-        TestUsageTrend();
         TestTutorial();
         TestInitialSync();
         TestUpdateQuits();
@@ -4443,22 +4505,32 @@ static int UISettingsTest(NSString *output) {
         [launcher markUsed:1]; [preferences setObject:@{@"3":NSDate.date,@"9":@"bad",@"x":NSDate.date} forKey:@"accountLastUsed"];
         [launcher markUsed:2]; NSCAssert([[preferences dictionaryForKey:@"accountLastUsed"] count] == 2,@"markUsed drops invalid entries");
         [preferences removeObjectForKey:@"accountLastUsed"];
-        [launcher showPage:1]; capture(@"accounts.png");
-        for (NSView *view in launcher.accountsContent.subviews) NSCAssert(![view isKindOfClass:NSSearchField.class] && ![view isKindOfClass:NSPopUpButton.class] && !([view isKindOfClass:NSButton.class] && [((NSButton *)view).title containsString:@"同步配置"]),@"trend page has no account table, search, sort or config sync");
-        NSCAssert([launcher.navItems[1].subviews.lastObject.accessibilityLabel isEqual:@"用量趋势"],@"sidebar names the trend page");
-        NSDictionary *savedSettings = launcher.settings; NSMutableDictionary *trendOn = savedSettings.mutableCopy; trendOn[@"showUsageHistory"] = @YES; launcher.settings = trendOn;
-        NSMutableArray *synthetic = [NSMutableArray array]; NSTimeInterval end = NSDate.date.timeIntervalSince1970;
-        for (NSInteger h = 160; h >= 0; h -= 2) {
-            NSTimeInterval t = end-h*3600;
-            [synthetic addObject:@{@"account":@1,@"time":@(t),@"fh":@(fmod(160-h,5)*18+6),@"sd":@(MIN(96.0,(160-h)*0.55+8))}];
-            if (h % 6 == 0) [synthetic addObject:@{@"account":@2,@"time":@(t+60),@"fh":@(fmod(160-h,10)*7+4),@"sd":@((160-h)*0.18+12)}];
-        }
-        launcher.usageTrend = synthetic; launcher.trendSignature = nil; [launcher updateTrendSection];
-        NSCAssert(launcher.trendSection.subviews.count > 6 && NSHeight(launcher.accountsContent.frame) == NSMaxY(launcher.trendSection.frame) && NSMinY(launcher.trendSection.frame) < 160,@"trend cards sit at the top of their own page, which grows with them");
-        [launcher.accountsContent scrollPoint:NSZeroPoint]; capture(@"accounts-trend.png");
-        launcher.window.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua]; launcher.trendSignature = nil; [launcher updateTrendSection]; capture(@"accounts-trend-dark.png"); launcher.window.appearance = nil;
-        launcher.settings = savedSettings; launcher.usageTrend = nil; launcher.trendSignature = nil; [launcher updateTrendSection]; [launcher.accountsContent scrollPoint:NSZeroPoint];
-        NSCAssert(launcher.trendSection.subviews.count < 4,@"trend off shows only the notice");
+        [launcher showPage:1];
+        NSCAssert(!launcher.recentSessions && !launcher.recentLoading && !launcher.recentLoad.hidden && !launcher.visibleRecent.count,@"showing the page reads nothing and offers the load button");
+        NSCAssert([launcher.navItems[1].subviews.lastObject.accessibilityLabel isEqual:@"最近会话"],@"sidebar names the recent sessions page");
+        [launcher navigate:(NSButton *)launcher.navItems[1].subviews.lastObject]; NSCAssert(!launcher.recentLoading,@"offscreen renders never read sessions");
+        capture(@"recent-unloaded.png");
+        launcher.recentSessions = RecentDemo(NSDate.date); launcher.recentAccounts = @[@1,@2,@3]; launcher.recentLoadedAt = NSDate.date; launcher.recentPage = 0; [launcher updateRecent];
+        NSCAssert(launcher.visibleRecent.count == 10 && launcher.recentLoad.hidden && !launcher.nextRecent.hidden && launcher.nextRecent.enabled && !launcher.previousRecent.enabled && launcher.recentPageButtons.count == 3,@"ten rows a page with a numbered pager");
+        NSCAssert([launcher.recentTable numberOfRows] == 10 && [launcher tableView:launcher.recentTable viewForTableColumn:launcher.recentTable.tableColumns[0] row:0].subviews.count == 5,@"each row shows badge, title, details, time and its sync button");
+        capture(@"recent.png");
+        launcher.window.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua]; [launcher updateRecent]; capture(@"recent-dark.png"); launcher.window.appearance = nil;
+        [launcher.nextRecent performClick:nil]; [launcher.nextRecent performClick:nil];
+        NSCAssert(launcher.recentPage == 2 && launcher.visibleRecent.count == 3 && !launcher.nextRecent.enabled,@"last page holds the rest");
+        [launcher.recentAllButton performClick:nil]; NSCAssert(launcher.recentAll && launcher.visibleRecent.count == 23 && launcher.nextRecent.hidden && [launcher.recentAllButton.title isEqual:@"分页显示"],@"show all lists every row without a pager");
+        [launcher.recentAllButton performClick:nil]; NSCAssert(!launcher.recentAll && launcher.visibleRecent.count == 3,@"back to pages keeps the page");
+        launcher.recentPage = 0; [launcher updateRecent];
+        // Target menu: this row's newest copy is in 01, 02 holds an older one but is running, 03 has nothing.
+        NSMenu *targets = [launcher recentTargetMenu:launcher.recentSessions[0]];
+        NSCAssert(targets.numberOfItems == 4 && ![targets itemAtIndex:0].enabled && ![targets itemAtIndex:1].enabled && [[targets itemAtIndex:1].title hasSuffix:@"来源"] &&
+            ![targets itemAtIndex:2].enabled && [[targets itemAtIndex:2].title hasSuffix:@"运行中，请先退出"] && [targets itemAtIndex:3].enabled && [[targets itemAtIndex:3].title hasSuffix:@"新增副本"] &&
+            [targets itemAtIndex:3].tag == 3 && [targets itemAtIndex:3].representedObject == launcher.recentSessions[0],@"target menu marks source, running and new");
+        targets = [launcher recentTargetMenu:launcher.recentSessions[1]];
+        NSCAssert([targets itemAtIndex:1].enabled && [[targets itemAtIndex:1].title hasSuffix:@"有更新，替换旧版本"] && ![targets itemAtIndex:3].enabled && [[targets itemAtIndex:3].title hasSuffix:@"来源"],@"an older copy can be replaced");
+        targets = [launcher recentTargetMenu:launcher.recentSessions[2]];
+        NSCAssert(![targets itemAtIndex:2].enabled && [[targets itemAtIndex:2].title hasSuffix:@"已是最新"],@"an equal copy is already current");
+        launcher.recentSessions = @[]; [launcher updateRecent]; NSCAssert(!launcher.recentDiagnose.hidden && launcher.recentAllButton.hidden && launcher.nextRecent.hidden,@"no sessions offers diagnosis");
+        launcher.recentSessions = nil; launcher.recentAccounts = nil; [launcher updateRecent];
         for (NSInteger n=1;n<=3;n++) launcher.buttons[n-1].enabled = YES;
         launcher.cards[0].usageValues = @[@86,@20]; launcher.cards[1].usageValues = @[@30,NSNull.null]; launcher.cards[2].usageValues = @[@10,@5];
         launcher.accountNames[@"1"] = @"Synthetic-Name-Only"; launcher.accountNames[@"3"] = @"Synthetic-Name-Only";
@@ -4506,7 +4578,7 @@ static int UISettingsTest(NSString *output) {
         Fetch([NSURL URLWithString:@"https://api.anthropic.com/v1/messages"],YES,100,1,nil,^(NSData *data,NSString *failure) { refused = !data && failure.length; });
         NSCAssert(refused,@"Claude requests rejected even with update opt-in"); NetworkEnabled = NO;
         NSCAssert(!launcher.timer && !launcher.statusItem && !launcher.projectStore,@"UI checks do not start normal lifecycle or load projects");
-        puts("PASS: native settings controls, immediate save/reload, reset scope, artwork/interface-usage/notifications, log retention/persistence/filter/paging, whole-card launch, rings and countdowns, close guard, trend-only page, network rejection before session creation; 14 offscreen renders (3 dark, one sync picker with groups)");
+        puts("PASS: native settings controls, immediate save/reload, reset scope, artwork/interface-usage/notifications, log retention/persistence/filter/paging, whole-card launch, rings and countdowns, close guard, recent sessions page (paging, show all, target menu), network rejection before session creation; 14 offscreen renders (3 dark, one sync picker with groups)");
     } @finally {
         NetworkEnabled = NO; [preferences removePersistentDomainForName:suite]; [preferences synchronize];
     }
@@ -4596,12 +4668,7 @@ int main(int argc, const char *argv[]) {
                 [launcher.cardsView setFrameSize:NSMakeSize(776,3*136-12)];
                 launcher.summaryLabel.stringValue = [NSString stringWithFormat:L(@"本机 %lu 个账号 · %lu 个运行中"),3UL,1UL];
                 launcher.usageInterface = @{@1:UsageDemo(@62,@70),@2:UsageDemo(@73,nil)}; [launcher updateUsageCards]; [launcher refreshProjects:nil];
-                NSMutableArray *synthetic = [NSMutableArray array]; NSTimeInterval end = NSDate.date.timeIntervalSince1970;
-                for (NSInteger h = 160; h >= 0; h -= 2) {
-                    [synthetic addObject:@{@"account":@1,@"time":@(end-h*3600),@"fh":@(fmod(160-h,5)*18+6),@"sd":@(MIN(96.0,(160-h)*0.55+8))}];
-                    if (h % 6 == 0) [synthetic addObject:@{@"account":@2,@"time":@(end-h*3600+60),@"fh":@(fmod(160-h,10)*7+4),@"sd":@((160-h)*0.18+12)}];
-                }
-                launcher.usageTrend = synthetic; launcher.trendSignature = nil; [launcher updateTrendSection];
+                launcher.recentSessions = RecentDemo(NSDate.date); launcher.recentAccounts = @[@1,@2,@3]; launcher.recentLoadedAt = NSDate.date; [launcher updateRecent];
                 NSInteger mode = atoi(argv[5]);
                 if (mode == -1) [launcher showTutorialPicker:nil];
                 if (mode == -2) { NSWindow *guide = [launcher tutorialDocumentWindow]; view = ((NSScrollView *)guide.contentView).documentView; }

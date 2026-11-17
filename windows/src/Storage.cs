@@ -759,8 +759,6 @@ namespace ClaudeLauncher {
             Check(UsageInterface.Merge(second, new UsageRecord { Status = "界面读取未完成" }, "2|10|5|1|x", t2) == second && UsageInterface.Merge(second, new UsageRecord { Status = "多个用量界面，待核对" }, "2|10|5|1|x", t2).Status != UsageInterface.Observed, "暂不可读保留旧值，不确定结果不沿用");
             var restarted = UsageInterface.Merge(second, new UsageRecord { Status = UsageInterface.Observed, FiveHour = new UsageMetric { Percent = 45 } }, "2|11|5|1|x", t2);
             Check(restarted.FiveHour.Percent == 45 && restarted.Weekly == null, "重启前的周值不得充当当前额度");
-            var estimateTrend = new List<TrendPoint>(); UsageTrend.Observe(estimateTrend, 2, none, t1.ToUniversalTime());
-            Check(estimateTrend.Count == 1 && estimateTrend[0].Five == null && estimateTrend[0].Week == 9, "估算零值不得作为实测写入趋势");
             Check(UsageInterface.TimeLabel(second.FiveHour, t2) == "09:00:00" && UsageInterface.TimeLabel(second.FiveHour, t1.AddDays(1)) == "10-29 09:00" && UsageInterface.TimeLabel(null, t2) == "尚未观察到", "观察时间格式错误");
             string usageFile = Path.Combine(root, "settings", "usage-observations.json");
             Check(UsageInterface.Load(usageFile, t2).Count == 0, "缺少观察记录应为空");

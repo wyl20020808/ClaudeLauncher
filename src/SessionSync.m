@@ -433,6 +433,10 @@ NSArray<NSDictionary *> *MergeLinkedSessions(NSArray<NSDictionary *> *sessions, 
     }
     return rows;
 }
+NSInteger SessionVersionAt(NSDictionary *row, NSInteger account) {
+    NSNumber *held = row[@"versions"][@(account).stringValue][@"stamp"];
+    return !held ? 0 : [held compare:row[@"stamp"]] == NSOrderedAscending ? 1 : 2;
+}
 NSArray<NSDictionary *> *LinkSessions(NSArray<NSDictionary *> *links, NSInteger from, NSString *fromId, NSInteger to, NSString *toId) {
     NSString *source = @(from).stringValue, *target = @(to).stringValue;
     NSMutableDictionary *joined = [NSMutableDictionary dictionary]; NSMutableArray *result = [NSMutableArray array];
@@ -778,6 +782,7 @@ void TestSessionSync(void) {
         NSCAssert(LinkSessions(links,4,@"x",5,@"y").count == 2,@"unrelated pair is its own group");
         NSArray *rows = MergeLinkedSessions(@[@{@"account":@2,@"id":@"b",@"stamp":d2,@"project":p},@{@"account":@1,@"id":@"a",@"stamp":d1,@"project":p},@{@"account":@1,@"id":@"z",@"stamp":d1,@"project":p},@{@"account":@3,@"id":@"c",@"stamp":d1,@"project":q}],links);
         NSCAssert(rows.count == 3 && [rows[0][@"id"] isEqual:@"b"] && [rows[0][@"versions"][@"1"][@"id"] isEqual:@"a"] && [rows[0][@"versions"] count] == 2 && [rows[1][@"id"] isEqual:@"z"] && [rows[2][@"versions"] count] == 1 && [rows[0][@"linked"] boolValue] && ![rows[1][@"linked"] boolValue] && [rows[2][@"linked"] boolValue],@"newest version represents a group, per project");
+        NSCAssert(SessionVersionAt(rows[0],2) == 2 && SessionVersionAt(rows[0],1) == 1 && SessionVersionAt(rows[0],3) == 0 && SessionVersionAt(rows[1],1) == 2,@"each account's version of a merged row");
         puts("PASS: session sync lists unarchived records by deepest project with sidebar groups, rebuilds from a whitelist, publishes without overwriting, replaces linked copies recoverably; grouping instruction, link round trip and sidebar ID read back");
     } @finally { [fm removeItemAtPath:root error:nil]; }
 }

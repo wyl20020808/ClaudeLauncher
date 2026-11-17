@@ -236,10 +236,8 @@ public static class LauncherTests {
     // SPEC 系统设置 [Windows]：六分类、更改即时保存生效、恢复默认立即保存、更新入口受开关约束。
     static void TestSettingsPage(LauncherUI ui, string settingsFile, List<Instance> state) {
         var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
-        var trendPage = ui.Snapshot(1, state);
-        var pageScroll = (ScrollViewer)typeof(LauncherUI).GetField("accountsScroll", flags).GetValue(ui);
-        Check(!Children((DependencyObject)pageScroll.Content).OfType<ScrollViewer>().Any(), "Trend page has one scroll surface");
-        Check(!Children(trendPage).OfType<TextBlock>().Any(t => t.Text == "账号管理" || t.Text == "登录邮箱"), "Account management table and navigation removed");
+        var recentPage = ui.Snapshot(1, state);
+        Check(!Children(recentPage).OfType<TextBlock>().Any(t => t.Text == "账号管理" || t.Text == "登录邮箱"), "Account management table and navigation removed");
         var infoButtons = Children(ui.Snapshot(4, state)).OfType<Button>().Where(b => (b.ToolTip as string ?? "").StartsWith("从各账号本机记录里")).ToArray();
         Check(infoButtons.Length == 1 && AutomationProperties.GetName(infoButtons[0]).Length > 0, "Import info icon missing");
         var projectAll = Children(ui.Snapshot(4, state)).ToArray();
@@ -308,21 +306,21 @@ public static class LauncherTests {
     static void TestAccountsPage(LauncherUI ui, string settingsFile, List<Instance> state) {
         var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
         var page = ui.Snapshot(1, state);
-        Check(Children(page).OfType<TextBlock>().Any(t => t.Text == "用量趋势"), "Usage trend is the dedicated page");
+        Check(Children(page).OfType<TextBlock>().Any(t => t.Text == "最近会话") && !Children(page).OfType<TextBlock>().Any(t => t.Text == "用量趋势"), "Recent sessions replaced the usage trend page");
         Check(!Children(page).OfType<Button>().Any(b => AutomationProperties.GetName(b) == "同步配置…" || AutomationProperties.GetName(b) == "复制选中路径"), "Old account actions are removed");
         string nameFile = Path.Combine(Path.GetDirectoryName(settingsFile), "code-02.claude.json");
         File.WriteAllText(nameFile, "{\"oauthAccount\":{\"displayName\":\"Eric\"}}");
         ui.CodeNameFiles = n => n == 2 ? new[] { nameFile } : new string[0];
         Func<string, int> named = text => Children(ui.Snapshot(1, state)).OfType<TextBlock>().Count(t => t.Text == text);
-        Check(named("Eric · 02") == 2, "Local default name remains on card and trend");
+        Check(named("Eric · 02") == 1, "Local default name remains on the card");
         var aliases = (Dictionary<int, string>)typeof(LauncherUI).GetField("accountNames", flags).GetValue(ui);
         aliases[2] = "工作";
-        Check(named("工作 · 02") == 2, "Existing aliases still display on card and trend");
+        Check(named("工作 · 02") == 1, "Existing aliases still display on the card");
         aliases.Remove(2);
         File.WriteAllText(nameFile, "{\"oauthAccount\":{\"displayName\":\"Eric Wang\"}}");
-        Check(named("Eric Wang · 02") == 2, "Changed local name re-read");
+        Check(named("Eric Wang · 02") == 1, "Changed local name re-read");
         File.Delete(nameFile);
-        Check(named("账号 02") == 2, "Missing local name falls back");
+        Check(named("账号 02") == 1, "Missing local name falls back");
         ui.CodeNameFiles = n => new string[0];
     }
     // SPEC 本地界面用量 [Windows]：卡片显示合成观察记录；关闭显示后清空并删除记录文件。不读取真实 Claude。
@@ -353,8 +351,6 @@ public static class LauncherTests {
         ui.SetUsage(2, new UsageRecord { Status = UsageInterface.Observed, Weekly = new UsageMetric { Percent = 11, Reset = "周三19:00 重置", Observed = at } });
         Check(illustration.Opacity == 1, "Receiving usage does not fade the full card");
         Check(values[0].Text == "—" && (values[0].ToolTip as string).Contains("手动展开") && (values[1].ToolTip as string).Contains("周三19:00 重置") && (values[1].ToolTip as string).Contains("组织"), "Tooltip explains missing data, reset text and organization limit");
-        ui.SetTrend(new[] { new TrendPoint { Account = 2, At = DateTime.UtcNow.AddMinutes(-30), Five = 35 } });
-        Check(values[0].Text == "—" && (values[0].ToolTip as string).Contains("历史记录（非当前额度）：35%"), "History stays separate from the current missing metric");
         ui.SetUsage(2, new UsageRecord { Status = UsageInterface.Observed, FiveHour = new UsageMetric { Percent = 0, Reset = UsageInterface.FiveHourEstimate, Observed = at } });
         Check(values[0].Text == "≈0%" && texts().Contains("估算"), "Estimated zero must be visibly distinguished");
         Check(UsageInterface.QuotaColor(59.9) == "#3C8A68" && UsageInterface.QuotaColor(60) == "#B88619" && UsageInterface.QuotaColor(80) == "#B88619" && UsageInterface.QuotaColor(80.1) == "#C64D40", "Quota color boundaries");

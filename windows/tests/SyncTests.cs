@@ -92,32 +92,29 @@ internal static class SyncTests {
         foreach(string entry in new[]{"settings.json","CLAUDE.md",@"skills\shared",@"output-styles\a.md"}) Check(ConfigSync.Allowed(entry),"entry allowed: "+entry);
         foreach(string entry in new[]{".hidden.md",@"skills\.hidden",@"projects\shared","notes.txt",@"skills\own\deep","agents",".claude.json"}) Check(!ConfigSync.Allowed(entry),"entry rejected: "+entry);
     }
-    // 1.7.18：趋势从实例页移到账号页表格下方。
-    static void TrendSectionChecks(string root,BindingFlags flags) {
-        var ui=new LauncherUI(new LauncherSettings(),Path.Combine(root,"trend-settings.json"));
+    // 最近会话页（取代用量趋势页）：进入不读取、每页 10 条、显示全部、目标菜单。
+    static void RecentPageChecks(string root,BindingFlags flags) {
+        var ui=new LauncherUI(new LauncherSettings(),Path.Combine(root,"recent-settings.json"));
         ui.CodeNameFiles=n=>new string[0];
-        var state=new List<Instance>{new Instance{Number=1,ProcessId=111}};
-        Check(!LauncherTests.Children(ui.Snapshot(0,state)).OfType<System.Windows.Controls.Button>().Any(b=>"用量趋势".Equals(b.Content)),"instances page has no trend entry");
-        var section=(System.Windows.Controls.Canvas)typeof(LauncherUI).GetField("trendSection",flags).GetValue(ui);
-        var content=(System.Windows.Controls.Canvas)typeof(LauncherUI).GetField("accountsContent",flags).GetValue(ui);
-        ui.Snapshot(1,state);
-        Func<IEnumerable<string>> texts=()=>LauncherTests.Children(section).OfType<System.Windows.Controls.TextBlock>().Select(t=>t.Text);
-        Check(texts().Any(t=>t.StartsWith("还没有观察记录")),"empty trend state");
-        double empty=content.Height;
-        var banner=section.Children.OfType<System.Windows.Controls.Border>().First(b=>b.Height==52);
-        Check(content.VerticalAlignment==System.Windows.VerticalAlignment.Top&&content.HorizontalAlignment==System.Windows.HorizontalAlignment.Left&&System.Windows.Controls.Canvas.GetTop(section)+System.Windows.Controls.Canvas.GetTop(banner)==124,"trend page starts at the same height as the other pages");
-        DateTime now=DateTime.UtcNow;
-        ui.SetTrend(new[]{new TrendPoint{Account=1,At=now.AddHours(-3),Five=10,Week=20},new TrendPoint{Account=1,At=now.AddHours(-2),Five=30,Week=25},new TrendPoint{Account=1,At=now.AddHours(-1),Five=5,Week=30}});
-        Check(texts().Any(t=>t=="建议下一个使用：账号 01")&&texts().Any(t=>t=="30%"),"suggestion and latest values shown");
-        Check(texts().Any(t=>t.StartsWith("按当前速度")),"forecast shown");
-        Check(LauncherTests.Children(section).OfType<System.Windows.Shapes.Polyline>().Count()==2,"one five-hour run before the drop and one weekly run");
-        ui.SetTrend(new[]{new TrendPoint{Account=1,At=now.AddHours(-20),Five=10,Week=20},new TrendPoint{Account=1,At=now.AddHours(-19),Five=20,Week=21},new TrendPoint{Account=1,At=now.AddHours(-3),Five=30,Week=22},new TrendPoint{Account=1,At=now.AddHours(-2),Five=40,Week=23}});
-        Check(LauncherTests.Children(section).OfType<System.Windows.Shapes.Polyline>().Count()==3,"a 16-hour gap splits the five-hour line, not the weekly line");
-        Check(LauncherTests.Children(section).OfType<System.Windows.Controls.Button>().Any(b=>((string)b.Content).EndsWith("账号 01")),"suggestion can open the account");
-        Check(content.Height>empty-1 && content.Height == System.Windows.Controls.Canvas.GetTop(section) + section.Height,"trend page fits its charts without an empty account table");
-        typeof(LauncherUI).GetField("settings",flags).SetValue(ui,new LauncherSettings{ShowUsage=false});
-        ui.SetTrend(new TrendPoint[0]);
-        Check(texts().Any(t=>t.StartsWith("用量趋势未开启"))&&!LauncherTests.Children(section).OfType<System.Windows.Shapes.Polyline>().Any(),"trend off shows only the notice");
+        ui.Snapshot(1,new List<Instance>{new Instance{Number=2,ProcessId=111}});
+        Func<string,object> get=name=>typeof(LauncherUI).GetField(name,flags).GetValue(ui);
+        Check(get("recentSessions")==null&&((System.Windows.Controls.Button)get("recentLoad")).Visibility==System.Windows.Visibility.Visible,"showing the page reads nothing and offers the load button");
+        Pump(ui.LoadRecent()); Check(get("recentSessions")==null,"snapshots never read sessions");
+        DateTime now=DateTime.Now; var rows=LauncherUI.RecentDemo(now);
+        ui.SetRecent(rows,new[]{1,2,3});
+        var list=(System.Windows.Controls.ListBox)get("recentList"); var pager=(System.Windows.Controls.StackPanel)get("recentPager");
+        Check(list.Items.Count==10&&pager.Children.Count==5&&((System.Windows.Controls.Button)get("recentLoad")).Visibility!=System.Windows.Visibility.Visible,"ten rows a page with previous, three numbers and next");
+        Check(rows.Zip(rows.Skip(1),(a,b)=>a.Stamp>=b.Stamp).All(x=>x),"newest change first");
+        typeof(LauncherUI).GetField("recentPageIndex",flags).SetValue(ui,2); ui.UpdateRecent(); Check(list.Items.Count==3,"last page holds the rest");
+        typeof(LauncherUI).GetField("recentAll",flags).SetValue(ui,true); ui.UpdateRecent(); Check(list.Items.Count==23&&pager.Children.Count==0,"show all lists every row without a pager");
+        Func<int,List<System.Windows.Controls.MenuItem>> menu=i=>ui.RecentTargetMenu(rows[i]).Items.Cast<System.Windows.Controls.MenuItem>().ToList();
+        var m=menu(0); Check(m.Count==4&&!m[0].IsEnabled&&!m[1].IsEnabled&&!m[2].IsEnabled&&m[3].IsEnabled&&(int)m[3].Tag==3,"target menu: source and running disabled, new enabled");
+        m=menu(1); Check(m[1].IsEnabled&&!m[3].IsEnabled,"an older copy can be replaced; the source cannot");
+        m=menu(2); Check(!m[2].IsEnabled,"an equal copy is already current");
+        Check(SessionSync.VersionAt(rows[0],2)==1&&SessionSync.VersionAt(rows[0],1)==2&&SessionSync.VersionAt(rows[0],3)==0,"version held per account");
+        Check(LauncherUI.RecentAge(now.AddSeconds(-5),now)=="刚刚"&&LauncherUI.RecentAge(now.AddMinutes(-3),now)=="3 分钟前"&&LauncherUI.RecentAge(now.AddDays(-2),now)==now.AddDays(-2).ToString("MM-dd HH:mm"),"relative times");
+        ui.SetRecent(new List<SyncSessionRow>(),new[]{1,2,3});
+        Check(((System.Windows.Controls.Button)get("recentDiagnose")).Visibility==System.Windows.Visibility.Visible,"no sessions offers diagnosis");
     }
     internal static void Run() {
         string root=Path.Combine(Path.GetTempPath(),"launcher-sync-tests-"+Guid.NewGuid().ToString("N")); Directory.CreateDirectory(root);
@@ -161,21 +158,6 @@ internal static class SyncTests {
             Reject(()=>Projects.ReadPrefix(new MemoryStream(Encoding.UTF8.GetBytes("{\"messages\":\"body\"}"))),"unknown order refused");
             string namePrefix="{\"ignored\":{\"nested\":[1,true,\"skip\"]},\"oauthAccount\":{\"displayName\":\"Example\"";
             using(var stream=new MemoryStream(Encoding.UTF8.GetBytes(namePrefix+",\"token\":\"never-read-fixture\"}}"))) { Check(DisplayNameReader.Read(stream)=="Example","targeted display name");Check(stream.Position==Encoding.UTF8.GetByteCount(namePrefix),"display-name reader stops immediately"); }
-            DateTime now=DateTime.UtcNow; var points=new List<TrendPoint>();
-            var record=new UsageRecord { FiveHour=new UsageMetric { Percent=20 },Weekly=new UsageMetric { Percent=30 } };
-            UsageTrend.Observe(points,1,record,now); UsageTrend.Observe(points,1,record,now.AddSeconds(1)); Check(points.Count==1,"trend deduplication");
-            points.Add(new TrendPoint { Account=1,At=now.AddMinutes(-30),Week=20 }); Check(UsageTrend.HoursLeft(points,true,now).HasValue,"rate estimate");
-            points.Add(new TrendPoint { Account=1,At=now.AddMinutes(1),Week=5 }); Check(!UsageTrend.HoursLeft(points,true,now.AddMinutes(1)).HasValue,"rate reset boundary");
-            points.Add(new TrendPoint { Account=11,At=now,Week=20 }); points.Add(new TrendPoint { Account=2,At=now.AddDays(-9),Week=20 }); Check(UsageTrend.Clean(points,now).Count==2,"trend retention and validation");
-            points.Add(new TrendPoint { Account=2,At=now,Week=1 }); Check(UsageTrend.Recommend(points,new[]{1,2})==2,"next account recommendation");
-            // 折线分段：回落断开；间隔超过额度窗口（5 小时 / 7 天）也断开，正好等于窗口不断。
-            var gapped=new[]{ new TrendPoint{Account=1,At=now.AddHours(-30),Five=10,Week=10}, new TrendPoint{Account=1,At=now.AddHours(-29),Five=20,Week=11},
-                new TrendPoint{Account=1,At=now.AddHours(-23),Five=30,Week=12}, new TrendPoint{Account=1,At=now.AddHours(-18),Five=40,Week=13}, new TrendPoint{Account=1,At=now.AddHours(-17),Five=5,Week=14} };
-            var fiveRuns=UsageTrend.Runs(gapped,false,now.AddDays(-7));
-            Check(fiveRuns.Select(r=>r.Count).SequenceEqual(new[]{2,2,1}),"five-hour line breaks on a gap over 5 hours and on a drop: "+String.Join(",",fiveRuns.Select(r=>r.Count)));
-            Check(UsageTrend.Runs(gapped,true,now.AddDays(-7)).Count==1,"weekly line keeps a 13-hour gap");
-            Check(UsageTrend.Runs(new[]{ new TrendPoint{Account=1,At=now.AddDays(-7.5),Week=10}, new TrendPoint{Account=1,At=now.AddMinutes(-1),Week=20} },true,now.AddDays(-8)).Count==2,"weekly line breaks on a gap over 7 days");
-            Check(UsageTrend.Runs(gapped,false,now.AddHours(-20)).Select(r=>r.Count).SequenceEqual(new[]{1,1}),"points before the axis start are skipped");
             Appearance.Language=1;Check(Appearance.Text("实例管理")!="实例管理","shared English dictionary");Check(Appearance.Text("unknown fallback")=="unknown fallback","missing English fallback");Appearance.Language=0;
             Appearance.Theme=1;var brush=Appearance.Brush("#FAF6F0");var light=brush.Color;Appearance.Theme=2;Appearance.Refresh();Check(brush.Color!=light,"live dark palette");Appearance.Theme=1;Appearance.Refresh();
             File.Delete(list);
@@ -207,7 +189,7 @@ internal static class SyncTests {
             typeof(LauncherUI).GetField("closed",flags).SetValue(ui,true);finalScan.SetResult(new List<Instance>());Pump(operation);Check(!checking.Contains(2),"account occupation released in finally");
             StorageRiskChecks(root,flags);
             LinkTargetChecks();
-            TrendSectionChecks(root,flags);
+            RecentPageChecks(root,flags);
             // MSIX 版 Claude 的会话目录带应用能力标识：不算其他用户，能被扫描；真正的其他用户可写仍拒绝。
             string sessions=Path.Combine(root,"sessions"),sessionOrg=Path.Combine(sessions,Guid.NewGuid().ToString(),Guid.NewGuid().ToString());Directory.CreateDirectory(sessionOrg);string sessionProject=Path.Combine(root,"session-project");Directory.CreateDirectory(sessionProject);
             string sessionId=Guid.NewGuid().ToString();File.WriteAllText(Path.Combine(sessionOrg,"local_"+sessionId+".json"),"{\"sessionId\":\"local_"+sessionId+"\",\"cwd\":"+new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(sessionProject)+",\"originCwd\":\"\"}",new UTF8Encoding(false));

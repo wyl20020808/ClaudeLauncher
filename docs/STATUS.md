@@ -1,5 +1,13 @@
 # 项目状态
 
+## macOS 1.8.6：最近会话页取代用量趋势页（2026-11-16，两端；macOS 发布，Windows 未编译）
+
+- 需求（用户 2026-11-16）：侧栏第二页改为“最近会话”：各账号会话按修改时间排在一起，每行显示标题、账号、项目、时间，可直接同步（选目标 → 预览 → 确认，复用同步窗口写入代码）。用户选择：进入页面才读、启动恢复不读；每页 10 条可显示全部；趋势停止记录、旧数据不动；Windows 写代码和测试并附交接。AGENTS.md 新增「最近会话例外」。规格见 SPEC 文首。
+- 点击数：打开页面后 2 次到预览（原同步窗口 5～7 次），全程 4 次（原约 8 次）。
+- macOS：`main.m` 新页（`recentPage:`、`updateRecent`、`loadRecentSessions`、`recentRow:width:`、`recentTargetMenu:`、`recentSyncTo:`），同步窗口拆出 `readSessions:done:` 与 `previewSessionSync:to:`；`SessionSync.m` 新增 `SessionVersionAt`；删除 `UsageTrend.m/.h`。教程配图 `guide-recent.*.jpg` 用 `--tutorial-demo -3` 重新生成。
+- macOS 验证：`scripts/build.sh` 通过，`--self-test` 全部 PASS（含 `SessionVersionAt`）；`--ui-self-test` 通过（未加载状态、点侧栏才读、分页、显示全部、菜单状态、空列表诊断），离屏截图 `recent.png`、`recent-dark.png`、`recent-unloaded.png` 已查看。
+- macOS 未验证：真实账号下的 GUI 点击、从这一行实际同步到另一账号并打开、大量会话时的读取耗时。
+- Windows：代码和测试已写，**未编译、未运行**（本机无 Windows 工具链）；`assets/tutorial/guide-recent.*.jpg` 暂为 macOS 截图占位。交接见 [HANDOFF-windows-recent-sessions](HANDOFF-windows-recent-sessions.md)。
 ## Windows 1.9.5：账号内含链接时可删除（2026-11-16）
 
 - 现象：删除账号 02 报“账号内容含链接，未删除任何尚未处理的目录：…\Claude-Second\ClaudeCodeConfig\skills\caveman”（即 1.9.4 记录的 skills 目录联接）。

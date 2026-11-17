@@ -220,6 +220,10 @@ namespace ClaudeLauncher {
             }
             return rows;
         }
+        // 合并后的一行在某账号的版本：0 没有，1 较旧，2 最新（时间相同算最新）。
+        internal static int VersionAt(SyncSessionRow row, int account) {
+            SyncVersion held; return !row.Versions.TryGetValue(account, out held) ? 0 : held.Stamp < row.Stamp ? 1 : 2;
+        }
         // 启动器自己的文件，恢复默认不清除；损坏或版本不符时当作没有关联，写入时不覆盖损坏的原文件。
         internal static List<Dictionary<int, string>> LoadLinks(string path) {
             var result = new List<Dictionary<int, string>>();

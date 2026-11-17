@@ -32,13 +32,14 @@ When an account is running out of quota, you can take a session to another accou
 - The launcher writes a cleaned copy with no account details, and the two never merge. For a session synced before, the newest version wins: when it changed, it replaces the old version on the other side, and the old version goes to the Trash. That side then holds cleaned content only.
 - Open the target account. The session appears in the sidebar, with "Synced" and the time after its title. You send the first message yourself.
 
-## Usage trend: which account next
+## Recent sessions: what changed lately, synced in two clicks
 
-![Usage trends page](guide-trend.en.jpg)
+![Recent sessions page](guide-recent.en.jpg)
 
-- The Usage trends page in the sidebar shows each account's 5-hour and weekly usage for the last 7 days.
-- The banner at the top suggests which account to use next, and can start or switch to it.
-- The numbers only come from what the launcher has seen on screen. It never queries Claude. Recording starts once you open that account's Claude Code.
+- Recent sessions in the sidebar lists the sessions of every account together, by last modified time, newest first. Ten per page, or click Show all.
+- Each row shows the title, account, project and time. A synced session is listed once, as its newest copy; the row says which other accounts are synced or hold an older version.
+- Click Sync to… on a row and pick a target account to open the same preview as the sync window. Nothing is written until you confirm. The source, accounts already up to date and running accounts can't be picked.
+- The page only reads when you open it or click Refresh, reads the same fields as the sync window, and keeps nothing on disk. When the launcher reopens on this page it doesn't read on its own; it shows Load recent sessions.
 
 ## See it again
 

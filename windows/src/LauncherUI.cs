@@ -58,8 +58,9 @@ namespace ClaudeLauncher {
         Border toast; TextBlock toastText;
         readonly DispatcherTimer toastTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(5) };
         readonly StackPanel cardList;
-        readonly ScrollViewer accountsScroll;
-        readonly Canvas trendSection, accountsContent;
+        // 最近会话页（SPEC 最近会话）：结果只在内存，第一次由用户点侧栏进入时才读取。
+        List<SyncSessionRow> recentSessions; int[] recentAccounts = new int[0]; DateTime recentLoadedAt; int recentPageIndex; bool recentAll, recentLoading;
+        ListBox recentList; Border recentPanel; TextBlock recentEmpty, recentSummary; StackPanel recentPager; Button recentRefresh, recentLoad, recentDiagnose, recentAllButton, recentPrev, recentNext;
         readonly Canvas logRows;
         readonly Dictionary<int, Card> cards = new Dictionary<int, Card>();
         readonly List<LogEntry> logs = new List<LogEntry>();
@@ -79,8 +80,6 @@ namespace ClaudeLauncher {
         Dictionary<int, string> usageAlertState = new Dictionary<int, string>();
         Dictionary<int, UsageRecord> savedUsage = new Dictionary<int, UsageRecord>();
         readonly string usagePath;
-        List<TrendPoint> trend = new List<TrendPoint>();
-        string TrendPath { get { return settingsPath + ".usageTrend"; } }
         int usageGeneration;
         readonly Dictionary<string, PopupWatch> popupWatches = new Dictionary<string, PopupWatch>(); // 身份 → 展开通知（null：注册中或失败，不重试）
         readonly HashSet<int> readingPopups = new HashSet<int>();
@@ -197,7 +196,6 @@ namespace ClaudeLauncher {
         internal LauncherUI(LauncherSettings initial, string path, bool realData = false) {
             HasData = realData ? (Func<int,bool>)Core.HasData : n => false;
             settings = initial; draft = initial.Clone(); settingsPath = path; Appearance.Theme=initial.Theme; Appearance.Language=initial.Language; Appearance.Refresh();
-            try { if (settings.ShowUsage) trend = UsageTrend.Load(TrendPath, DateTime.UtcNow); } catch (Exception) { }
             try { if (File.Exists(path + ".accountLastUsed")) accountLastUsed = new System.Web.Script.Serialization.JavaScriptSerializer().Deserialize<Dictionary<string, DateTime>>(File.ReadAllText(path + ".accountLastUsed")).ToDictionary(p => int.Parse(p.Key), p => p.Value) ?? new Dictionary<int, DateTime>(); } catch { }
             lastPagePath = IOPath.Combine(IOPath.GetDirectoryName(path), IOPath.GetFileName(LauncherSettings.LastPagePath));
             namesPath = IOPath.Combine(IOPath.GetDirectoryName(path), IOPath.GetFileName(AccountNames.DefaultPath));
@@ -253,7 +251,7 @@ namespace ClaudeLauncher {
             brand.FontFamily = new FontFamily("Georgia, Cambria, Times New Roman");
             At(sidebar, T("多开启动器", 17, Ink, FontWeights.Medium), 100, 96);
             At(sidebar, T("DESKTOP · V" + Updates.DisplayVersion, 9, Muted, FontWeights.Normal), 101, 126);
-            string[][] items = { new[] { "实例管理", "" }, new[] { "用量趋势", "" }, new[] { "日志记录", "" }, new[] { "系统设置", "" }, new[] { "项目管理", "" } };
+            string[][] items = { new[] { "实例管理", "" }, new[] { "最近会话", "" }, new[] { "日志记录", "" }, new[] { "系统设置", "" }, new[] { "项目管理", "" } };
             for (int i = 0; i < 5; i++) {
                 int index = i;
                 var content = new StackPanel { Orientation = Orientation.Horizontal };
@@ -261,7 +259,7 @@ namespace ClaudeLauncher {
                 content.Children.Add(T(items[i][0], 16, Ink, FontWeights.Medium));
                 nav[i] = At(sidebar, new Button { Style = (Style)window.FindResource("Nav"), Content = content }, 20, 176 + (i == 4 ? 2 : i >= 2 ? i + 1 : i) * 56, 232, 48);
                 AutomationProperties.SetName(nav[i], items[i][0]);
-                nav[i].Click += async delegate { ShowPage(index); RememberPage(); if (index == 0) await ReadUsage(); };
+                nav[i].Click += async delegate { ShowPage(index); RememberPage(); if (index == 0) await ReadUsage(); if (index == 1) await LoadRecent(); }; // 只有用户点侧栏才读取最近会话。
             }
             indicator = At(sidebar, new Border { Background = B("#B9825F"), CornerRadius = new CornerRadius(2) }, 6, 188, 4, 24);
             // 主区域背景：画面靠右，左侧洗白以保证文字可读。
@@ -305,13 +303,8 @@ namespace ClaudeLauncher {
             endLogin.Click += async delegate { await EndLogin(); };
             for (int n = 1; n <= 10; n++) { cards[n] = BuildCard(n); cardList.Children.Add(cards[n].Root); }
 
-            // Keep the persisted "accounts" page key compatible with older settings.
-            // 靠左上：内容比窗口矮时 ScrollViewer 默认会把它居中，标题和横幅就和其他页面对不齐。
-            var trends = new Canvas { Width = 790, HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top };
-            trendSection = At(trends, new Canvas { Width = 790 }, 0, 42);
-            accountsContent = trends;
-            accountsScroll = new ScrollViewer { Content = trends, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Focusable = false };
-            pages[1].Children.Add(accountsScroll);
+            // 最近会话：页面序号 1 沿用原“用量趋势”的 accounts 键，旧的启动页和上次页面记录自然进入这里。
+            BuildRecent(PageTitled(1, "最近会话"));
 
             // 日志记录
             var logsPage = PageTitled(2, "日志记录");
@@ -870,31 +863,9 @@ namespace ClaudeLauncher {
             syncingSessions = true; syncSessionsButton.IsEnabled = false;
             try {
                 Message("正在查找各账号的本地会话…", false);
-                var valid = new List<LocalProject>();
-                foreach (var project in projects) { try { if (project != null && LocalProjectPath(project.Path)) { Projects.ValidatePath(project.Path); valid.Add(project); } } catch (IOException) { } catch (UnauthorizedAccessException) { } }
                 int[] accounts = Enumerable.Range(1, 10).Where(HasData).ToArray();
-                var sessions = await Task.Run(() => {
-                    if (newAccount != 0) {
-                        var found = Projects.Discover(Enumerable.Range(1, 10).SelectMany(n => SyncProfiles(n)).Select(p => IOPath.Combine(p, "claude-code-sessions")));
-                        foreach (string path in found.Paths) {
-                            if (valid.Any(p => String.Equals(p.Path, path, StringComparison.OrdinalIgnoreCase))) continue;
-                            try { string checkedPath = Projects.ValidatePath(path); valid.Add(new LocalProject { Path = checkedPath, Name = IOPath.GetFileName(checkedPath) }); } catch (Exception) { }
-                        }
-                    }
-                    var rows = new List<SyncSessionRow>();
-                    foreach (int n in accounts) {
-                        string config; try { config = CodeConfigFolder(n); } catch (IOException) { continue; }
-                        if (config == null) continue;
-                        foreach (var row in SessionSync.List(config, SyncProfiles(n), valid.Select(p => p.Path).ToList())) {
-                            var project = valid.First(p => p.Path == row.ProjectPath);
-                            row.Account = n; row.ProjectName = String.IsNullOrEmpty(project.Name) ? IOPath.GetFileName(project.Path) : project.Name; rows.Add(row);
-                        }
-                    }
-                    return rows.OrderByDescending(r => r.Stamp).ToList();
-                });
+                var sessions = await ReadSessions(newAccount != 0, accounts);
                 if (sessions.Count == 0) { if (Ask("没有可同步的会话", NoSessionsDetail, new[] { "知道了", "问题诊断…" }, 0, 0) == 1) diagnoseAfterSync = true; return; }
-                bool linksWritable; var links = LoadSessionLinks(out linksWritable);
-                sessions = SessionSync.Merge(sessions, links);
                 if (!await ScanNow()) { if (!closed) Alert("实例或保护状态已变化", scanError); return; }
                 var picker = BuildSessionPicker(sessions, accounts, new HashSet<int>(instances.Select(x => x.Number)), newAccount);
                 if (newAccount != 0) picker.SelectOriginals();
@@ -902,66 +873,98 @@ namespace ClaudeLauncher {
                 if (picker.Dialog.ShowDialog() != true) { diagnoseAfterSync = picker.WantsDiagnosis; return; }
                 int to = picker.TargetNumber; var selected = picker.Selected();
                 if (to == 0) { Alert("目标账号正在运行", "请先在该账号中正常退出，再同步。启动器不会替你退出。"); return; }
-                // 预览前确定写入位置：多套目录时只在这里读一次当前组织；之后预览期间切换组织不会被发现，和 macOS 相同。
-                string[] profiles = SyncProfiles(to); string organization = null, problem = null;
-                bool located = await Task.Run(() => SessionSync.ResolveTarget(profiles, Organization.Read, out organization, out problem));
-                if (!located) { Message("没有确定写入位置，未写入。", true); Alert("无法同步到这个账号", problem); return; }
-                var failures = new List<string>(); string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-                var cleans = await WithSyncProgress("正在生成清理副本", selected.Count, report => {
-                    var result = new List<CleanedSession>(); int done = 0;
-                    foreach (var session in selected) {
-                        SyncVersion existing; session.Versions.TryGetValue(to, out existing);
-                        CleanedSession clean;
-                        try { clean = SessionSync.Clean(session.Path, session.ProjectPath, home, existing == null ? null : existing.Id, session.Group); } catch (Exception error) { clean = new CleanedSession { Error = error.Message }; }
-                        report(++done);
-                        if (clean.Error != null) failures.Add("「" + session.Title + "」：" + Appearance.Text(clean.Error));
-                        else { clean.From = session.Account; clean.FromId = session.Id; clean.Group = session.Group; clean.Project = session.ProjectPath; result.Add(clean); }
-                    }
-                    return result;
-                });
-                if (cleans.Count == 0) { Message("没有生成清理副本，未写入。", true); Alert("无法同步所选会话", String.Join("\n", failures)); return; }
-                bool confirmed = false;
-                var review = BuildSessionPreview(cleans, failures, to, () => confirmed = true); if (window.IsVisible) review.Owner = window;
-                review.ShowDialog();
-                if (!confirmed) return;
-                if (loginAccount != 0 || deleting || updating || IsBusy(to)) { Alert("账号正在处理中", "请先结束登录保护或等待检查／启动完成。"); return; }
-                checking.Add(to); Render();
-                int written = 0, replaced = 0; string failure = null;
-                var grouped = new List<KeyValuePair<string, string>>(); string groupFolder = null; // 分组指令：(分组名, 目标侧栏 ID)
-                try {
-                    try { await ValidateStorage(to); } catch (Exception error) { failure = error.Message; }
-                    if (failure == null) failure = await WithSyncProgress("正在写入目标账号", cleans.Count, report => {
-                        string config = CodeConfigFolder(to); Func<string> guard = () => SessionSyncGuard(to);
-                        Func<string, bool> recycle = path => { try { RecycleBin.Move(path); return true; } catch (Exception error) { Diagnostics.Error("session_sync_recycle", error); return false; } };
-                        foreach (var clean in cleans) {
-                            string problemText = clean.Replaces ? SessionSync.Replace(profiles, organization, config, clean.Slug, clean.SessionId, clean.Jsonl, clean.Record, clean.Stamp, recycle, guard)
-                                : SessionSync.Publish(profiles, organization, config, clean.Slug, clean.SessionId, clean.Jsonl, clean.Record, guard);
-                            if (problemText != null) return problemText;
-                            SessionSync.SetDate(config, clean.Slug, clean.SessionId, clean.Stamp);
-                            // 逐条保存：中途退出时已写入的副本仍有关联。
-                            links = SessionSync.Link(links, clean.From, clean.FromId, to, clean.SessionId);
-                            if (linksWritable) try { SessionSync.SaveLinks(LinksPath, links); } catch (Exception error) { linksWritable = false; Diagnostics.Error("session_links_write", error); }
-                            if (clean.Replaces) replaced++;
-                            if (clean.Group != null) {
-                                string sidebarId = SessionSync.SidebarId(profiles, organization, clean.SessionId);
-                                if (sidebarId != null) { grouped.Add(new KeyValuePair<string, string>(clean.Group, sidebarId)); if (groupFolder == null) groupFolder = clean.Project; }
-                            }
-                            report(++written);
-                        }
-                        return null;
-                    });
-                } finally { checking.Remove(to); Render(); }
-                string log = "会话同步：账号 " + Two(to) + " 新增 " + (written - replaced) + " 条，替换 " + replaced + " 条，共选择 " + (cleans.Count + failures.Count) + " 条";
-                AddLog(log); Message(failure ?? log, failure != null);
-                string info = written > 0 ? Appearance.Text("已写入 " + written + " 条。打开账号 " + Two(to) + " 后，它们会出现在侧栏，标题后带“同步”和时间。第一条消息由你发送；如果项目还没被该账号信任，发送时官方会请你确认。") : Appearance.Text("已写入 0 条。");
-                if (failure != null) info += "\n\n" + Appearance.Text(failure);
-                if (failures.Count > 0) info += "\n\n" + Appearance.Text(failures.Count + " 条无法处理，没有同步。");
-                string title = written == cleans.Count ? "会话已同步" : written > 0 ? "同步未全部完成" : "没有写入会话";
-                if (written > 0) await FinishSessionSync(to, title, info, grouped, groupFolder);
-                else Alert(title, info);
+                await SyncSelected(selected, to);
             } catch (Exception error) { Alert("无法同步所选会话", error.Message); }
             finally { syncingSessions = false; syncSessionsButton.IsEnabled = !projectsUnreadable; }
             if (diagnoseAfterSync) { diagnoseAfterSync = false; await RunSupportDiagnosis(); }
+        }
+        // 各账号在清单项目下的会话（discover：再加“识别并导入”找到的未列入项目），新的在前，关联副本合并为一行。
+        // 同步窗口和最近会话页共用（SPEC 同步会话、最近会话）；读取在后台线程。
+        async Task<List<SyncSessionRow>> ReadSessions(bool discover, int[] accounts) {
+            var valid = new List<LocalProject>();
+            foreach (var project in projects) { try { if (project != null && LocalProjectPath(project.Path)) { Projects.ValidatePath(project.Path); valid.Add(project); } } catch (IOException) { } catch (UnauthorizedAccessException) { } }
+            var sessions = await Task.Run(() => {
+                if (discover) {
+                    var found = Projects.Discover(Enumerable.Range(1, 10).SelectMany(n => SyncProfiles(n)).Select(p => IOPath.Combine(p, "claude-code-sessions")));
+                    foreach (string path in found.Paths) {
+                        if (valid.Any(p => String.Equals(p.Path, path, StringComparison.OrdinalIgnoreCase))) continue;
+                        try { string checkedPath = Projects.ValidatePath(path); valid.Add(new LocalProject { Path = checkedPath, Name = IOPath.GetFileName(checkedPath) }); } catch (Exception) { }
+                    }
+                }
+                var rows = new List<SyncSessionRow>();
+                foreach (int n in accounts) {
+                    string config; try { config = CodeConfigFolder(n); } catch (IOException) { continue; }
+                    if (config == null) continue;
+                    foreach (var row in SessionSync.List(config, SyncProfiles(n), valid.Select(p => p.Path).ToList())) {
+                        var project = valid.First(p => p.Path == row.ProjectPath);
+                        row.Account = n; row.ProjectName = String.IsNullOrEmpty(project.Name) ? IOPath.GetFileName(project.Path) : project.Name; rows.Add(row);
+                    }
+                }
+                return rows.OrderByDescending(r => r.Stamp).ToList();
+            });
+            bool linksWritable; return SessionSync.Merge(sessions, LoadSessionLinks(out linksWritable));
+        }
+        // 确定写入位置、生成清理副本、预览，确认后写入；同步窗口和最近会话页共用。返回是否写入了会话。
+        async Task<bool> SyncSelected(List<SyncSessionRow> selected, int to) {
+            bool linksWritable; var links = LoadSessionLinks(out linksWritable);
+            // 预览前确定写入位置：多套目录时只在这里读一次当前组织；之后预览期间切换组织不会被发现，和 macOS 相同。
+            string[] profiles = SyncProfiles(to); string organization = null, problem = null;
+            bool located = await Task.Run(() => SessionSync.ResolveTarget(profiles, Organization.Read, out organization, out problem));
+            if (!located) { Message("没有确定写入位置，未写入。", true); Alert("无法同步到这个账号", problem); return false; }
+            var failures = new List<string>(); string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            var cleans = await WithSyncProgress("正在生成清理副本", selected.Count, report => {
+                var result = new List<CleanedSession>(); int done = 0;
+                foreach (var session in selected) {
+                    SyncVersion existing; session.Versions.TryGetValue(to, out existing);
+                    CleanedSession clean;
+                    try { clean = SessionSync.Clean(session.Path, session.ProjectPath, home, existing == null ? null : existing.Id, session.Group); } catch (Exception error) { clean = new CleanedSession { Error = error.Message }; }
+                    report(++done);
+                    if (clean.Error != null) failures.Add("「" + session.Title + "」：" + Appearance.Text(clean.Error));
+                    else { clean.From = session.Account; clean.FromId = session.Id; clean.Group = session.Group; clean.Project = session.ProjectPath; result.Add(clean); }
+                }
+                return result;
+            });
+            if (cleans.Count == 0) { Message("没有生成清理副本，未写入。", true); Alert("无法同步所选会话", String.Join("\n", failures)); return false; }
+            bool confirmed = false;
+            var review = BuildSessionPreview(cleans, failures, to, () => confirmed = true); if (window.IsVisible) review.Owner = window;
+            review.ShowDialog();
+            if (!confirmed) return false;
+            if (loginAccount != 0 || deleting || updating || IsBusy(to)) { Alert("账号正在处理中", "请先结束登录保护或等待检查／启动完成。"); return false; }
+            checking.Add(to); Render();
+            int written = 0, replaced = 0; string failure = null;
+            var grouped = new List<KeyValuePair<string, string>>(); string groupFolder = null; // 分组指令：(分组名, 目标侧栏 ID)
+            try {
+                try { await ValidateStorage(to); } catch (Exception error) { failure = error.Message; }
+                if (failure == null) failure = await WithSyncProgress("正在写入目标账号", cleans.Count, report => {
+                    string config = CodeConfigFolder(to); Func<string> guard = () => SessionSyncGuard(to);
+                    Func<string, bool> recycle = path => { try { RecycleBin.Move(path); return true; } catch (Exception error) { Diagnostics.Error("session_sync_recycle", error); return false; } };
+                    foreach (var clean in cleans) {
+                        string problemText = clean.Replaces ? SessionSync.Replace(profiles, organization, config, clean.Slug, clean.SessionId, clean.Jsonl, clean.Record, clean.Stamp, recycle, guard)
+                            : SessionSync.Publish(profiles, organization, config, clean.Slug, clean.SessionId, clean.Jsonl, clean.Record, guard);
+                        if (problemText != null) return problemText;
+                        SessionSync.SetDate(config, clean.Slug, clean.SessionId, clean.Stamp);
+                        // 逐条保存：中途退出时已写入的副本仍有关联。
+                        links = SessionSync.Link(links, clean.From, clean.FromId, to, clean.SessionId);
+                        if (linksWritable) try { SessionSync.SaveLinks(LinksPath, links); } catch (Exception error) { linksWritable = false; Diagnostics.Error("session_links_write", error); }
+                        if (clean.Replaces) replaced++;
+                        if (clean.Group != null) {
+                            string sidebarId = SessionSync.SidebarId(profiles, organization, clean.SessionId);
+                            if (sidebarId != null) { grouped.Add(new KeyValuePair<string, string>(clean.Group, sidebarId)); if (groupFolder == null) groupFolder = clean.Project; }
+                        }
+                        report(++written);
+                    }
+                    return null;
+                });
+            } finally { checking.Remove(to); Render(); }
+            string log = "会话同步：账号 " + Two(to) + " 新增 " + (written - replaced) + " 条，替换 " + replaced + " 条，共选择 " + (cleans.Count + failures.Count) + " 条";
+            AddLog(log); Message(failure ?? log, failure != null);
+            string info = written > 0 ? Appearance.Text("已写入 " + written + " 条。打开账号 " + Two(to) + " 后，它们会出现在侧栏，标题后带“同步”和时间。第一条消息由你发送；如果项目还没被该账号信任，发送时官方会请你确认。") : Appearance.Text("已写入 0 条。");
+            if (failure != null) info += "\n\n" + Appearance.Text(failure);
+            if (failures.Count > 0) info += "\n\n" + Appearance.Text(failures.Count + " 条无法处理，没有同步。");
+            string title = written == cleans.Count ? "会话已同步" : written > 0 ? "同步未全部完成" : "没有写入会话";
+            if (written > 0) await FinishSessionSync(to, title, info, grouped, groupFolder);
+            else Alert(title, info);
+            return written > 0;
         }
         // 有分组时多一个选项：打开目标账号的新会话并预填分组指令，由用户检查后自己发送（SPEC 同步会话 · 侧栏分组）。
         internal const string GroupOfferText = "其中 %@ 条在来源侧栏有分组（%@）。选“打开并建分组”，启动器会在账号 %@ 新建一个会话，输入框里填好整理分组的指令；你检查后按发送，由 Claude 用官方工具建分组，会用掉一条消息的额度。启动器不会替你发送。";
@@ -1064,7 +1067,7 @@ namespace ClaudeLauncher {
             return dialog;
         }
         // ---- 新手教程（SPEC 新手教程）：遮罩接管全部点击和按键，不启动账号、不写账号数据、不联网 ----
-        sealed class TutorialStep { public string Title, Body; public int Page; public FrameworkElement[] Targets; public bool Trend; }
+        sealed class TutorialStep { public string Title, Body; public int Page; public FrameworkElement[] Targets; }
         Grid tutorialHost; Canvas tutorialOverlay; Border tutorialCard, tutorialRing; System.Windows.Shapes.Path tutorialShade;
         List<TutorialStep> tutorialSteps; int tutorialIndex = -1, tutorialReturnPage, tutorialReturnSettingsSection; Button tutorialEntry, importButton, addProjectButton; Window tutorialDocument;
         string TutorialSeenPath { get { return settingsPath + ".tutorialSeen"; } }
@@ -1075,13 +1078,13 @@ namespace ClaudeLauncher {
             StartTutorial(); return true;
         }
         List<TutorialStep> TutorialStepList() {
-            var steps = new List<TutorialStep> { new TutorialStep { Title = "欢迎使用 Claude 启动器", Body = "用 1 分钟认识账号、项目、同步会话和用量趋势。引导期间不会启动账号，也不会改动任何数据。", Targets = new FrameworkElement[0] } };
+            var steps = new List<TutorialStep> { new TutorialStep { Title = "欢迎使用 Claude 启动器", Body = "用 1 分钟认识账号、项目、同步会话和最近会话。引导期间不会启动账号，也不会改动任何数据。", Targets = new FrameworkElement[0] } };
             int first = Enumerable.Range(1, 10).FirstOrDefault(n => cards[n].Root.Visibility == Visibility.Visible);
             if (first != 0) steps.Add(new TutorialStep { Title = "启动或切换账号", Body = "点击整张卡片，未运行时启动，运行中打开窗口。三个点菜单可以启动、打开、关闭或删除实例。", Targets = new FrameworkElement[] { cards[first].Action } });
             steps.Add(new TutorialStep { Title = "新建账号", Body = "点这里创建下一个空闲账号，然后在打开的 Claude 里登录。最多 10 个。", Targets = new FrameworkElement[] { create } });
             steps.Add(new TutorialStep { Title = "项目管理", Body = "添加常用目录，或从各账号的本机记录里识别导入。所有账号共用这份清单。", Page = 4, Targets = new FrameworkElement[] { importButton, addProjectButton } });
             steps.Add(new TutorialStep { Title = "同步会话", Body = "把会话同步到另一个账号接着聊。同步过的会话以最新版本为准，直接替换旧版本，不合并。目标账号要先正常退出；有项目后才能用。", Page = 4, Targets = new FrameworkElement[] { syncSessionsButton } });
-            steps.Add(new TutorialStep { Title = "用量趋势", Body = "用量趋势页记录近 7 天用量，并建议下一个使用的账号。只用启动器已观察到的数值，不查询 Claude。", Page = 1, Targets = new FrameworkElement[] { trendSection }, Trend = true });
+            steps.Add(new TutorialStep { Title = "最近会话", Body = "各账号的会话按修改时间排在一起，最新的在最上面。点一行的“同步到…”，选目标账号，就能预览并同步。进入这一页时才读取会话列表。", Page = 1, Targets = new FrameworkElement[] { nav[1] } });
             steps.Add(new TutorialStep { Title = "随时回看", Body = "在系统设置的关于页，可以重新播放引导，或查看文档教程。", Page = 3, Targets = new FrameworkElement[] { tutorialEntry } });
             return steps;
         }
@@ -1161,7 +1164,6 @@ namespace ClaudeLauncher {
             var step = tutorialSteps[tutorialIndex]; Rect spot = Rect.Empty;
             foreach (var target in step.Targets) { if (!ShownOnPage(target)) continue; var box = target.TransformToAncestor(tutorialHost).TransformBounds(new Rect(0, 0, target.ActualWidth, target.ActualHeight)); spot.Union(box); }
             if (spot.IsEmpty) return spot;
-            if (step.Trend && spot.Height > 270) spot.Height = 270; // 为说明气泡留出空间，覆盖标题、建议和图表上半部。
             spot.Inflate(6, 6); spot.Intersect(new Rect(0, 0, 1080, 720));
             return spot;
         }
@@ -1171,7 +1173,6 @@ namespace ClaudeLauncher {
             if (!window.IsLoaded) { tutorialHost.Measure(new Size(1080, 720)); tutorialHost.Arrange(new Rect(0, 0, 1080, 720)); }
             tutorialHost.UpdateLayout();
             var step = tutorialSteps != null && tutorialIndex >= 0 ? tutorialSteps[tutorialIndex] : null;
-            if (step != null && step.Trend) { accountsScroll.ScrollToVerticalOffset(Canvas.GetTop(trendSection) - 20); accountsScroll.UpdateLayout(); }
             Rect spot = TutorialSpot(); var geometry = new GeometryGroup { FillRule = FillRule.EvenOdd };
             geometry.Children.Add(new RectangleGeometry(new Rect(0, 0, 1080, 720)));
             bool any = !spot.IsEmpty && spot.Width > 0;
@@ -1357,7 +1358,7 @@ namespace ClaudeLauncher {
             AutomationProperties.SetName(autoToggle,"开机时启动");
             autoToggle.Click+=delegate { ManageAutoStart(); autoToggle.IsChecked=AutoStart.PointsTo(AutoStart.Current(),Assembly.GetExecutingAssembly().Location); };
             ToggleRow("", "恢复启动器上次页面", null, () => draft.RememberPage, v => draft.RememberPage = v);
-            ChoiceRow("", "未恢复时的启动页面", new[] { "实例管理", "用量趋势", "日志记录", "系统设置", "项目管理" }, LauncherSettings.Pages.Cast<object>().ToArray(), () => draft.StartPage, v => draft.StartPage = (string)v, () => !draft.RememberPage);
+            ChoiceRow("", "未恢复时的启动页面", new[] { "实例管理", "最近会话", "日志记录", "系统设置", "项目管理" }, LauncherSettings.Pages.Cast<object>().ToArray(), () => draft.StartPage, v => draft.StartPage = (string)v, () => !draft.RememberPage);
             ChoiceRow("", "本地进程状态刷新间隔", new[] { "1 秒", "3 秒", "5 秒" }, LauncherSettings.Intervals.Cast<object>().ToArray(), () => draft.RefreshInterval, v => draft.RefreshInterval = (int)v, null);
             ToggleRow("", "点击账号时恢复最小化窗口", null, () => draft.RestoreMinimized, v => draft.RestoreMinimized = v);
 
@@ -1605,7 +1606,6 @@ namespace ClaudeLauncher {
             }
             Canvas.SetTop(indicator, 188 + (index == 4 ? 2 : index >= 2 ? index + 1 : index) * 56);
             if (index == 4) RenderProjects();
-            if (index == 1) accountsScroll.ScrollToTop();
             Render();
         }
         // 仅用于测试与离屏预览：以给定进程状态渲染某页，不扫描真实进程。
@@ -1694,26 +1694,31 @@ namespace ClaudeLauncher {
             }
             logPrev.IsEnabled = logPageIndex > 0;
             logNext.IsEnabled = logPageIndex < pages - 1;
-            logPager.Children.Clear();
-            logPager.Children.Add(logPrev);
-            int last = -1;
-            foreach (int i in PageNumbers(pages, logPageIndex)) {
-                if (last >= 0 && i - last > 1) logPager.Children.Add(new TextBlock { Text = "…", Width = 24, FontSize = 13, Foreground = B("#8A8178"), TextAlignment = TextAlignment.Center, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 8, 0) });
-                int target = i;
-                var number = new Button { Content = (i + 1).ToString(), Style = (Style)window.FindResource(i == logPageIndex ? "Primary" : "Btn"), FontSize = 13, Width = 32, Height = 32, Padding = new Thickness(0), Margin = new Thickness(0, 0, 8, 0) };
-                number.Tag = new CornerRadius(8);
-                AutomationProperties.SetName(number, "第 " + (i + 1) + " 页");
-                number.Click += delegate { logPageIndex = target; RenderLogs(); };
-                logPager.Children.Add(number);
-                last = i;
-            }
-            logPager.Children.Add(logNext);
+            FillPager(logPager, logPrev, logNext, pages, logPageIndex, target => { logPageIndex = target; RenderLogs(); });
             logSummary.Text = shown.Count == logs.Count || shown.Count == 0 ? "共 " + logs.Count + " 条日志" : "匹配 " + shown.Count + " 条 / 共 " + logs.Count + " 条日志";
             if(LogStore.LastError!=null) logSummary.Text="日志存储不可用 · "+logSummary.Text;
         }
         // 数字页码：首页、末页、当前页前后各一页（从 0 起）。
         internal static List<int> PageNumbers(int pages, int current) {
             return Enumerable.Range(0, pages).Where(i => i == 0 || i == pages - 1 || Math.Abs(i - current) <= 1).ToList();
+        }
+        // 上一页、数字页码、下一页；pages 为 0 时清空（只有一页或显示全部）。
+        void FillPager(StackPanel pager, Button previous, Button next, int pages, int current, Action<int> go) {
+            pager.Children.Clear();
+            if (pages == 0) return;
+            pager.Children.Add(previous);
+            int last = -1;
+            foreach (int i in PageNumbers(pages, current)) {
+                if (last >= 0 && i - last > 1) pager.Children.Add(new TextBlock { Text = "…", Width = 24, FontSize = 13, Foreground = B("#8A8178"), TextAlignment = TextAlignment.Center, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 8, 0) });
+                int target = i;
+                var number = new Button { Content = (i + 1).ToString(), Style = (Style)window.FindResource(i == current ? "Primary" : "Btn"), FontSize = 13, Width = 32, Height = 32, Padding = new Thickness(0), Margin = new Thickness(0, 0, 8, 0) };
+                number.Tag = new CornerRadius(8);
+                AutomationProperties.SetName(number, "第 " + (i + 1) + " 页");
+                number.Click += delegate { go(target); };
+                pager.Children.Add(number);
+                last = i;
+            }
+            pager.Children.Add(next);
         }
         Button PagerButton(string glyph, string name, string id) {
             var button = new Button { Content = Glyph(glyph, 11, Ink), Style = (Style)window.FindResource("Btn"), Width = 32, Height = 32, Padding = new Thickness(0), Margin = new Thickness(0, 0, 8, 0), ToolTip = name };
@@ -1870,15 +1875,13 @@ namespace ClaudeLauncher {
             }
             foreach (var pair in results) {
                 if (pair.Value.Item2 == null || pair.Value.Item2 != CurrentUsageIdentity(pair.Key)) continue;
-                // 只用本次实际读到的值；缓存与 0% 估算不进入趋势或提醒。
+                // 只用本次实际读到的值；缓存与 0% 估算不进入提醒。
                 UsageRecord merged = usage[pair.Key];
                 if (merged.Status != UsageInterface.Observed) { ObserveUsageAlert(pair.Key, null); continue; }
                 var fresh = pair.Value.Item1;
                 if (fresh.Status != UsageInterface.Observed) continue;
                 ObserveUsageAlert(pair.Key, fresh.FiveHour == null ? null : merged.FiveHour);
-                UsageTrend.Observe(trend, pair.Key, fresh, DateTime.UtcNow);
             }
-            try { UsageTrend.Save(TrendPath, trend); } catch (Exception error) { Message("用量趋势保存失败：" + error.Message, true); }
             if (changed) try { UsageInterface.Save(usagePath, savedUsage.Values); } catch (Exception error) { Diagnostics.Error("usage_save_error", error); }
             RenderUsage();
             return results.Any(pair => pair.Value.Item2 != null && pair.Value.Item2 == CurrentUsageIdentity(pair.Key) && pair.Value.Item1.Status == UsageInterface.Observed && pair.Value.Item1.FiveHour != null && pair.Value.Item1.Weekly != null);
@@ -1945,122 +1948,148 @@ namespace ClaudeLauncher {
             var found = instances.Where(x => x.Number == n).ToList();
             return found.Count == 1 ? UsageInterface.Identity(n, found[0]) : null;
         }
-        string trendSignature;
-        // 用量趋势页：只展示启动器已保存的观察记录，不新增读取或网络。显示内容变化或每 10 分钟才重建。
-        void UpdateTrendSection() {
-            DateTime now = DateTime.UtcNow; bool on = settings.ShowUsage;
-            var accounts = Enumerable.Range(1, 10).Where(n => cards[n].Root.Visibility == Visibility.Visible).ToList();
-            string signature = String.Join("|", new object[] { on, String.Join(",", accounts.Select(n => DisplayName(n) + cards[n].Action.ToolTip + cards[n].Action.IsEnabled)), trend.Count, trend.Count == 0 ? 0 : trend[trend.Count - 1].At.Ticks, now.Ticks / TimeSpan.FromMinutes(10).Ticks });
-            if (signature == trendSignature) return;
-            trendSignature = signature;
-            trendSection.Children.Clear();
-            var points = UsageTrend.Clean(trend, now).Where(p => p.At >= now.AddDays(-7)).ToList();
-            int next = on ? UsageTrend.Recommend(points, accounts) : 0;
-            const string Weekly = "#8C5C40", Five = "#D9894E";
-            var heading = At(trendSection, T("用量趋势", 32, Ink, FontWeights.Bold), 36, 8);
-            heading.FontFamily = new FontFamily("Source Han Serif SC, Noto Serif SC, SimSun, Microsoft YaHei UI");
-            double legend = 576;
-            foreach (var item in new[] { Tuple.Create("周限额", Weekly, 2.0), Tuple.Create("5 小时限额", Five, 1.5) }) {
-                At(trendSection, new Line { X1 = legend, X2 = legend + 18, Y1 = 26, Y2 = 26, Stroke = B(item.Item2), StrokeThickness = item.Item3, StrokeStartLineCap = PenLineCap.Round, StrokeEndLineCap = PenLineCap.Round }, 0, 0);
-                At(trendSection, T(item.Item1, 11, Muted, FontWeights.Normal), legend + 24, 19, 72); legend += 98;
-            }
-            var banner = At(trendSection, Panel(14, next != 0 ? "#EBFBEEE2" : "#EBFFFDFA"), 36, 82, 736, 52);
-            banner.BorderBrush = B(next != 0 ? "#F0D5BD" : "#EDE4D8"); banner.BorderThickness = new Thickness(1);
-            string bannerText = !on ? "用量趋势未开启：请先在“系统设置 → 外观”中开启“显示本地界面用量”。" : next != 0 ? "建议下一个使用：账号 " + Two(next) : "还没有观察记录。打开账号的 Claude Code 后，启动器会记录已显示的用量。";
-            At(trendSection, T(bannerText, 14, next != 0 ? "#795539" : Muted, FontWeights.SemiBold), 54, 98, next != 0 ? 450 : 700);
-            if (next != 0) {
-                int target = next;
-                var go = At(trendSection, Action(Appearance.Text(cards[next].Action.ToolTip as string) + "账号 " + Two(next), "Btn", null, 13), 610, 90, 148, 36);
-                go.IsEnabled = cards[next].Action.IsEnabled;
-                go.Click += async delegate { await Select(target); };
-            }
-            double height = 150;
-            if (on) for (int i = 0; i < accounts.Count; i++) {
-                double x = 36 + (i % 2) * 374, y = 150 + (i / 2) * 222;
-                trendSection.Children.Add(TrendCard(accounts[i], accounts[i] == next, points.Where(p => p.Account == accounts[i]).OrderBy(p => p.At).ToList(), now, Weekly, Five));
-                Canvas.SetLeft(trendSection.Children[trendSection.Children.Count - 1], x); Canvas.SetTop(trendSection.Children[trendSection.Children.Count - 1], y);
-                height = y + 238;
-            }
-            trendSection.Height = height;
-            accountsContent.Height = Canvas.GetTop(trendSection) + height;
+        // ---- 最近会话（SPEC 最近会话，取代用量趋势页）：各账号的会话按修改时间排在一起，每行可直接同步 ----
+        // 只在用户点侧栏进入、点“刷新”或从这一页完成一次同步后读取；启动时恢复到这一页只显示“加载最近会话”。
+        void BuildRecent(Canvas recentPage) {
+            recentRefresh = At(recentPage, Action("刷新", "Btn", "", 14), 664, 56, 108, 44);
+            recentRefresh.ToolTip = Appearance.Text("重新读取各账号的会话"); AutomationProperties.SetAutomationId(recentRefresh, "RecentRefresh");
+            recentRefresh.Click += async delegate { await LoadRecent(); };
+            var panel = At(recentPage, Panel(16, "#E6FFFDFA"), 36, 124, 736, 502);
+            // 行用模板按需生成（虚拟化），“显示全部”有几千条也只创建看得见的行。
+            var row = new FrameworkElementFactory(typeof(ContentControl));
+            row.SetBinding(ContentControl.ContentProperty, new System.Windows.Data.Binding(".") { Converter = new RowBuilder { Build = value => RecentRow((SyncSessionRow)value) } });
+            var itemStyle = new Style(typeof(ListBoxItem));
+            itemStyle.Setters.Add(new Setter(Control.TemplateProperty, new ControlTemplate(typeof(ListBoxItem)) { VisualTree = new FrameworkElementFactory(typeof(ContentPresenter)) }));
+            itemStyle.Setters.Add(new Setter(UIElement.FocusableProperty, false));
+            recentList = new ListBox { ItemTemplate = new DataTemplate { VisualTree = row }, ItemContainerStyle = itemStyle, BorderThickness = new Thickness(0), Background = Brushes.Transparent, Margin = new Thickness(0, 0, 0, 1) };
+            ScrollViewer.SetHorizontalScrollBarVisibility(recentList, ScrollBarVisibility.Disabled); VirtualizingStackPanel.SetIsVirtualizing(recentList, true);
+            AutomationProperties.SetName(recentList, Appearance.Text("最近会话")); AutomationProperties.SetAutomationId(recentList, "RecentList");
+            panel.Child = recentList; recentPanel = panel;
+            recentEmpty = At(recentPage, T("", 14, "#8A8178", FontWeights.Normal), 76, 320, 656); recentEmpty.TextAlignment = TextAlignment.Center; recentEmpty.TextWrapping = TextWrapping.Wrap;
+            recentLoad = At(recentPage, Action("加载最近会话", "Primary", "", 14), 310, 380, 188, 42);
+            AutomationProperties.SetAutomationId(recentLoad, "RecentLoad"); recentLoad.Click += async delegate { await LoadRecent(); };
+            recentDiagnose = At(recentPage, Action("问题诊断…", "Btn", null, 14), 330, 380, 148, 42);
+            recentDiagnose.Click += async delegate { await RunSupportDiagnosis(); };
+            recentPager = At(recentPage, new StackPanel { Orientation = Orientation.Horizontal }, 57, 640);
+            recentPrev = PagerButton("", "上一页", "RecentPrevious"); recentPrev.Click += delegate { recentPageIndex--; UpdateRecent(); };
+            recentNext = PagerButton("", "下一页", "RecentNext"); recentNext.Click += delegate { recentPageIndex++; UpdateRecent(); };
+            recentSummary = At(recentPage, T("", 13, "#8A8178", FontWeights.Normal), 360, 647, 300); recentSummary.TextAlignment = TextAlignment.Right;
+            recentAllButton = At(recentPage, Action("显示全部", "Btn", null, 13), 672, 639, 100, 34);
+            AutomationProperties.SetAutomationId(recentAllButton, "RecentAll"); recentAllButton.Click += delegate { recentAll = !recentAll; UpdateRecent(); };
+            UpdateRecent();
         }
-        Border TrendCard(int n, bool suggested, List<TrendPoint> points, DateTime now, string weekly, string five) {
-            const double Width = 362;
-            var canvas = new Canvas { Width = Width, Height = 210 };
-            var card = new Border { Width = Width, Height = 210, CornerRadius = new CornerRadius(16), Background = B("#E6FFFDFA"), BorderBrush = B(suggested ? "#E9C3A2" : "#EDE4D8"), BorderThickness = new Thickness(suggested ? 1.5 : 1), Child = canvas };
-            string[] palette = Palette[(n - 1) % 4];
-            var badge = At(canvas, new Border { CornerRadius = new CornerRadius(8), Background = B(palette[0]) }, 18, 18, 28, 28);
-            badge.Child = new TextBlock { Text = Two(n), FontSize = 12, FontWeight = FontWeights.SemiBold, Foreground = B(palette[1]), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
-            string name = DisplayName(n);
-            var title = At(canvas, T(name, 14, Ink, FontWeights.SemiBold), 56, 15, suggested ? 104 : 150);
-            title.TextTrimming = TextTrimming.CharacterEllipsis; title.ToolTip = name;
-            if (suggested) At(canvas, new Border { CornerRadius = new CornerRadius(9), Background = B("#FBEEE2"), Padding = new Thickness(8, 1, 8, 1), Child = T("建议", 11, "#C0743A", FontWeights.SemiBold) }, 164, 17);
-            TrendPoint latestFive = points.LastOrDefault(p => p.Five.HasValue), latestWeek = points.LastOrDefault(p => p.Week.HasValue);
-            bool any = latestFive != null || latestWeek != null;
-            At(canvas, T(any ? "更新于 " + UsageInterface.TimeLabel(new UsageMetric { Observed = points[points.Count - 1].At.ToLocalTime() }, now.ToLocalTime()) : "尚无观察记录", 11, Muted, FontWeights.Normal), 56, 35, 160);
-            for (int m = 0; m < 2; m++) {
-                double x = Width - 18 - (2 - m) * 70; double? value = m == 0 ? (latestFive == null ? null : latestFive.Five) : (latestWeek == null ? null : latestWeek.Week);
-                var label = At(canvas, T(m == 0 ? "5 小时" : "周", 10, Muted, FontWeights.Normal), x, 12, 64); label.TextAlignment = TextAlignment.Right;
-                var percent = At(canvas, T(value.HasValue ? Math.Round(value.Value).ToString("0") + "%" : "—", 19, m == 0 ? five : weekly, FontWeights.Medium), x, 26, 64); percent.TextAlignment = TextAlignment.Right;
-            }
-            var forecast = new List<string>();
-            foreach (bool week in new[] { false, true }) {
-                double? hours = UsageTrend.HoursLeft(points, week, now);
-                if (!hours.HasValue) continue;
-                string span = hours.Value >= 48 ? String.Format(Appearance.Text("{0} 天"), (hours.Value / 24).ToString("0.0")) : String.Format(Appearance.Text("{0} 小时"), hours.Value.ToString("0.0"));
-                forecast.Add(Appearance.Text(Appearance.Text(week ? "周" : "5 小时") + "约 " + span + " 用完"));
-            }
-            string outlook = forecast.Count > 0 ? Appearance.Text("按当前速度") + "：" + String.Join(" · ", forecast) : any ? "用量平稳，暂无用完估算" : "";
-            var note = At(canvas, T(outlook, 11, forecast.Count > 0 ? "#9A5A32" : Muted, forecast.Count > 0 ? FontWeights.Medium : FontWeights.Normal), 18, 60, Width - 36);
-            note.TextTrimming = TextTrimming.CharacterEllipsis; note.ToolTip = outlook;
-            At(canvas, new Rectangle { Fill = B("#F2EBE1") }, 18, 84, Width - 36, 1);
-            if (any) {
-                var chart = At(canvas, TrendChart(points, Width - 24, 108, now, weekly, five), 12, 92);
-                AutomationProperties.SetName(chart, "账号 " + Two(n) + " 近 7 天用量趋势");
-            } else {
-                var hint = At(canvas, T("近 7 天暂无数据", 12, "#9A8F84", FontWeights.Normal), 0, 136, Width); hint.TextAlignment = TextAlignment.Center;
-            }
-            return card;
+        sealed class RowBuilder : System.Windows.Data.IValueConverter {
+            public Func<object, object> Build;
+            public object Convert(object value, Type type, object parameter, System.Globalization.CultureInfo culture) { return value == null ? null : Build(value); }
+            public object ConvertBack(object value, Type type, object parameter, System.Globalization.CultureInfo culture) { throw new NotSupportedException(); }
         }
-        Canvas TrendChart(List<TrendPoint> points, double width, double height, DateTime now, string weekly, string five) {
-            var chart = new Canvas { Width = width, Height = height };
-            double left = 30, plotWidth = width - 38, top = 6, plotHeight = height - 24, bottom = top + plotHeight;
-            foreach (int p in new[] { 0, 50, 100 }) {
-                double y = Math.Round(bottom - plotHeight * p / 100) + 0.5;
-                var rule = new Line { X1 = left, X2 = left + plotWidth, Y1 = y, Y2 = y, Stroke = B("#EDE4D8"), StrokeThickness = 1 };
-                if (p != 0) rule.StrokeDashArray = new DoubleCollection { 2, 3 };
-                At(chart, rule, 0, 0); At(chart, T(p + "%", 9, "#9A8F84", FontWeights.Normal), 0, y - 7);
+        internal void UpdateRecent() {
+            if (recentList == null) return;
+            var all = recentSessions ?? new List<SyncSessionRow>(); bool loaded = recentSessions != null;
+            int pages = Math.Max(1, (all.Count + 9) / 10); recentPageIndex = Math.Max(0, Math.Min(recentPageIndex, pages - 1));
+            recentList.ItemsSource = null; // 重建行：加载中时同步按钮要停用。
+            recentList.ItemsSource = recentAll ? all : all.Skip(recentPageIndex * 10).Take(10).ToList();
+            if (recentList.Items.Count > 0) recentList.ScrollIntoView(recentList.Items[0]);
+            recentRefresh.IsEnabled = loaded && !recentLoading;
+            recentLoad.Visibility = loaded || recentLoading ? Visibility.Collapsed : Visibility.Visible;
+            recentDiagnose.Visibility = loaded && all.Count == 0 && !recentLoading ? Visibility.Visible : Visibility.Collapsed;
+            recentEmpty.Text = Appearance.Text(all.Count > 0 ? "" : recentLoading ? "正在读取各账号的会话…"
+                : !loaded ? "启动器不会自动读取会话。点下面的按钮，列出各账号最近修改的会话。"
+                : "公共清单里的项目在各账号下都没有会话（已归档的不列出）。如果你确定有，可以运行问题诊断查看原因。");
+            bool paged = !recentAll && all.Count > 10;
+            recentAllButton.Visibility = all.Count > 10 ? Visibility.Visible : Visibility.Collapsed;
+            recentAllButton.Content = Appearance.Text(recentAll ? "分页显示" : "显示全部");
+            recentPrev.IsEnabled = recentPageIndex > 0; recentNext.IsEnabled = recentPageIndex < pages - 1;
+            FillPager(recentPager, recentPrev, recentNext, paged ? pages : 0, recentPageIndex, target => { recentPageIndex = target; UpdateRecent(); });
+            recentSummary.Text = recentLoading && loaded ? Appearance.Text("正在刷新…") : all.Count > 0 ? Appearance.Text("共 " + all.Count + " 条 · " + RecentAge(recentLoadedAt, DateTime.Now) + "读取") : "";
+        }
+        // 刚刚／N 分钟前／N 小时前；超过一天写日期，和 macOS 相同。
+        internal static string RecentAge(DateTime time, DateTime now) {
+            double seconds = Math.Max(0, (now - time).TotalSeconds);
+            return seconds < 60 ? Appearance.Text("刚刚") : seconds < 3600 ? Appearance.Text(Math.Floor(seconds / 60) + " 分钟前") : seconds < 86400 ? Appearance.Text(Math.Floor(seconds / 3600) + " 小时前") : time.ToString("MM-dd HH:mm");
+        }
+        internal async Task LoadRecent() {
+            if (snapshotMode || recentLoading) return;
+            recentLoading = true; UpdateRecent();
+            try {
+                int[] accounts = Enumerable.Range(1, 10).Where(HasData).ToArray();
+                var rows = await ReadSessions(false, accounts);
+                recentSessions = rows; recentAccounts = accounts; recentLoadedAt = DateTime.Now;
+            } catch (Exception error) { Message("最近会话读取失败：" + error.Message, true); }
+            finally { recentLoading = false; UpdateRecent(); }
+        }
+        FrameworkElement RecentRow(SyncSessionRow session) {
+            var row = new Canvas { Width = 734, Height = 50, Background = Brushes.Transparent };
+            At(row, new Rectangle { Fill = B("#EFE7DC") }, 0, 49, 734, 1);
+            string[] tone = Palette[(session.Account - 1) % 4];
+            string where = Appearance.Text("最新版本在" + DisplayName(session.Account));
+            var badge = At(row, new Border { CornerRadius = new CornerRadius(8), Background = B(tone[0]), ToolTip = where }, 18, 11, 28, 28);
+            badge.Child = new TextBlock { Text = Two(session.Account), FontSize = 12, FontWeight = FontWeights.SemiBold, Foreground = B(tone[1]), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
+            AutomationProperties.SetName(badge, where);
+            var title = At(row, T(session.Title, 14, Ink, FontWeights.Medium), 58, 6, 450); title.ToolTip = session.Title;
+            // 账号、项目、来源侧栏分组，再写关联副本的位置：这一行总是最新的那份。
+            var parts = new List<string> { DisplayName(session.Account), session.ProjectName ?? IOPath.GetFileName(session.ProjectPath) };
+            if (session.Group != null) parts.Add(session.Group);
+            var copies = session.Versions.Keys.Where(n => n != session.Account).OrderBy(n => n)
+                .Select(n => Appearance.Text("账号 " + Two(n) + (SessionSync.VersionAt(session, n) == 2 ? " 已同步" : " 是旧版本"))).ToList();
+            var detail = At(row, new TextBlock { FontSize = 12, TextTrimming = TextTrimming.CharacterEllipsis, ToolTip = session.ProjectPath + "\n" + where }, 58, 27, 450);
+            detail.Inlines.Add(new System.Windows.Documents.Run(String.Join(" · ", parts)) { Foreground = B("#8A8178") });
+            if (copies.Count > 0) detail.Inlines.Add(new System.Windows.Documents.Run(" · " + String.Join(Appearance.Text("，"), copies)) { Foreground = B("#9A5A32"), FontWeight = FontWeights.SemiBold });
+            var time = At(row, T(RecentAge(session.Modified, DateTime.Now), 12, "#8A8178", FontWeights.Normal), 512, 16, 100);
+            time.TextAlignment = TextAlignment.Right; time.ToolTip = Appearance.Text("最后修改：" + session.Modified.ToString("yyyy-MM-dd HH:mm:ss"));
+            var sync = At(row, Action("同步到…", "Btn", "", 13), 622, 10, 96, 30);
+            sync.IsEnabled = !recentLoading && !syncingSessions; AutomationProperties.SetName(sync, Appearance.Text("把「" + session.Title + "」同步到其他账号"));
+            sync.Click += async delegate {
+                await ScanNow(); // 当前运行状态，和同步窗口一样。
+                var menu = RecentTargetMenu(session); menu.PlacementTarget = sync; menu.Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom; menu.IsOpen = true;
+            };
+            return row;
+        }
+        // 目标菜单：每个账号写明它持有的版本；来源、已是最新和运行中的账号不可选。
+        internal ContextMenu RecentTargetMenu(SyncSessionRow session) {
+            var menu = new ContextMenu();
+            menu.Items.Add(new MenuItem { Header = Appearance.Text("同步到（目标须已正常退出）"), IsEnabled = false });
+            foreach (int n in recentAccounts) {
+                int held = SessionSync.VersionAt(session, n); bool running = instances.Any(x => x.Number == n);
+                string state = held == 2 ? (n == session.Account ? "来源" : "已是最新") : running ? "运行中，请先退出" : held == 1 ? "有更新，替换旧版本" : "新增副本";
+                var item = new MenuItem { Header = new TextBlock { Text = DisplayName(n) + " · " + Appearance.Text(state) }, IsEnabled = held != 2 && !running, Tag = n };
+                int target = n; item.Click += async delegate { await RecentSync(session, target); };
+                menu.Items.Add(item);
             }
-            // 时间轴按已观察跨度自适应（24 小时～7 天），短历史不挤在一侧。
-            double span = Math.Min(7 * 24, Math.Max(24, (now - points[0].At).TotalHours * 1.08));
-            DateTime begin = now.AddHours(-span);
-            Func<DateTime, double> xAt = t => left + plotWidth * (t - begin).TotalHours / span;
-            bool hourly = span <= 48; double step = hourly ? 6 : 24;
-            DateTime localNow = now.ToLocalTime(), tick = localNow.Date;
-            while (tick.AddHours(step) <= localNow) tick = tick.AddHours(step);
-            for (; tick.ToUniversalTime() >= begin; tick = tick.AddHours(-step)) {
-                At(chart, T(tick.ToString(hourly ? "HH:mm" : "M/d"), 9, "#9A8F84", FontWeights.Normal), Math.Max(left, Math.Min(xAt(tick.ToUniversalTime()) - 13, left + plotWidth - 26)), bottom + 4);
+            return menu;
+        }
+        // 之后与同步窗口同一流程：确定写入位置、生成清理副本、预览、确认、写入。
+        async Task RecentSync(SyncSessionRow session, int to) {
+            if (syncingSessions || snapshotMode || recentLoading) return;
+            syncingSessions = true; syncSessionsButton.IsEnabled = false; bool wrote = false;
+            try {
+                if (!await ScanNow()) { if (!closed) Alert("实例或保护状态已变化", scanError); return; }
+                if (instances.Any(x => x.Number == to)) { Alert("目标账号正在运行", "请先在该账号中正常退出，再同步。启动器不会替你退出。"); return; }
+                wrote = await SyncSelected(new List<SyncSessionRow> { session }, to);
+            } catch (Exception error) { Alert("无法同步所选会话", error.Message); }
+            finally { syncingSessions = false; syncSessionsButton.IsEnabled = !projectsUnreadable; }
+            if (wrote && page == 1) await LoadRecent();
+        }
+        // 测试与离屏预览用：直接放入合成行，不读取任何账号。
+        internal void SetRecent(List<SyncSessionRow> rows, int[] accounts) { recentSessions = rows; recentAccounts = accounts; recentLoadedAt = DateTime.Now; UpdateRecent(); }
+        internal static List<SyncSessionRow> RecentDemo(DateTime now) {
+            string[] titles = { "修复登录页的跳转问题", "整理发布说明", "给同步窗口加进度条", "重写设置导入", "排查 Windows 路径大小写", "首页插画换成高清版", "日志分页改成数字页码", "项目识别支持 worktree", "补充离线拒绝测试", "教程配图更新" };
+            string[] projects = { "ClaudeLauncher", "Website", "Notes" };
+            var rows = new List<SyncSessionRow>();
+            for (int i = 0; i < 23; i++) {
+                int account = i == 1 ? 3 : i % 3 + 1; DateTime modified = now.AddSeconds(-i * i * 1900 - 120);
+                var row = new SyncSessionRow { Path = "demo", Id = "a", Title = titles[i % titles.Length], ProjectPath = @"C:\Users\example\Projects\" + projects[i % 3], ProjectName = projects[i % 3], Modified = modified, Stamp = modified.Ticks, Account = account,
+                    Versions = new Dictionary<int, SyncVersion> { { account, new SyncVersion { Id = "a", Stamp = modified.Ticks } } } };
+                if (i == 0) row.Versions[2] = new SyncVersion { Id = "b", Stamp = modified.Ticks - 1000 };
+                if (i == 1) row.Versions[1] = new SyncVersion { Id = "c", Stamp = modified.Ticks - 5000 };
+                if (i == 2) row.Versions[2] = new SyncVersion { Id = "d", Stamp = modified.Ticks };
+                row.Linked = row.Versions.Count > 1; if (i == 3) row.Group = "发布";
+                rows.Add(row);
             }
-            foreach (bool week in new[] { false, true }) {
-                // 数值回落或间隔超过额度窗口时断开（UsageTrend.Runs）。
-                var runs = UsageTrend.Runs(points, week, begin).Select(run => new PointCollection(run.Select(point => new Point(xAt(point.At), bottom - plotHeight * (week ? point.Week : point.Five).Value / 100)))).ToList();
-                string color = week ? weekly : five;
-                foreach (var run in runs) {
-                    if (run.Count == 1) { At(chart, new Ellipse { Width = 4, Height = 4, Fill = B(color) }, run[0].X - 2, run[0].Y - 2); continue; }
-                    if (week) {
-                        var area = new PointCollection(run); area.Add(new Point(run[run.Count - 1].X, bottom)); area.Add(new Point(run[0].X, bottom));
-                        At(chart, new Polygon { Points = area, Fill = B("#1F" + color.Substring(1)) }, 0, 0);
-                    }
-                    // 5 小时限额一天重置多次，用细淡线，让周线更清楚。
-                    At(chart, new Polyline { Points = run, Stroke = B(week ? color : "#73" + color.Substring(1)), StrokeThickness = week ? 2.2 : 1, StrokeLineJoin = PenLineJoin.Round }, 0, 0);
-                }
-                if (runs.Count > 0) { Point last = runs[runs.Count - 1][runs[runs.Count - 1].Count - 1]; At(chart, new Ellipse { Width = 6, Height = 6, Fill = B(color) }, last.X - 3, last.Y - 3); }
-            }
-            return chart;
+            return rows;
         }
         void ClearUsage() {
-            usageGeneration++; usage.Clear(); savedUsage.Clear(); trend.Clear();
-            try { UsageTrend.Save(TrendPath, trend); } catch (Exception error) { Message("用量趋势清除失败：" + error.Message, true); }
+            usageGeneration++; usage.Clear(); savedUsage.Clear();
             try { if (File.Exists(usagePath)) File.Delete(usagePath); } catch (Exception error) { Diagnostics.Error("usage_clear_error", error); }
             RenderUsage(); SyncPopupWatches();
         }
@@ -2096,19 +2125,15 @@ namespace ClaudeLauncher {
                     string tip = metric != null ? UsageNote + "\n观察时间：" + metric.Observed.ToString("yyyy-MM-dd HH:mm:ss") + "\n官方重置说明：" + (metric.Reset.Length > 0 ? metric.Reset : "未提供") : UsageNote;
                     if (metric == null) {
                         tip += "\n读取状态：" + status + "\n请在 Claude Code 中手动展开用量弹窗并保持片刻，启动器会记录已显示的两项。";
-                        var historical = trend.Where(p => p.Account == n && (row == 0 ? p.Five : p.Week).HasValue).OrderByDescending(p => p.At).FirstOrDefault();
-                        if (historical != null) tip += "\n历史记录（非当前额度）：" + (row == 0 ? historical.Five : historical.Week).Value.ToString("0.#") + "% · " + historical.At.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss");
                     }
                     if (status == "Claude 未运行 · 上次记录") tip += "\n" + status;
                     card.Quotas[row].ToolTip = card.Values[row].ToolTip = card.Times[row].ToolTip = tip;
                     AutomationProperties.SetName(card.Values[row], (row == 0 ? "5小时已使用" : "每周已使用") + "，" + card.Values[row].Text + "，" + card.Times[row].Text + (available ? "" : "，" + status));
                 }
             }
-            UpdateTrendSection();
         }
         // 仅供测试与离屏预览：注入一条合成观察记录，不读取真实 Claude。
         internal void SetUsage(int number, UsageRecord record) { usage[number] = record; RenderUsage(); }
-        internal void SetTrend(IEnumerable<TrendPoint> points) { trend = points.ToList(); RenderUsage(); }
 
         string Recent(int number) {
             DateTime at; return accountLastUsed.TryGetValue(number, out at) ? at.ToLocalTime().ToString("MM-dd HH:mm") : "—";
