@@ -1,7 +1,8 @@
 # 项目状态
 
-## Windows 1.9.7：跟上 macOS 1.8.7 副本标题与建组指令（2026-11-17，未发布）
+## Windows 1.9.7：跟上 macOS 1.8.7 副本标题与建组指令（2026-11-17，已发布）
 
+- 发布（用户 2026-11-17 要求）：提交 `9838b1d`，dev 推送，main 快进到同一提交并推送（一并带上 macOS 1.8.7 提交）。`test-install.ps1` 3 个场景与 `publish-release.ps1 -DryRun` 通过后正式运行，已发布为 `windows-v1.9.7`（Latest）：草稿附件经 API 核对通过，GitHub latest/download 两份清单、Setup、DMG 复核 OK；脚本退出 2（未回滚，自建更新服务连接被关闭，与前几版相同）。附件 `ClaudeLauncherSetup-1.9.7.exe` 8409098 字节，SHA-256 `2c160136794f5637cdae654fa8ca3920af5f43e1ff2213ed2ad752f25038a1d4`；原样带入 macOS 1.8.7 DMG 与 `latest-macos.json`。
 - 发布说明见 [RELEASE-windows-1.9.7](RELEASE-windows-1.9.7.md)。
 - 范围：按 [HANDOFF-windows-title-prefix](HANDOFF-windows-title-prefix.md) 补齐 macOS 1.8.7 的验收修复，行为以 SPEC「同步会话 · 侧栏分组」为准，两端一致。
 - 标题：`SessionSync.WithoutGroup` 只处理带已知同步后缀的旧副本；先排除后缀再判断剩余文字，为空或全是空白时保留原样，其余文字不 trim。不带后缀的标题（如「【门店】毛利分析」）不动。
@@ -11,7 +12,7 @@
 - 测试：`SessionSyncTests` 新增 `TitleMigration`（中英文后缀、空白剩余、人工标题、标记后连续两次同步不变、未分组旧副本按关联分组替换后 JSONL 和记录去前缀且官方分组文件逐字节不变、关联冲突不去前缀、标记文件去重／损坏抛出／无效项丢弃）及指令新增句子的中英文断言。
 - 自检（`build.ps1`，本机）：LauncherTests 452、SyncTests 179、SessionSyncTests 458（1.9.6 为 372）、TutorialTests 80、自检 331，全部通过；编译警告 2 条与 1.9.6 相同。`test-install.ps1` 3 个场景通过。只用临时目录里的合成数据，未读真实账号，未向 Claude 发请求。
 - 未验证：GUI 手动测试、真实账号同步、官方 Claude 执行新指令；删除旧英文 key 后 macOS 自检需在 Mac 上复跑（本机无 macOS 工具链）。
-- 版本号 1.9.7（程序集 1.9.7.0）；未发布，`updates/public/*.json` 待发布时生成。
+- 版本号 1.9.7（程序集 1.9.7.0）。
 
 ## macOS 1.8.7：同步标题与建组指令验收修复（2026-11-17）
 
