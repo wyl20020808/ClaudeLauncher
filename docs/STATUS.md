@@ -2,14 +2,15 @@
 
 ## Windows 1.9.7：跟上 macOS 1.8.7 副本标题与建组指令（2026-11-17，未发布）
 
+- 发布说明见 [RELEASE-windows-1.9.7](RELEASE-windows-1.9.7.md)。
 - 范围：按 [HANDOFF-windows-title-prefix](HANDOFF-windows-title-prefix.md) 补齐 macOS 1.8.7 的验收修复，行为以 SPEC「同步会话 · 侧栏分组」为准，两端一致。
 - 标题：`SessionSync.WithoutGroup` 只处理带已知同步后缀的旧副本；先排除后缀再判断剩余文字，为空或全是空白时保留原样，其余文字不 trim。不带后缀的标题（如「【门店】毛利分析」）不动。
 - 关联分组：`Merge` 给每个版本带上分组（只在内存）；新增 `LegacyTitleGroup`：来源自己的分组优先，来源未分组时用各版本里唯一的分组，冲突或都没有时为 null。只用于去标题前缀，`CleanedSession.Group`、预览和建组清单仍只用来源行自己的分组。
 - 新版副本标记：每条副本成功写入（新增或替换）后，在设置目录 `session-links.json` 旁的 `session-plain-titles.json` 记「账号号:会话ID」（`{"version":1,"sessions":[…]}`，不存标题、分组名或正文）；有标记的不再去前缀。读取失败当作没有标记、本次不写；取消预览或写入失败不加；恢复默认设置不清除。
 - 指令：`SidebarGroups.InstructionHead` 换成与 `src/SessionSync.m` 逐字相同的文字（脚本比对一致）；删除 `english.strings` 中“下条保留供 Windows 使用”的旧 key，两端共用新 key。
 - 测试：`SessionSyncTests` 新增 `TitleMigration`（中英文后缀、空白剩余、人工标题、标记后连续两次同步不变、未分组旧副本按关联分组替换后 JSONL 和记录去前缀且官方分组文件逐字节不变、关联冲突不去前缀、标记文件去重／损坏抛出／无效项丢弃）及指令新增句子的中英文断言。
-- 自检（`build.ps1`，本机）：LauncherTests 452、SyncTests 179、SessionSyncTests 458（1.9.6 为 372）、TutorialTests 80、自检 331，全部通过；编译警告 2 条与 1.9.6 相同。只用临时目录里的合成数据，未读真实账号，未向 Claude 发请求。
-- 未验证：GUI 手动测试、真实账号同步、官方 Claude 执行新指令；`test-install.ps1` 未跑；删除旧英文 key 后 macOS 自检需在 Mac 上复跑（本机无 macOS 工具链）。
+- 自检（`build.ps1`，本机）：LauncherTests 452、SyncTests 179、SessionSyncTests 458（1.9.6 为 372）、TutorialTests 80、自检 331，全部通过；编译警告 2 条与 1.9.6 相同。`test-install.ps1` 3 个场景通过。只用临时目录里的合成数据，未读真实账号，未向 Claude 发请求。
+- 未验证：GUI 手动测试、真实账号同步、官方 Claude 执行新指令；删除旧英文 key 后 macOS 自检需在 Mac 上复跑（本机无 macOS 工具链）。
 - 版本号 1.9.7（程序集 1.9.7.0）；未发布，`updates/public/*.json` 待发布时生成。
 
 ## macOS 1.8.7：同步标题与建组指令验收修复（2026-11-17）
