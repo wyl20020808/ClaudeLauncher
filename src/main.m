@@ -873,7 +873,7 @@ static const CGFloat QuotaX = 212, QuotaWidth = 112, RingSize = 58;
             if (layered) {
                 NSButton *box = [NSButton checkboxWithTitle:[NSString stringWithFormat:L(@"%@（%lu）"),group.length ? group : L(@"未分组"),(unsigned long)[byName[group] count]] target:self action:@selector(toggleSubgroup:)];
                 box.allowsMixedState = YES; box.font = [NSFont systemFontOfSize:12 weight:NSFontWeightSemibold]; box.tag = (NSInteger)self.subChecks.count;
-                box.toolTip = group.length ? L(@"来源侧栏分组；同步后副本标题前会加上分组名") : L(@"来源侧栏里不在任何分组");
+                box.toolTip = group.length ? L(@"来源侧栏分组") : L(@"来源侧栏里不在任何分组");
                 [self.subChecks addObject:box]; [self.subGroups addObject:byName[group]]; [self.list addSubview:box]; check = box;
             }
             [projectSections addObject:@[check,byName[group]]];
@@ -1802,6 +1802,13 @@ static void TestUpdateQuits(void) {
 }
 static NSString *const InitialSyncKey = @"initialSyncAccounts";
 static NSString *const SessionLinksKey = @"sessionSyncLinks";
+static NSString *const SessionPlainTitlesKey = @"sessionSyncPlainTitles"; // account:id only; never title or group text.
+static void RememberPlainSessionTitle(NSUserDefaults *preferences, NSInteger account, NSString *session) {
+    NSMutableArray *plainTitles = [[preferences arrayForKey:SessionPlainTitlesKey] ?: @[] mutableCopy];
+    NSString *key = [NSString stringWithFormat:@"%ld:%@",(long)account,session];
+    if (![plainTitles containsObject:key]) [plainTitles addObject:key];
+    [preferences setObject:plainTitles forKey:SessionPlainTitlesKey];
+}
 // First pending account that can be offered now; 0 if none. Deleted or invalid accounts are reported so they stop waiting.
 static NSInteger InitialSyncAccount(NSArray *pending, NSMutableArray *gone, BOOL (^exists)(NSInteger), BOOL (^busy)(NSInteger), BOOL (^ready)(NSInteger)) {
     for (NSNumber *key in pending) {
@@ -2001,6 +2008,7 @@ static void TestInitialSync(void) {
 - (void)previewSessionSync:(NSArray<NSDictionary *> *)selected to:(NSInteger)to {
     self.syncingSessions = YES; [self refreshProjects:nil];
     [self beginSyncProgress:L(@"正在生成清理副本") total:selected.count];
+    NSArray *plainTitles = [self.preferences arrayForKey:SessionPlainTitlesKey] ?: @[];
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0), ^{
         // Off the main thread: with several sign-ins this may wait on the system's keychain prompt. Asked once per sync, before the preview.
         // shortcut: switching the target's organization during the preview is not noticed, re-read here if that ever matters.
@@ -2016,7 +2024,7 @@ static void TestInitialSync(void) {
         NSUInteger done = 0;
         for (NSDictionary *session in selected) @autoreleasepool {
             NSString *existing = session[@"versions"][@(to).stringValue][@"id"];
-            NSDictionary *clean = CleanSession(session[@"path"],session[@"project"][@"path"],NSHomeDirectory(),existing,session[@"group"]);
+            NSDictionary *clean = CleanSession(session[@"path"],session[@"project"][@"path"],NSHomeDirectory(),existing,SessionLegacyTitleGroup(session,plainTitles));
             NSUInteger finished = ++done;
             dispatch_async(dispatch_get_main_queue(), ^{ [self updateSyncProgress:L(@"正在生成清理副本") done:finished]; });
             if (clean[@"error"]) [failures addObject:[NSString stringWithFormat:@"「%@」：%@",session[@"title"],clean[@"error"]]];
@@ -2044,7 +2052,7 @@ static void TestInitialSync(void) {
     if (bytes > 100*1000) detail = [detail stringByAppendingString:L(@"\n历史较长的会话会占用目标账号较多额度；启动器不会自动截断。")];
     NSMutableArray *groupNames = [NSMutableArray array]; NSUInteger groupedCount = 0;
     for (NSDictionary *clean in cleans) if (clean[@"group"]) { groupedCount++; if (![groupNames containsObject:clean[@"group"]]) [groupNames addObject:clean[@"group"]]; }
-    if (groupedCount) detail = [detail stringByAppendingFormat:[@"\n" stringByAppendingString:L(@"%@ 条副本的标题前会加上来源侧栏的分组名：%@。同步完成后可以选“打开并建分组”，在账号 %@ 里建同名的原生分组（要你自己按发送）。")],
+    if (groupedCount) detail = [detail stringByAppendingFormat:[@"\n" stringByAppendingString:L(@"%@ 条副本在来源侧栏有分组：%@。同步完成后可以选“打开并建分组”，在账号 %@ 里建同名的原生分组（要你自己按发送）。")],
         @(groupedCount).stringValue,[groupNames componentsJoinedByString:@"、"],[NSString stringWithFormat:@"%02ld",(long)to]];
     if (images) detail = [detail stringByAppendingString:L(@"\n部分会话含图片，同步后 AI 看不到它们。")];
     if (failures.count) detail = [detail stringByAppendingFormat:L(@"\n\n%lu 条无法处理，不会同步：\n%@"),(unsigned long)failures.count,[failures componentsJoinedByString:@"\n"]];
@@ -2067,6 +2075,8 @@ static void TestInitialSync(void) {
                 : PublishSyncedSession(ProfilePath(to),organization,CodeConfigFolder(to),clean[@"slug"],clean[@"sessionId"],clean[@"jsonl"],clean[@"record"],guard);
             if (failure) break;
             SetSyncedSessionDate(CodeConfigFolder(to),clean[@"slug"],clean[@"sessionId"],[clean[@"stamp"] longLongValue]);
+            // Record only successfully published copies so later syncs cannot mistake their original titles for legacy prefixes.
+            RememberPlainSessionTitle(self.preferences,to,clean[@"sessionId"]);
             // Saved per session: quitting mid-batch must not leave published copies unlinked.
             [self.preferences setObject:LinkSessions([self.preferences arrayForKey:SessionLinksKey] ?: @[],[clean[@"from"] integerValue],clean[@"fromId"],to,clean[@"sessionId"]) forKey:SessionLinksKey];
             replaced += [clean[@"replaces"] boolValue];
@@ -4480,8 +4490,11 @@ static int UISettingsTest(NSString *output) {
         for (NSView *view in launcher.settingsContent.subviews) if ([view.identifier isEqual:@"showArtwork"]) [(NSButton *)view performClick:nil];
         NSCAssert(![launcher.settings[@"showArtwork"] boolValue] && [launcher.settingsDraft isEqual:launcher.settings],@"toggle saves immediately");
         [preferences setInteger:3 forKey:@"loginProtectionAccount"]; [preferences setObject:@{@"2":@"本地别名"} forKey:@"accountDisplayNames"];
+        RememberPlainSessionTitle(preferences,2,@"synthetic-title-id"); RememberPlainSessionTitle(preferences,2,@"synthetic-title-id");
+        NSCAssert(([[reopened arrayForKey:SessionPlainTitlesKey] isEqual:@[@"2:synthetic-title-id"]]),@"new-copy title markers persist without duplicating IDs or storing title text");
         launcher.settingsDraft = DefaultSettings().mutableCopy; [launcher saveSettings:nil];
         NSCAssert([preferences integerForKey:@"loginProtectionAccount"] == 3 && [[preferences objectForKey:@"accountDisplayNames"] count] == 1,@"reset settings preserves unrelated local state");
+        NSCAssert(([[preferences arrayForKey:SessionPlainTitlesKey] isEqual:@[@"2:synthetic-title-id"]]),@"reset settings keeps title migration markers");
         launcher.settingsDraft[@"showArtwork"] = @NO; launcher.settingsDraft[@"showUsageHistory"] = @NO; launcher.settingsDraft[@"logLimit"] = @100;
         [launcher saveSettings:nil]; NSCAssert(!launcher.cards[0].art && !launcher.usageInterface,@"appearance and interface settings applied");
         launcher.settingsDraft[@"localNotifications"] = @NO; [launcher saveSettings:nil]; [launcher testNotification:nil]; NSCAssert(launcher.toast.hidden,@"notification off");

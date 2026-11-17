@@ -33,15 +33,18 @@ NSString *SidebarGroupInstruction(NSArray<NSArray<NSString *> *> *pairs);
 NSString *SidebarNewSessionLink(NSString *prompt, NSString *folder);
 // Only links in the form SidebarNewSessionLink makes: escaped, printable ASCII, no quotes or spaces.
 BOOL SidebarLinkValid(NSString *link);
-// 【group】title, not doubled when the title already starts with it.
-NSString *SessionGroupTitle(NSString *title, NSString *group);
+// Remove an exact legacy 【group】 prefix only from a sync copy whose remaining base title is nonblank; keep the suffix.
+NSString *SessionTitleWithoutGroup(NSString *title, NSString *group);
 // Whether a title carries the suffix of an earlier sync.
 BOOL SessionIsSyncCopy(NSString *title);
 // On failure: {error}. On success: {sessionId, slug, cwd, title, jsonl, record, preview, report, messages, bytes, stamp}.
-// sessionId is targetId when replacing a linked copy, otherwise new. group (may be nil) prefixes the copy's title.
+// sessionId is targetId when replacing a linked copy, otherwise new. group permits legacy prefix removal; nil preserves it.
 NSDictionary *CleanSession(NSString *sourcePath, NSString *project, NSString *home, NSString *targetId, NSString *group);
-// One row per session, keeping the newest of each linked group and adding versions {account: {id, stamp}} and linked. sessions: newest first.
+// One row per session, keeping the newest of each linked group and adding versions {account: {id, stamp, group?}} and linked. sessions: newest first.
 NSArray<NSDictionary *> *MergeLinkedSessions(NSArray<NSDictionary *> *sessions, NSArray<NSDictionary *> *links);
+// Title migration only: source group, or the sole known linked group when ungrouped. Never changes sidebar grouping.
+// plainTitles holds account:id keys of copies written without adding prefixes; their user-supplied titles are preserved.
+NSString *SessionLegacyTitleGroup(NSDictionary *row, NSArray<NSString *> *plainTitles);
 // What one account holds of a merged row: 0 nothing, 1 an older version, 2 the newest (the same stamp counts as newest).
 NSInteger SessionVersionAt(NSDictionary *row, NSInteger account);
 // Links are groups {account: session id} of the same conversation; returns them with this pair joined.

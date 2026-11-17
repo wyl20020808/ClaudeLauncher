@@ -363,11 +363,11 @@ namespace ClaudeLauncher {
                 return relative == null ? "[历史工具请求：" + name + "，项目外路径已省略]" : "[历史工具请求：" + name + "，" + (relative.Length > 0 ? relative : ".") + "]";
             }
         }
-        // 来源在侧栏分组里时，副本标题前加「【分组名】」，已经带同一前缀的不重复加。只改启动器写的副本标题，不碰官方分组数据。
-        internal static string GroupTitle(string title, string group) {
+        // 副本标题不加「【分组名】」前缀（2026-11-17 用户要求）；旧版本留下的同组前缀在再次同步时去掉，去掉后为空则保留。不碰官方分组数据。
+        internal static string WithoutGroup(string title, string group) {
             if (String.IsNullOrWhiteSpace(group)) return title;
             string prefix = "【" + group.Trim() + "】";
-            return title.StartsWith(prefix, StringComparison.Ordinal) ? title : prefix + title;
+            return title.StartsWith(prefix, StringComparison.Ordinal) && title.Length > prefix.Length ? title.Substring(prefix.Length) : title;
         }
         internal static string CopyTitle(string title, DateTime date) {
             string text = OldSuffix.Replace(title, ""), time = date.ToString("MM/dd HH:mm", System.Globalization.CultureInfo.InvariantCulture);
@@ -435,7 +435,7 @@ namespace ClaudeLauncher {
             if (turns[turns.Count - 1].Role != "assistant") add("assistant", "（同步的历史到此结束，上一条请求没有留下回复。）", turns[turns.Count - 1].Stamp);
 
             string session = targetId ?? Guid.NewGuid().ToString(), parentId = null;
-            string clean = CopyTitle(GroupTitle(cleaner.Text(String.IsNullOrEmpty(title) ? "未命名会话" : title), group == null ? null : cleaner.Text(group)), DateTime.Now);
+            string clean = CopyTitle(WithoutGroup(cleaner.Text(String.IsNullOrEmpty(title) ? "未命名会话" : title), group == null ? null : cleaner.Text(group)), DateTime.Now);
             var jsonl = new StringBuilder(); var body = new StringBuilder();
             foreach (var turn in turns) {
                 string id = Guid.NewGuid().ToString();

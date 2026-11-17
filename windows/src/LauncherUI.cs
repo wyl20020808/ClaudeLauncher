@@ -744,7 +744,7 @@ namespace ClaudeLauncher {
                 if (grouped) {
                     var subMembers = sidebarGroup.ToList(); int subIndex = picker.Groups.Count;
                     string groupLabel = sidebarGroup.Key == "" ? Appearance.Text("未分组") : sidebarGroup.Key;
-                    var sub = new CheckBox { Content = groupLabel + "（" + subMembers.Count + "）", Foreground = B(Muted), FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 4, 0, 2), ToolTip = sidebarGroup.Key == "" ? Appearance.Text("来源侧栏里不在任何分组") : Appearance.Text("来源侧栏分组；同步后副本标题前会加上分组名") };
+                    var sub = new CheckBox { Content = groupLabel + "（" + subMembers.Count + "）", Foreground = B(Muted), FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 4, 0, 2), ToolTip = sidebarGroup.Key == "" ? Appearance.Text("来源侧栏里不在任何分组") : Appearance.Text("来源侧栏分组") };
                     sub.Click += delegate { picker.Toggle(picker.Members[subIndex]); };
                     picker.Members.Add(subMembers); picker.Groups.Add(sub); projectRows.Children.Add(sub);
                     rows = new StackPanel { Margin = new Thickness(22, 0, 0, 2) }; projectRows.Children.Add(rows);
@@ -777,7 +777,7 @@ namespace ClaudeLauncher {
             if (replacing > 0) panel.Children.Add(new TextBlock { Text = "其中 " + replacing + " 条会替换账号 " + Two(to) + " 里的旧版本，旧版本移到回收站。替换后那边也只剩清理内容，没有工具结果和图片。", TextWrapping = TextWrapping.Wrap, Foreground = B("#B46A45"), Margin = new Thickness(0, 4, 0, 0) });
             if (bytes > 100 * 1000) panel.Children.Add(new TextBlock { Text = "历史较长的会话会占用目标账号较多额度；启动器不会自动截断。", TextWrapping = TextWrapping.Wrap, Foreground = B(Muted), Margin = new Thickness(0, 4, 0, 0) });
             var groupNames = cleans.Where(c => c.Group != null).Select(c => c.Group).Distinct(StringComparer.Ordinal).ToList();
-            if (groupNames.Count > 0) panel.Children.Add(new TextBlock { Text = Appearance.Text(cleans.Count(c => c.Group != null) + " 条副本的标题前会加上来源侧栏的分组名：" + String.Join("、", groupNames) + "。同步完成后可以选“打开并建分组”，在账号 " + Two(to) + " 里建同名的原生分组（要你自己按发送）。"), TextWrapping = TextWrapping.Wrap, Foreground = B(Muted), Margin = new Thickness(0, 4, 0, 0) });
+            if (groupNames.Count > 0) panel.Children.Add(new TextBlock { Text = Appearance.Text(cleans.Count(c => c.Group != null) + " 条副本在来源侧栏有分组：" + String.Join("、", groupNames) + "。同步完成后可以选“打开并建分组”，在账号 " + Two(to) + " 里建同名的原生分组（要你自己按发送）。"), TextWrapping = TextWrapping.Wrap, Foreground = B(Muted), Margin = new Thickness(0, 4, 0, 0) });
             if (cleans.Any(c => c.Images > 0)) panel.Children.Add(new TextBlock { Text = "部分会话含图片，同步后 AI 看不到它们。", TextWrapping = TextWrapping.Wrap, Foreground = B(Muted), Margin = new Thickness(0, 4, 0, 0) });
             if (failures.Count > 0) {
                 panel.Children.Add(new TextBlock { Text = failures.Count + " 条无法处理，不会同步：", TextWrapping = TextWrapping.Wrap, Foreground = B("#B46A45"), Margin = new Thickness(0, 8, 0, 0) });
