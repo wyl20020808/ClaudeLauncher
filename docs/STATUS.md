@@ -1,6 +1,8 @@
 # 项目状态
 
-## Windows 1.9.6：最近会话页（2026-11-17，dev，未提交、未发布）
+## Windows 1.9.6：最近会话页（2026-11-17，已发布）
+
+- 发布（用户 2026-11-17 要求）：提交 `3e323b8`，dev 推送，main 快进到同一提交并推送（一并带上 macOS 1.8.6 提交）。`publish-release.ps1 -DryRun` 通过后正式运行，已发布为 `windows-v1.9.6`（Latest）：草稿附件经 API 核对通过，GitHub latest/download 两份清单、Setup、DMG 复核 OK；脚本退出 2（未回滚，自建更新服务连接被关闭，与前几版相同）。附件 `ClaudeLauncherSetup-1.9.6.exe` 8408847 字节，SHA-256 `7b45af94b55e65529ddbddcc1ea80b8ed4eda22611c651a5050cbe49bc6efa2f`；原样带入 macOS 1.8.6 DMG 与 `latest-macos.json`，未重签。日志：`build/v1.9.6-*.log`。已安装的启动器需用户自行更新。
 
 - 内容：跟上 macOS 1.8.6 的最近会话页（代码见 `f77ae1b`），发布说明见 [RELEASE-windows-1.9.6](RELEASE-windows-1.9.6.md)，核对结论见 [HANDOFF-windows-recent-sessions](HANDOFF-windows-recent-sessions.md) 文首。
 - 修复（相对 `f77ae1b` 的 Windows 代码）：① `SyncTests` 引用已删除的 `now`，测试程序编译失败；② 英文界面下行内和菜单的账号名、“同步到…”按钮仍是中文（行和菜单不在窗口逻辑树里，整体翻译走不到）；③ 一页 10 行时出滚动条（默认 ListBox 模板写死 1 像素内边距）。②③ 都先写测试复现失败再修。
