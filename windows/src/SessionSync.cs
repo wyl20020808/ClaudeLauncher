@@ -12,11 +12,16 @@ using Microsoft.Win32;
 using Microsoft.Win32.SafeHandles;
 
 namespace ClaudeLauncher {
-    internal sealed class SyncVersion { public string Id, Group; public long Stamp; }
+    internal sealed class SyncVersion { public string Id, Group; public long Stamp, Size, Revision; }
+    internal sealed class SyncBaseline {
+        public long Stamp { get; set; }
+        public long Size { get; set; }
+        public long Revision { get; set; }
+    }
     // Stamp：最后写入时间的 Ticks（100 ns，NTFS 的最小单位）。Versions：关联组里各账号的版本。
     // Group：来源账号侧栏里的分组名（没有为 null），GroupRank：它在来源侧栏的位置。
-    internal sealed class SyncSessionRow { public string Path, Id, Title, ProjectPath, ProjectName, Group; public int GroupRank = Int32.MaxValue; public DateTime Modified; public long Stamp; public int Account; public bool Linked; public Dictionary<int, SyncVersion> Versions = new Dictionary<int, SyncVersion>(); }
-    internal sealed class CleanedSession { public string Error, SessionId, Slug, Title, Preview, Report, FromId, Group, Project; public byte[] Jsonl, Record; public int Messages, Images, From; public long Stamp; public bool Replaces; }
+    internal sealed class SyncSessionRow { public string Path, Id, Title, ProjectPath, ProjectName, Group; public int GroupRank = Int32.MaxValue; public DateTime Modified; public long Stamp, Size, Revision; public int Account; public bool Linked, Conflict; public Dictionary<int, SyncVersion> Versions = new Dictionary<int, SyncVersion>(); }
+    internal sealed class CleanedSession { public string Error, SessionId, Slug, Title, Preview, Report, FromId, Group, Project; public byte[] Jsonl, Record; public int Messages, Images, From; public long Stamp, SourceSize; public bool Replaces; public SyncVersion TargetVersion; }
     // 记录在哪个账号目录、哪个分区，以及它的 sessionId（侧栏分组按 "code:" + sessionId 归属）。
     internal sealed class RecordRef { public string Profile, Scope, LocalId; }
     // 问题诊断用：列表时顺带记下每一步跳过了什么、为什么。只记 ID、cwd 和原因，不记标题和正文。
@@ -32,6 +37,8 @@ namespace ClaudeLauncher {
     internal sealed class SyncSkip { public string Id, Cwd, Reason, ProjectPath; }
     // 同步会话（SPEC 项目清单 / 同步会话）：只读来源，从白名单重新生成清理副本，只新增不覆盖。不启动 CLI、不发请求。
     internal static class SessionSync {
+        internal const string ConflictText = "多端同时有更改，无法判定先后";
+        const long EditedSinceSync = Int64.MaxValue;
         const long MaxSourceBytes = 512L * 1024 * 1024;
         const int TailBytes = 256 * 1024, MaxSessions = 2000, MaxSlug = 200;
         const string Terminator = "\\s`'\"()\\[\\]<>|*?，。；：！？、）】》”’";
@@ -134,7 +141,7 @@ namespace ClaudeLauncher {
                     if (!parent.Exists || !file.Exists) { skip(session.Key, session.Value, "missing", project); continue; }
                     if (((parent.Attributes | file.Attributes) & FileAttributes.ReparsePoint) != 0) { skip(session.Key, session.Value, "link", project); continue; }
                     if (file.Length == 0) { skip(session.Key, session.Value, "empty", project); continue; }
-                    var row = new SyncSessionRow { Path = file.FullName, Id = session.Key, Title = TailTitle(file.FullName) ?? "未命名会话", Modified = file.LastWriteTime, Stamp = file.LastWriteTimeUtc.Ticks, ProjectPath = project };
+                    var row = new SyncSessionRow { Path = file.FullName, Id = session.Key, Title = TailTitle(file.FullName) ?? "未命名会话", Modified = file.LastWriteTime, Stamp = file.LastWriteTimeUtc.Ticks, Size = file.Length, ProjectPath = project };
                     RecordRef where;
                     if (refs.TryGetValue(session.Key, out where) && where.LocalId != null) {
                         SourceGroups area; string key = where.Profile + "|" + where.Scope;
@@ -205,18 +212,26 @@ namespace ClaudeLauncher {
             joined[from] = fromId; joined[to] = toId; result.Add(joined);
             return result;
         }
-        // 每组一行，代表取最新版本（sessions 已按 Stamp 从新到旧）；关联不跨项目，目标文件按本项目目录查找。
-        internal static List<SyncSessionRow> Merge(IEnumerable<SyncSessionRow> sessions, IList<Dictionary<int, string>> links) {
+        // 同一修改时间内按同步代数排序。各端清理前后大小可能不同，只与该端上次同步的大小比。
+        internal static List<SyncSessionRow> Merge(IEnumerable<SyncSessionRow> sessions, IList<Dictionary<int, string>> links, Dictionary<string, SyncBaseline> baselines = null) {
             var groups = new Dictionary<string, int>();
             for (int i = 0; i < links.Count; i++) foreach (var pair in links[i]) groups[pair.Key + ":" + pair.Value] = i;
             var merged = new Dictionary<string, SyncSessionRow>(StringComparer.OrdinalIgnoreCase); var rows = new List<SyncSessionRow>();
-            foreach (var session in sessions) {
+            var candidates = sessions.ToList();
+            foreach (var session in candidates) {
+                SyncBaseline saved;
+                session.Revision = baselines != null && baselines.TryGetValue(session.Account + ":" + session.Id, out saved)
+                    ? (saved.Stamp == session.Stamp && saved.Size == session.Size ? saved.Revision : EditedSinceSync) : 0;
+                session.Conflict = false;
+            }
+            foreach (var session in candidates.OrderByDescending(s => s.Stamp).ThenByDescending(s => s.Revision)) {
                 int group; bool linked = groups.TryGetValue(session.Account + ":" + session.Id, out group);
                 string key = session.ProjectPath + "\n" + (linked ? "#" + group : session.Account + ":" + session.Id);
                 SyncSessionRow row;
                 if (!merged.TryGetValue(key, out row)) { row = session; row.Versions = new Dictionary<int, SyncVersion>(); merged[key] = row; rows.Add(row); }
+                else if (row.Stamp == session.Stamp && session.Revision == EditedSinceSync) row.Conflict = true;
                 // Group 只放内存：未分组的旧副本可能是最新版本，去旧前缀时要用关联里的分组。
-                row.Versions[session.Account] = new SyncVersion { Id = session.Id, Stamp = session.Stamp, Group = session.Group };
+                row.Versions[session.Account] = new SyncVersion { Id = session.Id, Stamp = session.Stamp, Size = session.Size, Revision = session.Revision, Group = session.Group };
                 if (linked) row.Linked = true;
             }
             return rows;
@@ -250,15 +265,27 @@ namespace ClaudeLauncher {
         internal static void SavePlainTitles(string path, IEnumerable<string> keys) {
             LocalFiles.Write(path, Json().Serialize(new Dictionary<string, object> { { "version", 1 }, { "sessions", keys.OrderBy(k => k, StringComparer.Ordinal).ToArray() } }));
         }
-        // 合并后的一行在某账号的版本：0 没有，1 较旧，2 最新（时间相同算最新）。
+        // 0 没有，1 较旧，2 最新，3 同时有更改且不能判定哪端较新。
         internal static int VersionAt(SyncSessionRow row, int account) {
-            SyncVersion held; return !row.Versions.TryGetValue(account, out held) ? 0 : held.Stamp < row.Stamp ? 1 : 2;
+            if (row.Conflict) return 3;
+            SyncVersion held;
+            if (!row.Versions.TryGetValue(account, out held)) return 0;
+            bool older = held.Stamp < row.Stamp || (held.Stamp == row.Stamp && held.Revision < row.Revision);
+            return older ? 1 : 2;
+        }
+        internal static void RecordSync(Dictionary<string, SyncBaseline> baselines, CleanedSession clean, int to) {
+            string source = clean.From + ":" + clean.FromId;
+            SyncBaseline saved;
+            long revision = baselines.TryGetValue(source, out saved) && saved.Stamp == clean.Stamp && saved.Size == clean.SourceSize
+                ? saved.Revision : baselines.Values.Select(b => b.Revision).DefaultIfEmpty().Max() + 1;
+            baselines[source] = new SyncBaseline { Stamp = clean.Stamp, Size = clean.SourceSize, Revision = revision };
+            baselines[to + ":" + clean.SessionId] = new SyncBaseline { Stamp = clean.Stamp, Size = clean.Jsonl.LongLength, Revision = revision };
         }
         // 启动器自己的文件，恢复默认不清除；损坏或版本不符时当作没有关联，写入时不覆盖损坏的原文件。
-        internal static List<Dictionary<int, string>> LoadLinks(string path) {
+        internal static List<Dictionary<int, string>> LoadLinks(string path, Dictionary<string, SyncBaseline> baselines = null) {
             var result = new List<Dictionary<int, string>>();
             if (!File.Exists(path)) return result;
-            var root = Json().DeserializeObject(LocalFiles.Read(path, 4 * 1024 * 1024)) as Dictionary<string, object>;
+            var root = Json().DeserializeObject(LocalFiles.Read(path, 16 * 1024 * 1024)) as Dictionary<string, object>;
             object version, raw;
             if (root == null || !root.TryGetValue("version", out version) || !(version is int) || (int)version != 1 || !root.TryGetValue("links", out raw) || !(raw is object[])) throw new InvalidDataException("会话关联记录无法识别。");
             foreach (object item in (object[])raw) {
@@ -267,11 +294,28 @@ namespace ClaudeLauncher {
                 foreach (var pair in map) if (Int32.TryParse(pair.Key, out number) && number >= 1 && number <= 10 && pair.Key == number.ToString() && pair.Value is string && Guid.TryParse((string)pair.Value, out id) && ((string)pair.Value).Length == 36) group[number] = ((string)pair.Value).ToLowerInvariant();
                 if (group.Count >= 2) result.Add(group);
             }
+            if (baselines != null && root.TryGetValue("baselines", out raw)) {
+                var stored = raw as Dictionary<string, object>;
+                if (stored == null) throw new InvalidDataException("会话同步版本记录无法识别。");
+                var parsed = new Dictionary<string, SyncBaseline>();
+                foreach (var group in result) foreach (var pair in group) {
+                    string key = pair.Key + ":" + pair.Value;
+                    object value;
+                    if (!stored.TryGetValue(key, out value)) continue;
+                    var saved = Json().ConvertToType<SyncBaseline>(value);
+                    if (saved == null || saved.Stamp <= 0 || saved.Size <= 0 || saved.Revision <= 0 || saved.Revision >= Int64.MaxValue - 1)
+                        throw new InvalidDataException("会话同步版本记录无法识别。");
+                    parsed[key] = saved;
+                }
+                foreach (var pair in parsed) baselines[pair.Key] = pair.Value;
+            }
             return result;
         }
-        internal static void SaveLinks(string path, IEnumerable<Dictionary<int, string>> links) {
+        internal static void SaveLinks(string path, IEnumerable<Dictionary<int, string>> links, Dictionary<string, SyncBaseline> baselines = null) {
             var items = links.Select(g => g.ToDictionary(p => p.Key.ToString(), p => (object)p.Value)).ToList();
-            LocalFiles.Write(path, Json().Serialize(new Dictionary<string, object> { { "version", 1 }, { "links", items } }));
+            var data = new Dictionary<string, object> { { "version", 1 }, { "links", items } };
+            if (baselines != null) data["baselines"] = baselines;
+            LocalFiles.Write(path, Json().Serialize(data));
         }
         static JavaScriptSerializer Json() { return new JavaScriptSerializer { MaxJsonLength = Int32.MaxValue, RecursionLimit = 1000 }; }
         // 共享打开：来源账号可能正在运行，不能挡住官方继续写入。
@@ -329,7 +373,7 @@ namespace ClaudeLauncher {
             return row;
         }
         // 读一份快照；没有换行结尾的行是正在写入的半行，忽略。
-        static string ReadRows(string path, List<Row> rows, ref string title, ref int sidechain, ref long version) {
+        static string ReadRows(string path, List<Row> rows, ref string title, ref int sidechain, ref long version, ref long sourceSize) {
             FileStream stream;
             try {
                 var info = new FileInfo(path);
@@ -358,6 +402,7 @@ namespace ClaudeLauncher {
                 }
                 if (total != size || stream.Length != size || File.GetLastWriteTimeUtc(path) != stamp) return "来源会话正在写入，请等它结束后重试。";
                 version = stamp.Ticks;
+                sourceSize = size;
             }
             return null;
         }
@@ -414,8 +459,8 @@ namespace ClaudeLauncher {
         const string CopyNote = "[这是从其他账号同步的清理副本：只保留对话文字和工具请求说明，工具结果、思考内容和图片都已移除。历史中说已完成的改动，请以磁盘上的文件和 git 状态为准。]\n\n";
         // targetId：替换已关联的副本时沿用目标的会话 ID，否则新建。
         internal static CleanedSession Clean(string source, string project, string home, string targetId = null, string group = null) {
-            var rows = new List<Row>(); string title = null; int sidechain = 0; long version = 0;
-            string failure = ReadRows(source, rows, ref title, ref sidechain, ref version);
+            var rows = new List<Row>(); string title = null; int sidechain = 0; long version = 0, sourceSize = 0;
+            string failure = ReadRows(source, rows, ref title, ref sidechain, ref version, ref sourceSize);
             if (failure != null) return new CleanedSession { Error = failure };
             var byId = new Dictionary<string, Row>(rows.Count); Row leaf = null;
             foreach (var row in rows) { byId[row.Uuid] = row; if (row.Type == "user" || row.Type == "assistant") leaf = row; }
@@ -484,7 +529,7 @@ namespace ClaudeLauncher {
             // 前四个键顺序与官方相同，之后“识别并导入”只读前缀时也能读到目录。
             string record = Serialize(new Dictionary<string, object> { { "sessionId", "local_" + session }, { "cliSessionId", session }, { "cwd", root }, { "originCwd", root }, { "title", clean }, { "createdAt", now }, { "lastActivityAt", now }, { "isArchived", false } });
             string report = "保留 " + turns.Count + " 条消息，" + toolNotes + " 条工具说明。\n丢弃：" + toolResults + " 个工具结果、" + thinking + " 个思考块、" + images + " 张图片、" + sidechain + " 行子代理记录、" + (rows.Count - chain.Count) + " 行非主链记录。\n替换：" + cleaner.Redacted + " 处邮箱／密钥／令牌，" + cleaner.Outside + " 个项目外路径。";
-            return new CleanedSession { SessionId = session, Slug = slug, Title = clean, Jsonl = new UTF8Encoding(false).GetBytes(jsonl.ToString()), Record = new UTF8Encoding(false).GetBytes(record), Preview = body.ToString(), Report = Appearance.Text(report), Messages = turns.Count, Images = images, Stamp = version, Replaces = targetId != null };
+            return new CleanedSession { SessionId = session, Slug = slug, Title = clean, Jsonl = new UTF8Encoding(false).GetBytes(jsonl.ToString()), Record = new UTF8Encoding(false).GetBytes(record), Preview = body.ToString(), Report = Appearance.Text(report), Messages = turns.Count, Images = images, Stamp = version, SourceSize = sourceSize, Replaces = targetId != null };
         }
 
         // ---- 格式兼容（SPEC 写入）：不按版本号放行；目标已有记录时，至少一条须是已知格式，否则视为官方格式已变，拒绝写入 ----
@@ -596,21 +641,33 @@ namespace ClaudeLauncher {
         }
 
         // ---- 发布：同目录临时文件，再用不替换的 File.Move；只给本人权限 ----
-        static string WriteTemporary(string directory, byte[] data) {
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern bool SetFileTime(SafeFileHandle file, IntPtr creation, IntPtr access, ref long write);
+        static string WriteTemporary(string directory, byte[] data, long? stamp = null) {
             string temp = Path.Combine(directory, ".claude-launcher-session-" + Guid.NewGuid().ToString("N"));
             var security = new FileSecurity();
             security.SetAccessRuleProtection(true, false);
             security.AddAccessRule(new FileSystemAccessRule(WindowsIdentity.GetCurrent().User, FileSystemRights.FullControl, AccessControlType.Allow));
-            try { using (var stream = new FileStream(temp, FileMode.CreateNew, FileSystemRights.Write, FileShare.None, 4096, FileOptions.None, security)) { stream.Write(data, 0, data.Length); stream.Flush(true); } }
+            try {
+                using (var stream = new FileStream(temp, FileMode.CreateNew, FileSystemRights.Write, FileShare.None, 4096, FileOptions.None, security)) {
+                    stream.Write(data, 0, data.Length);
+                    stream.Flush(true);
+                    if (stamp.HasValue) {
+                        long time = new DateTime(stamp.Value, DateTimeKind.Utc).ToFileTimeUtc();
+                        if (!SetFileTime(stream.SafeFileHandle, IntPtr.Zero, IntPtr.Zero, ref time)) throw new IOException("无法保留来源会话的修改时间。");
+                    }
+                }
+                if (stamp.HasValue && File.GetLastWriteTimeUtc(temp).Ticks != stamp.Value) throw new IOException("无法保留来源会话的修改时间。");
+            }
             catch { Remove(temp); throw; }
             return temp;
         }
         static void Remove(string path) { try { if (path != null && File.Exists(path)) File.Delete(path); } catch (IOException) { } catch (UnauthorizedAccessException) { } }
         static bool TryMove(string from, string to) { try { File.Move(from, to); return true; } catch (IOException) { return false; } catch (UnauthorizedAccessException) { return false; } }
-        static string PublishExclusive(string directory, string name, byte[] data, Func<string> guard) {
+        static string PublishExclusive(string directory, string name, byte[] data, Func<string> guard, long? stamp = null) {
             string temp = null;
             try {
-                temp = WriteTemporary(directory, data);
+                temp = WriteTemporary(directory, data, stamp);
                 string failure = guard();
                 if (failure != null) return failure;
                 try { File.Move(temp, Path.Combine(directory, name)); } catch (IOException) { return "无法原子发布新文件，未覆盖任何同名文件。"; }
@@ -624,7 +681,7 @@ namespace ClaudeLauncher {
         static string Records(IEnumerable<string> profiles, string organization) {
             try { return RecordsDirectory(profiles, organization); } catch (IOException) { return null; } catch (UnauthorizedAccessException) { return null; }
         }
-        internal static string Publish(IEnumerable<string> profiles, string organization, string config, string slug, string session, byte[] jsonl, byte[] record, Func<string> guard) {
+        internal static string Publish(IEnumerable<string> profiles, string organization, string config, string slug, string session, byte[] jsonl, byte[] record, Func<string> guard, long? stamp = null) {
             string failure = guard();
             if (failure != null) return failure;
             if (!ValidTarget(session, slug)) return "会话标识或项目目录名无效。";
@@ -638,7 +695,7 @@ namespace ClaudeLauncher {
                 using (new LocalFiles(config, false)) using (new LocalFiles(records, false)) {
                     // 逐级先查重解析点再创建，不会穿过链接建目录。
                     using (new LocalFiles(folder)) {
-                        failure = PublishExclusive(folder, name, jsonl, guard);
+                        failure = PublishExclusive(folder, name, jsonl, guard, stamp);
                         if (failure != null) return failure;
                         failure = PublishExclusive(records, "local_" + session + ".json", record, guard);
                         if (failure != null) File.Delete(Path.Combine(folder, name));
@@ -697,7 +754,7 @@ namespace ClaudeLauncher {
         // stamp：来源的最后写入 Ticks；目标比它新时拒绝。recycle 把文件送进回收站，成功返回 true。
         // 顺序：写好两个临时文件 → 再查目标未运行、目标文件未变 → 发布记录（失败则什么都没变）→ 旧正文同目录改名留底 →
         // 发布新正文（失败则放回）→ 留底送回收站（失败则换回旧版本）。记录已改的标题和时间是接受的残留，和 macOS 相同。
-        internal static string Replace(IEnumerable<string> profiles, string organization, string config, string slug, string session, byte[] jsonl, byte[] record, long stamp, Func<string, bool> recycle, Func<string> guard) {
+        internal static string Replace(IEnumerable<string> profiles, string organization, string config, string slug, string session, byte[] jsonl, byte[] record, long stamp, Func<string, bool> recycle, Func<string> guard, SyncVersion expected = null) {
             string failure = guard();
             if (failure != null) return failure;
             if (!ValidTarget(session, slug)) return "会话标识或项目目录名无效。";
@@ -711,7 +768,9 @@ namespace ClaudeLauncher {
                 using (new LocalFiles(config, false)) using (new LocalFiles(records, false)) using (new LocalFiles(folder, false)) {
                     string before = LocalFiles.FileState(target);
                     if (before == null) return "目标账号里的旧版本无法安全打开，未替换。";
-                    if (File.GetLastWriteTimeUtc(target).Ticks > stamp) return "目标账号里的这条会话比来源更新，未替换。";
+                    var info = new FileInfo(target);
+                    if (info.LastWriteTimeUtc.Ticks > stamp) return "目标账号里的这条会话比来源更新，未替换。";
+                    if (expected != null && (expected.Stamp != info.LastWriteTimeUtc.Ticks || expected.Size != info.Length)) return "目标账号里的这条会话刚有变化，未替换。";
                     Dictionary<string, object> existing; bool unsafeFile;
                     string recordName = RecordFor(records, session, out existing, out unsafeFile);
                     if (unsafeFile) return "目标账号的记录目录里有无法安全读取的文件，未替换。";
@@ -723,7 +782,7 @@ namespace ClaudeLauncher {
                         existing["title"] = fresh["title"]; existing["lastActivityAt"] = fresh["lastActivityAt"];
                         recordBytes = RecordData(existing);
                     }
-                    transcriptTemp = WriteTemporary(folder, jsonl); recordTemp = WriteTemporary(records, recordBytes);
+                    transcriptTemp = WriteTemporary(folder, jsonl, stamp); recordTemp = WriteTemporary(records, recordBytes);
                     failure = guard();
                     if (failure != null) return failure;
                     if (LocalFiles.FileState(target) != before) return "目标账号里的这条会话刚有变化，未替换。";
@@ -761,12 +820,5 @@ namespace ClaudeLauncher {
         }
         internal static Action<string> BeforePublish; // 只供自检制造“新正文发布失败”，正式运行为 null。
         static string Kept(ref string aside, string format) { string name = Path.GetFileName(aside); aside = null; return String.Format(format, name); }
-        // 让目标正文的修改时间等于来源，两边因此读作同一版本。
-        internal static void SetDate(string config, string slug, string session, long stamp) {
-            if (config == null || !ValidTarget(session, slug)) return;
-            string folder = Path.Combine(config, "projects", slug), path = Path.Combine(folder, session + ".jsonl");
-            try { using (new LocalFiles(folder, false)) if (LocalFiles.FileState(path) != null) File.SetLastWriteTimeUtc(path, new DateTime(stamp, DateTimeKind.Utc)); }
-            catch (IOException) { } catch (UnauthorizedAccessException) { } catch (ArgumentOutOfRangeException) { }
-        }
     }
 }

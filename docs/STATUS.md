@@ -1,5 +1,12 @@
 # 项目状态
 
+## Windows 1.9.8 往返同步漏报修复（2026-11-18）
+
+- 旧代码在合成账号中复现：同步后向副本追加消息并保留 JSONL 修改时间，列表仍显示两端都已是最新。Windows 现按各端上次成功同步的时间、字节数和版本序号判定。“最近会话”和项目页同步窗口共用判断，旧关联在下一次成功同步时补记元数据。
+- 回归以两个临时账号实际写入四轮，重新加载关联并核对来源、勾选状态和目标 JSONL 的新消息。另覆盖同时间双端修改、第三个账号仍持旧版本、预览后目标变化拒绝替换。未访问客户账号。
+- Windows 构建通过。LauncherTests 452、SyncTests 179、SessionSyncTests 484、TutorialTests 80、内置自检 331 均通过。默认 DPI 下，修复前后均有最近会话分页布局断言失败（显示 9/10 行）；在构建脚本进程内为子进程设置 `__COMPAT_LAYER=DPIUNAWARE` 后整套通过。符号链接创建因环境限制跳过，拷贝回退通过。客户机与真实 GUI 未验收。
+- macOS 源码核查：`SessionVersionAt` 与同步窗口都只比较文件修改时间，相同时间的追加也可能漏报。本轮仅核查 Mac，未进行 Mac 构建或实机复现。
+
 ## Windows 1.9.7：跟上 macOS 1.8.7 副本标题与建组指令（2026-11-17，已发布）
 
 - 发布（用户 2026-11-17 要求）：提交 `9838b1d`，dev 推送，main 快进到同一提交并推送（一并带上 macOS 1.8.7 提交）。`test-install.ps1` 3 个场景与 `publish-release.ps1 -DryRun` 通过后正式运行，已发布为 `windows-v1.9.7`（Latest）：草稿附件经 API 核对通过，GitHub latest/download 两份清单、Setup、DMG 复核 OK；脚本退出 2（未回滚，自建更新服务连接被关闭，与前几版相同）。附件 `ClaudeLauncherSetup-1.9.7.exe` 8409098 字节，SHA-256 `2c160136794f5637cdae654fa8ca3920af5f43e1ff2213ed2ad752f25038a1d4`；原样带入 macOS 1.8.7 DMG 与 `latest-macos.json`。

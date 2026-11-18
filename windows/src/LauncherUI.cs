@@ -688,12 +688,12 @@ namespace ClaudeLauncher {
             public void TargetChanged() {
                 int to = TargetNumber;
                 for (int i = 0; i < Rows.Count; i++) {
-                    var session = Sessions[i]; SyncVersion held; bool has = session.Versions.TryGetValue(to, out held);
-                    bool current = has && held.Stamp >= session.Stamp, update = has && !current;
-                    Rows[i].IsEnabled = !current;
+                    var session = Sessions[i]; int state = SessionSync.VersionAt(session, to);
+                    bool current = state == 2, update = state == 1;
+                    Rows[i].IsEnabled = state < 2;
                     if (update) { Rows[i].IsChecked = true; AutoTicked.Add(i); }
-                    else { if (current || AutoTicked.Contains(i)) Rows[i].IsChecked = false; AutoTicked.Remove(i); }
-                    Details[i].Text = Appearance.Text("账号 " + Two(session.Account) + " · " + session.Modified.ToString("MM/dd HH:mm")) + " · " + Appearance.Text(current ? "已是最新" : update ? "有更新" : "新增");
+                    else { if (state >= 2 || AutoTicked.Contains(i)) Rows[i].IsChecked = false; AutoTicked.Remove(i); }
+                    Details[i].Text = Appearance.Text("账号 " + Two(session.Account) + " · " + session.Modified.ToString("MM/dd HH:mm")) + " · " + Appearance.Text(session.Conflict ? SessionSync.ConflictText : current ? "已是最新" : update ? "有更新" : "新增");
                 }
                 Update();
             }
@@ -807,10 +807,14 @@ namespace ClaudeLauncher {
             finally { finished = true; dialog.Close(); window.IsEnabled = true; }
         }
         // 关联读取失败时当作没有关联，并且本次不写，免得覆盖损坏的原文件。
-        List<Dictionary<int, string>> LoadSessionLinks(out bool writable) {
+        List<Dictionary<int, string>> LoadSessionLinks(out bool writable, Dictionary<string, SyncBaseline> baselines) {
             writable = true;
-            try { return SessionSync.LoadLinks(LinksPath); }
-            catch (Exception error) { writable = false; AddLog("会话关联记录无法读取，本次不保存关联：" + error.Message); return new List<Dictionary<int, string>>(); }
+            try { return SessionSync.LoadLinks(LinksPath, baselines); }
+            catch (Exception error) {
+                writable = false; AddLog("会话关联记录无法读取，本次不保存关联：" + error.Message);
+                // 只有版本元数据损坏时，仍可用原来的账号和会话 ID 匹配已有副本。
+                try { return SessionSync.LoadLinks(LinksPath); } catch (Exception) { return new List<Dictionary<int, string>>(); }
+            }
         }
         // ---- 新账号提示（SPEC 新手账号提示）：只看目录名和进程状态，不读会话；只问一次 ----
         internal static int InitialSyncAccount(IEnumerable<int> waiting, List<int> gone, Func<int, bool> exists, Func<int, bool> busy, Func<int, bool> ready) {
@@ -902,13 +906,15 @@ namespace ClaudeLauncher {
                         row.Account = n; row.ProjectName = String.IsNullOrEmpty(project.Name) ? IOPath.GetFileName(project.Path) : project.Name; rows.Add(row);
                     }
                 }
-                return rows.OrderByDescending(r => r.Stamp).ToList();
+                return rows;
             });
-            bool linksWritable; return SessionSync.Merge(sessions, LoadSessionLinks(out linksWritable));
+            var baselines = new Dictionary<string, SyncBaseline>();
+            bool linksWritable; return SessionSync.Merge(sessions, LoadSessionLinks(out linksWritable, baselines), baselines);
         }
         // 确定写入位置、生成清理副本、预览，确认后写入；同步窗口和最近会话页共用。返回是否写入了会话。
         async Task<bool> SyncSelected(List<SyncSessionRow> selected, int to) {
-            bool linksWritable; var links = LoadSessionLinks(out linksWritable);
+            var baselines = new Dictionary<string, SyncBaseline>();
+            bool linksWritable; var links = LoadSessionLinks(out linksWritable, baselines);
             // 标记读取失败时当作没有标记，本次不写，免得覆盖原文件。
             bool plainWritable = true; HashSet<string> plainTitles;
             try { plainTitles = SessionSync.LoadPlainTitles(PlainTitlesPath); }
@@ -926,7 +932,7 @@ namespace ClaudeLauncher {
                     try { clean = SessionSync.Clean(session.Path, session.ProjectPath, home, existing == null ? null : existing.Id, SessionSync.LegacyTitleGroup(session, plainTitles)); } catch (Exception error) { clean = new CleanedSession { Error = error.Message }; }
                     report(++done);
                     if (clean.Error != null) failures.Add("「" + session.Title + "」：" + Appearance.Text(clean.Error));
-                    else { clean.From = session.Account; clean.FromId = session.Id; clean.Group = session.Group; clean.Project = session.ProjectPath; result.Add(clean); }
+                    else { clean.From = session.Account; clean.FromId = session.Id; clean.Group = session.Group; clean.Project = session.ProjectPath; clean.TargetVersion = existing; result.Add(clean); }
                 }
                 return result;
             });
@@ -945,23 +951,25 @@ namespace ClaudeLauncher {
                     string config = CodeConfigFolder(to); Func<string> guard = () => SessionSyncGuard(to);
                     Func<string, bool> recycle = path => { try { RecycleBin.Move(path); return true; } catch (Exception error) { Diagnostics.Error("session_sync_recycle", error); return false; } };
                     foreach (var clean in cleans) {
-                        string problemText = clean.Replaces ? SessionSync.Replace(profiles, organization, config, clean.Slug, clean.SessionId, clean.Jsonl, clean.Record, clean.Stamp, recycle, guard)
-                            : SessionSync.Publish(profiles, organization, config, clean.Slug, clean.SessionId, clean.Jsonl, clean.Record, guard);
+                        string problemText = clean.Replaces ? SessionSync.Replace(profiles, organization, config, clean.Slug, clean.SessionId, clean.Jsonl, clean.Record, clean.Stamp, recycle, guard, clean.TargetVersion)
+                            : SessionSync.Publish(profiles, organization, config, clean.Slug, clean.SessionId, clean.Jsonl, clean.Record, guard, clean.Stamp);
                         if (problemText != null) return problemText;
-                        SessionSync.SetDate(config, clean.Slug, clean.SessionId, clean.Stamp);
                         // 只给成功写入的副本记标记，以后再同步时不会把你自己起的标题当成旧前缀。
                         if (plainTitles.Add(to + ":" + clean.SessionId) && plainWritable) try { SessionSync.SavePlainTitles(PlainTitlesPath, plainTitles); } catch (Exception error) { plainWritable = false; Diagnostics.Error("session_plain_titles_write", error); }
                         // 逐条保存：中途退出时已写入的副本仍有关联。
                         links = SessionSync.Link(links, clean.From, clean.FromId, to, clean.SessionId);
-                        if (linksWritable) try { SessionSync.SaveLinks(LinksPath, links); } catch (Exception error) { linksWritable = false; Diagnostics.Error("session_links_write", error); }
                         if (clean.Replaces) replaced++;
+                        report(++written);
+                        SessionSync.RecordSync(baselines, clean, to);
+                        if (linksWritable) try { SessionSync.SaveLinks(LinksPath, links, baselines); } catch (Exception error) {
+                            Diagnostics.Error("session_links_write", error); linksWritable = false;
+                        }
                         if (clean.Group != null) {
                             string sidebarId = SessionSync.SidebarId(profiles, organization, clean.SessionId);
                             if (sidebarId != null) { grouped.Add(new KeyValuePair<string, string>(clean.Group, sidebarId)); if (groupFolder == null) groupFolder = clean.Project; }
                         }
-                        report(++written);
                     }
-                    return null;
+                    return linksWritable ? null : "副本已写入，但会话关联保存失败。";
                 });
             } finally { checking.Remove(to); Render(); }
             string log = "会话同步：账号 " + Two(to) + " 新增 " + (written - replaced) + " 条，替换 " + replaced + " 条，共选择 " + (cleans.Count + failures.Count) + " 条";
@@ -969,7 +977,7 @@ namespace ClaudeLauncher {
             string info = written > 0 ? Appearance.Text("已写入 " + written + " 条。打开账号 " + Two(to) + " 后，它们会出现在侧栏，标题后带“同步”和时间。第一条消息由你发送；如果项目还没被该账号信任，发送时官方会请你确认。") : Appearance.Text("已写入 0 条。");
             if (failure != null) info += "\n\n" + Appearance.Text(failure);
             if (failures.Count > 0) info += "\n\n" + Appearance.Text(failures.Count + " 条无法处理，没有同步。");
-            string title = written == cleans.Count ? "会话已同步" : written > 0 ? "同步未全部完成" : "没有写入会话";
+            string title = failure == null && written == cleans.Count ? "会话已同步" : written > 0 ? "同步未全部完成" : "没有写入会话";
             if (written > 0) await FinishSessionSync(to, title, info, grouped, groupFolder);
             else Alert(title, info);
             return written > 0;
@@ -2036,7 +2044,7 @@ namespace ClaudeLauncher {
             At(row, new Rectangle { Fill = B("#EFE7DC") }, 0, 49, 734, 1);
             string[] tone = Palette[(session.Account - 1) % 4];
             // 行由列表模板生成、菜单是弹出层，都不在窗口逻辑树里，界面翻译走不到，这里的文字要自己翻译。
-            string where = Appearance.Text("最新版本在%@").Replace("%@", Appearance.Text(DisplayName(session.Account)));
+            string where = session.Conflict ? Appearance.Text(SessionSync.ConflictText) : Appearance.Text("最新版本在%@").Replace("%@", Appearance.Text(DisplayName(session.Account)));
             var badge = At(row, new Border { CornerRadius = new CornerRadius(8), Background = B(tone[0]), ToolTip = where }, 18, 11, 28, 28);
             badge.Child = new TextBlock { Text = Two(session.Account), FontSize = 12, FontWeight = FontWeights.SemiBold, Foreground = B(tone[1]), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
             AutomationProperties.SetName(badge, where);
@@ -2048,7 +2056,7 @@ namespace ClaudeLauncher {
                 .Select(n => Appearance.Text("账号 " + Two(n) + (SessionSync.VersionAt(session, n) == 2 ? " 已同步" : " 是旧版本"))).ToList();
             var detail = At(row, new TextBlock { FontSize = 12, TextTrimming = TextTrimming.CharacterEllipsis, ToolTip = session.ProjectPath + "\n" + where }, 58, 27, 450);
             detail.Inlines.Add(new System.Windows.Documents.Run(String.Join(" · ", parts)) { Foreground = B("#8A8178") });
-            if (copies.Count > 0) detail.Inlines.Add(new System.Windows.Documents.Run(" · " + String.Join(Appearance.Text("，"), copies)) { Foreground = B("#9A5A32"), FontWeight = FontWeights.SemiBold });
+            if (copies.Count > 0) detail.Inlines.Add(new System.Windows.Documents.Run(" · " + (session.Conflict ? where : String.Join(Appearance.Text("，"), copies))) { Foreground = B("#9A5A32"), FontWeight = FontWeights.SemiBold });
             var time = At(row, T(RecentAge(session.Modified, DateTime.Now), 12, "#8A8178", FontWeights.Normal), 512, 16, 100);
             time.TextAlignment = TextAlignment.Right; time.ToolTip = Appearance.Text("最后修改：" + session.Modified.ToString("yyyy-MM-dd HH:mm:ss"));
             var sync = At(row, Action(Appearance.Text("同步到…"), "Btn", "", 13), 622, 10, 96, 30);
@@ -2065,8 +2073,8 @@ namespace ClaudeLauncher {
             menu.Items.Add(new MenuItem { Header = Appearance.Text("同步到（目标须已正常退出）"), IsEnabled = false });
             foreach (int n in recentAccounts) {
                 int held = SessionSync.VersionAt(session, n); bool running = instances.Any(x => x.Number == n);
-                string state = held == 2 ? (n == session.Account ? "来源" : "已是最新") : running ? "运行中，请先退出" : held == 1 ? "有更新，替换旧版本" : "新增副本";
-                var item = new MenuItem { Header = new TextBlock { Text = Appearance.Text(DisplayName(n)) + " · " + Appearance.Text(state) }, IsEnabled = held != 2 && !running, Tag = n };
+                string state = held == 3 ? SessionSync.ConflictText : held == 2 ? (n == session.Account ? "来源" : "已是最新") : running ? "运行中，请先退出" : held == 1 ? "有更新，替换旧版本" : "新增副本";
+                var item = new MenuItem { Header = new TextBlock { Text = Appearance.Text(DisplayName(n)) + " · " + Appearance.Text(state) }, IsEnabled = held < 2 && !running, Tag = n };
                 int target = n; item.Click += async delegate { await RecentSync(session, target); };
                 menu.Items.Add(item);
             }

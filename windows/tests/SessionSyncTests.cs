@@ -75,6 +75,7 @@ internal static class SessionSyncTests {
             Check(SessionSync.WithoutGroup("【甲】 标题 " + suffix, "甲") == " 标题 " + suffix, "groups: remaining title preserved verbatim: " + suffix);
         }
         TitleMigration(Path.Combine(root, "tm"));
+        RoundTrip(Path.Combine(root, "rt"), ui);
         string body = Path.Combine(config, "projects", SessionSync.Slug(project), s1 + ".jsonl");
         File.WriteAllText(body, Quote(Block("type", "custom-title", "customTitle", "【门店】原标题（同步 10/26 12:00）", "sessionId", s1)) + "\n" + Quote(Message("user", "u1", null, project, "问")) + "\n" + Quote(Message("assistant", "a1", "u1", project, new object[] { Block("type", "text", "text", "答") })) + "\n");
         var grouped = SessionSync.Clean(body, project, root, null, "门店");
@@ -131,8 +132,82 @@ internal static class SessionSyncTests {
             }
         } finally { Appearance.Language = language; }
     }
-    // 问题诊断：合成一个“同步窗口只显示部分项目”的账号，逐条核对报告给出的原因。
-    // 旧副本标题迁移（照 macOS TestSessionTitleMigration）：只用临时账号目录、记录和对话文件。
+    // A 首次同步，B 继续聊后回传，A 再继续聊。后两次写入保留修改时间。
+    static void RoundTrip(string root, LauncherUI ui) {
+        string project = Path.Combine(root, "project");
+        Directory.CreateDirectory(project); project = SessionSync.Real(project);
+        var profiles = new[] { Path.Combine(root, "A"), Path.Combine(root, "B") };
+        var configs = profiles.Select(p => Path.Combine(p, "config")).ToArray();
+        var ids = new[] { Id(71), Id(72) };
+        string slug = SessionSync.Slug(project);
+        string[] paths = configs.Select((c, i) => Path.Combine(c, "projects", slug, ids[i] + ".jsonl")).ToArray();
+        for (int i = 0; i < profiles.Length; i++) {
+            Directory.CreateDirectory(Path.Combine(profiles[i], "claude-code-sessions", Id(73), Id(74)));
+            Directory.CreateDirectory(Path.GetDirectoryName(paths[i]));
+        }
+        File.WriteAllText(paths[0], Quote(Message("user", "first", null, project, "first turn")) + "\n");
+        var seed = SessionSync.Clean(paths[0], project, root, ids[0]);
+        File.WriteAllBytes(Path.Combine(profiles[0], "claude-code-sessions", Id(73), Id(74), "local_" + ids[0] + ".json"), seed.Record);
+        string linkPath = Path.Combine(root, "session-links.json");
+        Func<SyncSessionRow> scan = () => {
+            var saved = new Dictionary<string, SyncBaseline>(); var persisted = SessionSync.LoadLinks(linkPath, saved);
+            return SessionSync.Merge(profiles.Select((p, i) => {
+                var r = SessionSync.List(configs[i], new[] { p }, new[] { project }).Single();
+                r.Account = i + 1; return r;
+            }), persisted, saved).Single();
+        };
+        var stamp = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        File.SetLastWriteTimeUtc(paths[0], stamp);
+        for (int turn = 0; turn < 4; turn++) {
+            int from = turn % 2, to = 1 - from;
+            SyncVersion target = null;
+            if (turn > 0) {
+                var messages = File.ReadAllLines(paths[from]).Select(line => (Dictionary<string, object>)new JavaScriptSerializer().DeserializeObject(line));
+                string parent = (string)messages.Last(m => m.ContainsKey("uuid"))["uuid"];
+                File.AppendAllText(paths[from], Quote(Message("user", "next" + turn, parent, project, "round " + turn)) + "\n");
+                if (turn == 1) stamp = stamp.AddMinutes(1);
+                File.SetLastWriteTimeUtc(paths[from], stamp);
+                var row = scan();
+                Check(row.Account == from + 1 && SessionSync.VersionAt(row, to + 1) == 1, "round " + turn + ": appended source must be offered even with unchanged mtime");
+                target = row.Versions[to + 1];
+                var picker = ui.BuildSessionPicker(new List<SyncSessionRow> { row }, new[] { 1, 2 }, new int[0], to + 1);
+                Check(picker.Rows[0].IsEnabled && picker.Rows[0].IsChecked == true && picker.Details[0].Text.EndsWith("有更新"), "picker offers the edited version");
+            }
+            var clean = SessionSync.Clean(paths[from], project, root, ids[to]);
+            string problem = turn == 0 ? SessionSync.Publish(new[] { profiles[to] }, null, configs[to], slug, ids[to], clean.Jsonl, clean.Record, () => null, clean.Stamp)
+                : SessionSync.Replace(new[] { profiles[to] }, null, configs[to], slug, ids[to], clean.Jsonl, clean.Record, clean.Stamp, path => { File.Move(path, Path.Combine(root, "old" + turn)); return true; }, () => null, target);
+            Check(problem == null, "round trip write: " + problem);
+            Check(File.GetLastWriteTimeUtc(paths[to]) == stamp, "published transcript already has the source timestamp");
+            var baselines = new Dictionary<string, SyncBaseline>();
+            var links = SessionSync.LoadLinks(linkPath, baselines);
+            links = SessionSync.Link(links, from + 1, ids[from], to + 1, ids[to]);
+            clean.From = from + 1; clean.FromId = ids[from];
+            SessionSync.RecordSync(baselines, clean, to + 1);
+            SessionSync.SaveLinks(linkPath, links, baselines);
+            var synced = scan();
+            Check(SessionSync.VersionAt(synced, 1) == 2 && SessionSync.VersionAt(synced, 2) == 2, "both endpoints current after write and reload");
+            Check(turn == 0 || File.ReadAllText(paths[to]).Contains("round " + turn), "destination contains the new turn");
+        }
+        var third = new Dictionary<string, SyncBaseline>();
+        var threeLinks = SessionSync.Link(SessionSync.LoadLinks(linkPath, third), 1, ids[0], 3, Id(75));
+        third["3:" + Id(75)] = new SyncBaseline { Stamp = stamp.Ticks, Size = 7, Revision = 1 };
+        var copies = paths.Select((path, i) => new SyncSessionRow { Account = i + 1, Id = ids[i], Stamp = stamp.Ticks, Size = new FileInfo(path).Length }).ToList();
+        copies.Add(new SyncSessionRow { Account = 3, Id = Id(75), Stamp = stamp.Ticks, Size = 7 });
+        Check(SessionSync.VersionAt(SessionSync.Merge(copies, threeLinks, third).Single(), 3) == 1, "an unchanged third account stays on its earlier revision at the same timestamp");
+        var expected = scan().Versions[2];
+        foreach (string path in paths) {
+            File.AppendAllText(path, "{}\n");
+            File.SetLastWriteTimeUtc(path, stamp);
+        }
+        var conflict = scan();
+        Check(conflict.Conflict && SessionSync.VersionAt(conflict, 1) == 3 && SessionSync.VersionAt(conflict, 2) == 3, "two same-time edits must not pick an arbitrary winner");
+        var conflictedPicker = ui.BuildSessionPicker(new List<SyncSessionRow> { conflict }, new[] { 1, 2 }, new int[0], 2);
+        Check(!conflictedPicker.Rows[0].IsEnabled && conflictedPicker.Details[0].Text.Contains(SessionSync.ConflictText), "picker explains the simultaneous changes");
+        var preview = SessionSync.Clean(paths[0], project, root, ids[1]);
+        byte[] kept = File.ReadAllBytes(paths[1]);
+        Check(SessionSync.Replace(new[] { profiles[1] }, null, configs[1], slug, ids[1], preview.Jsonl, preview.Record, preview.Stamp, path => false, () => null, expected) == "目标账号里的这条会话刚有变化，未替换。" && kept.SequenceEqual(File.ReadAllBytes(paths[1])), "an equal-time target edit after selection is kept");
+    }
+    // 旧副本标题迁移（照 macOS TestSessionTitleMigration）。
     static void TitleMigration(string root) {
         string project = Path.Combine(root, "title-project"); Directory.CreateDirectory(project); project = SessionSync.Real(project);
         string source = Path.Combine(root, "title-source.jsonl"); Func<string> safe = () => null;
@@ -169,8 +244,8 @@ internal static class SessionSyncTests {
         string groupId = "cg-" + Guid.NewGuid(), groupPath = Path.Combine(profileA[0], SidebarGroups.FileName);
         File.WriteAllText(groupPath, "{\"preferences\":{\"epitaxyPrefs\":{\"dframe-group-scopes\":{\"" + scope + "\":{\"groups\":[{\"id\":\"" + groupId + "\",\"name\":\"甲\",\"mode\":\"code\"}],\"assignments\":{\"code:local_" + origin.SessionId + "\":\"" + groupId + "\"}}}}}}", new UTF8Encoding(false));
         byte[] groupBytes = File.ReadAllBytes(groupPath);
-        SessionSync.SetDate(configA, origin.Slug, origin.SessionId, new DateTime(2000, 1, 1, 0, 0, 0, DateTimeKind.Utc).Ticks);
-        SessionSync.SetDate(configB, legacy.Slug, legacy.SessionId, new DateTime(2001, 1, 1, 0, 0, 0, DateTimeKind.Utc).Ticks);
+        File.SetLastWriteTimeUtc(Path.Combine(configA, "projects", origin.Slug, origin.SessionId + ".jsonl"), new DateTime(2000, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+        File.SetLastWriteTimeUtc(Path.Combine(configB, "projects", legacy.Slug, legacy.SessionId + ".jsonl"), new DateTime(2001, 1, 1, 0, 0, 0, DateTimeKind.Utc));
         var projects = new List<string> { project };
         var rowA = SessionSync.List(configA, profileA, projects).Single(); var rowB = SessionSync.List(configB, profileB, projects).Single();
         Check(rowA.Group == "甲" && rowB.Group == null, "title: only the original is grouped");
@@ -584,9 +659,7 @@ internal static class SessionSyncTests {
         Check(SessionSync.Replace(profiles, null, config, slug, keep, refreshed.Jsonl, refreshed.Record, later, toBin, safe) == null && File.ReadAllBytes(Path.Combine(records, "local_" + keep + ".json")).SequenceEqual(refreshed.Record), "missing record is added exclusively");
         File.Delete(Path.Combine(records, "local_" + keep + ".json"));
         // 写入后目标时间等于来源，两边读作同一版本；来回同步不叠加说明。
-        long stamp = new DateTime(2026, 11, 1, 8, 0, 0, DateTimeKind.Utc).Ticks + 1234567;
-        SessionSync.SetDate(config, slug, keep, stamp);
-        Check(File.GetLastWriteTimeUtc(keepFile).Ticks == stamp, "copy takes the source's date to the tick");
+        Check(File.GetLastWriteTimeUtc(keepFile).Ticks == later, "replacement takes the source's date to the tick");
         var again = SessionSync.Clean(keepFile, project, home);
         Check(again.Error == null && again.Preview.Split(new[] { "[这是从其他账号同步的清理副本" }, StringSplitOptions.None).Length == 2, "note does not stack");
         File.Delete(keepFile);
